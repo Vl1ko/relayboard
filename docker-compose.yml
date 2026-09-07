@@ -1,0 +1,126 @@
+services:
+  uploads-init:
+    image: busybox:1.37
+    user: root
+    command: ["sh", "-c", "chown -R 1000:1000 /uploads"]
+    volumes:
+      - uploads:/uploads
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: relayboard
+      POSTGRES_USER: relayboard
+      POSTGRES_PASSWORD: relayboard
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relayboard"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  api:
+    build: .
+    image: relayboard:local
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://relayboard:relayboard@postgres:5432/relayboard
+      REDIS_URL: redis://redis:6379
+      WHATSAPP_BRIDGE_URL: http://whatsapp:3010
+      TELEGRAM_BRIDGE_URL: http://telegram:3020
+    command: ["sh", "-c", "node dist-node/api/migrate.js && node dist-node/api/server.js"]
+    ports:
+      - "3001:3001"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - uploads:/app/data/uploads
+    depends_on:
+      uploads-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    image: relayboard:local
+    pull_policy: never
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://relayboard:relayboard@postgres:5432/relayboard
+      REDIS_URL: redis://redis:6379
+      WHATSAPP_BRIDGE_URL: http://whatsapp:3010
+      TELEGRAM_BRIDGE_URL: http://telegram:3020
+    command: ["node", "dist-node/worker/index.js"]
+    volumes:
+      - uploads:/app/data/uploads
+    depends_on:
+      api:
+        condition: service_healthy
+      telegram:
+        condition: service_started
+    restart: unless-stopped
+
+  whatsapp:
+    image: relayboard:local
+    pull_policy: never
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://relayboard:relayboard@postgres:5432/relayboard
+      REDIS_URL: redis://redis:6379
+      WHATSAPP_SESSION_PATH: /app/data/whatsapp-session
+      WHATSAPP_CHROMIUM_PATH: /usr/bin/chromium
+    command: ["node", "dist-node/whatsapp-bridge/index.js"]
+    volumes:
+      - whatsapp_session:/app/data/whatsapp-session
+      - uploads:/app/data/uploads:ro
+    shm_size: 1gb
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  telegram:
+    image: relayboard:local
+    pull_policy: never
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://relayboard:relayboard@postgres:5432/relayboard
+      REDIS_URL: redis://redis:6379
+      TELEGRAM_SESSION_PATH: /app/data/telegram/session.json
+    command: ["node", "dist-node/telegram-bridge/index.js"]
+    volumes:
+      - telegram_session:/app/data/telegram
+      - uploads:/app/data/uploads:ro
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  whatsapp_session:
+  telegram_session:
+  uploads:

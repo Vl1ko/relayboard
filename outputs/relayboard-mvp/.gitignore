@@ -1,0 +1,7 @@
+node_modules
+dist-node
+dist-web
+.env
+data/whatsapp-session/*
+!data/whatsapp-session/.gitkeep
+npm-debug.log*

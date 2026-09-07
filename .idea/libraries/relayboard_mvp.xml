@@ -1,0 +1,9 @@
+<component name="libraryTable">
+  <library name="relayboard-mvp">
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/outputs/relayboard-mvp.zip!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>
