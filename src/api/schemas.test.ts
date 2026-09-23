@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { postInput, destinationInput } from "./schemas.js";
+import { postInput, destinationInput, postDestinationsInput } from "./schemas.js";
 
 test("destination accepts a one-character group name for either account", () => {
   for (const integrationId of ["b73f76fc-0b99-4bf7-8a69-9dc90838ecf0", "3a1e4585-580d-4ed7-853c-53a9b85d6282"]) {
@@ -81,4 +81,11 @@ test("post rejects duplicate destinations and attachments", () => {
     attachmentIds: [attachmentId, attachmentId],
   });
   assert.equal(result.success, false);
+});
+
+test("post destinations require unique recipients", () => {
+  const destinationId = "b73f76fc-0b99-4bf7-8a69-9dc90838ecf0";
+  assert.equal(postDestinationsInput.safeParse({ destinationIds: [destinationId] }).success, true);
+  assert.equal(postDestinationsInput.safeParse({ destinationIds: [] }).success, false);
+  assert.equal(postDestinationsInput.safeParse({ destinationIds: [destinationId, destinationId] }).success, false);
 });

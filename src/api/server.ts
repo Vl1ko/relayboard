@@ -12,7 +12,7 @@ import { isMaxTransportError, listMaxGroups } from "../core/adapters/max.js";
 import { decryptCredentials, encryptCredentials } from "../core/crypto.js";
 import { pool } from "../core/db.js";
 import { publishingQueue, schedulerKey } from "../core/queue.js";
-import { destinationInput, integrationInput, postInput } from "./schemas.js";
+import { destinationInput, integrationInput, postDestinationsInput, postInput } from "./schemas.js";
 
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
@@ -247,7 +247,8 @@ app.get("/api/posts", async (_request, response) => {
   const result = await pool.query(`SELECT p.*, count(DISTINCT pd.destination_id)::int AS destination_count,
     count(DISTINCT a.id)::int AS attachment_count,
     count(DISTINCT d.id) FILTER (WHERE d.status='sent')::int AS sent_count,
-    count(DISTINCT d.id) FILTER (WHERE d.status IN ('failed','unknown'))::int AS failed_count
+    count(DISTINCT d.id) FILTER (WHERE d.status IN ('failed','unknown'))::int AS failed_count,
+    coalesce(array_agg(DISTINCT pd.destination_id) FILTER (WHERE pd.destination_id IS NOT NULL), '{}') AS destination_ids
     FROM posts p LEFT JOIN post_destinations pd ON pd.post_id=p.id LEFT JOIN attachments a ON a.post_id=p.id
     LEFT JOIN deliveries d ON d.post_id=p.id GROUP BY p.id ORDER BY p.created_at DESC LIMIT 50`);
   response.json(result.rows);
@@ -303,6 +304,57 @@ app.post("/api/posts", async (request, response) => {
     throw error;
   }
   response.status(201).json(post);
+});
+
+app.patch("/api/posts/:id/destinations", async (request, response) => {
+  const input = postDestinationsInput.parse(request.body);
+  const post = await pool.query("SELECT id, status FROM posts WHERE id=$1", [request.params.id]);
+  if (!post.rowCount) return response.status(404).json({ error: "Задание не найдено" });
+  const targets = await pool.query(
+    "SELECT d.id FROM destinations d JOIN integrations i ON i.id=d.integration_id WHERE d.id=ANY($1::uuid[]) AND d.enabled AND i.enabled",
+    [input.destinationIds],
+  );
+  if (targets.rowCount !== input.destinationIds.length) return response.status(400).json({ error: "Одна или несколько бесед недоступны" });
+
+  const client = await pool.connect();
+  let createdKeys: string[] = [];
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM post_destinations WHERE post_id=$1", [request.params.id]);
+    await client.query("INSERT INTO post_destinations (post_id,destination_id) SELECT $1,unnest($2::uuid[])", [request.params.id, input.destinationIds]);
+    await client.query(
+      `UPDATE deliveries SET status='stopped'
+       WHERE post_id=$1 AND status IN ('queued','paused') AND destination_id <> ALL($2::uuid[])`,
+      [request.params.id, input.destinationIds],
+    );
+    const occurrences = await client.query(
+      `SELECT DISTINCT occurrence_key FROM deliveries WHERE post_id=$1 AND status IN ('queued','sending','paused')`,
+      [request.params.id],
+    );
+    const deliveryStatus = post.rows[0].status === "paused" ? "paused" : "queued";
+    for (const item of occurrences.rows) {
+      const inserted = await client.query(
+        `INSERT INTO deliveries (post_id, destination_id, occurrence_key, status)
+         SELECT $1, dest_id, $2, $4 FROM unnest($3::uuid[]) AS dest_id
+         ON CONFLICT (post_id, destination_id, occurrence_key) DO NOTHING RETURNING id`,
+        [request.params.id, item.occurrence_key, input.destinationIds, deliveryStatus],
+      );
+      if (inserted.rowCount) createdKeys.push(item.occurrence_key);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally { client.release(); }
+
+  if (createdKeys.length && post.rows[0].status !== "paused" && post.rows[0].status !== "stopped") {
+    for (const occurrenceKey of createdKeys) {
+      await publishingQueue.add("dispatch", { postId: request.params.id, occurrenceKey }, {
+        jobId: `destinations-${request.params.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      });
+    }
+  }
+  response.json({ updated: true, destinationIds: input.destinationIds });
 });
 
 app.post("/api/posts/:id/pause", async (request, response) => {

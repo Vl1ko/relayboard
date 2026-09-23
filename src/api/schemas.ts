@@ -15,6 +15,12 @@ export const destinationInput = z.object({
   kind: z.enum(["group", "channel", "dialog"]).default("group"),
 });
 
+export const destinationIdsInput = z.array(z.string().uuid()).min(1).refine((items) => new Set(items).size === items.length, "Получатели не должны повторяться");
+
+export const postDestinationsInput = z.object({
+  destinationIds: destinationIdsInput,
+});
+
 export const postInput = z
   .object({
     text: z.string().trim().max(4000).default(""),
@@ -22,7 +28,7 @@ export const postInput = z
     scheduledAt: z.string().datetime().optional(),
     cronPattern: z.string().trim().refine((value) => value.split(/\s+/).length === 5, "Cron должен содержать 5 полей").optional(),
     timezone: z.literal("Europe/Moscow").default("Europe/Moscow"),
-    destinationIds: z.array(z.string().uuid()).min(1).refine((items) => new Set(items).size === items.length, "Получатели не должны повторяться"),
+    destinationIds: destinationIdsInput,
     attachmentIds: z.array(z.string().uuid()).max(10).default([]).refine((items) => new Set(items).size === items.length, "Файлы не должны повторяться"),
     intervalSeconds: z.coerce.number().int().min(1).max(86400).default(30),
     maxAttempts: z.coerce.number().int().min(1).max(10).default(3),

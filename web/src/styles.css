@@ -180,9 +180,18 @@ input, select { width: 100%; border: 1px solid var(--line); background: #fbfcfd;
 .file-list { display: grid; gap: 7px; margin-top: 10px; }.file-list > div { display: flex; justify-content: space-between; gap: 14px; align-items: center; padding: 9px 11px; border: 1px solid var(--line); background: white; }
 .file-list b, .file-list small { display: block; }.file-list b { font-size: 11px; }.file-list small { margin-top: 2px; color: var(--muted); font-size: 9px; }.file-list button { border: 0; color: var(--danger); background: transparent; font-size: 9px; font-weight: 700; }
 .select-all { width: 100%; margin: -8px 0 10px; padding: 9px; }.parameter-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
-.campaign-list { display: grid; }.campaign-row { display: grid; grid-template-columns: 1fr auto; gap: 20px; align-items: center; padding: 18px 0; border-top: 1px solid var(--line); }
+.campaign-list { display: grid; }.campaign-row { display: grid; gap: 16px; align-items: start; padding: 18px 0; border-top: 1px solid var(--line); }
+.campaign-main { display: grid; grid-template-columns: 1fr auto; gap: 20px; align-items: center; }
 .campaign-row h3 { max-width: 780px; margin: 6px 0; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }.campaign-row p, .campaign-row small { margin: 0; color: var(--muted); font-size: 10px; }.campaign-row small { display: block; margin-top: 5px; font-family: "IBM Plex Mono", monospace; }
 .campaign-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }.campaign-actions button { border: 1px solid var(--line); background: white; padding: 7px 9px; font-size: 9px; font-weight: 700; }.campaign-actions .danger-lite { color: var(--danger); border-color: #e5bcc3; }
+.campaign-editor { padding: 14px; border: 1px solid var(--line); background: #f8fafc; }
+.campaign-editor .section-heading { margin-bottom: 10px; }
+.campaign-editor h3 { max-width: none; margin: 0; overflow: visible; white-space: normal; font-size: 13px; }
+.campaign-target-list { max-height: 240px; background: white; border: 1px solid var(--line); }
+.campaign-editor-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.campaign-editor-actions button { border: 1px solid var(--line); background: white; padding: 8px 12px; font-size: 10px; font-weight: 700; }
+.campaign-editor-actions .primary { border-color: var(--cyan); background: var(--cyan); color: white; }
+.campaign-editor .inline-error { display: block; margin-top: 8px; color: var(--danger); }
 .status-paused { color: #a26c0b; }.status-stopped, .status-skipped { color: var(--muted); }.status-unknown { color: #8b55a4; }.status-active, .status-completed { color: #16885c; }.status-scheduled { color: #177bb0; }
 
 @media (max-width: 1050px) { .connection-grid { grid-template-columns: 1fr 1fr; }.compose-grid { grid-template-columns: 1fr; }.editor-card { grid-row: auto; }.publish-bar { grid-column: auto; }.message-editor { min-height: 220px; } }
@@ -190,5 +199,5 @@ input, select { width: 100%; border: 1px solid var(--line); background: #fbfcfd;
   .app-shell { display: block; }.sidebar { position: relative; width: 100%; height: auto; padding: 14px; }.brand { padding-bottom: 14px; }nav { display: flex; overflow-x: auto; padding: 12px 0; }.network-strip, .signout { display: none; }.workspace { padding: 22px 14px 60px; }.topbar { align-items: flex-start; }.summary { display: none; }.two-columns, .connection-grid { grid-template-columns: 1fr; }.publish-bar { bottom: 6px; }.history-row { grid-template-columns: 30px 1fr auto; }.history-row time { display: none; }.status { text-align: right; }.retry { grid-column: 2 / -1; }.loading-line { left: 0; }
 }
 @media (max-width: 520px) { .telegram-qr-card { grid-template-columns: 1fr; justify-items: center; text-align: center; }.telegram-qr-card > div:last-child { justify-items: center; }.dialog-actions { grid-template-columns: 1fr; }.delete-dialog { padding: 22px; }.recurrence-presets, .recurrence-controls.with-month-day { grid-template-columns: 1fr; } }
-@media (max-width: 760px) { .parameter-grid, .campaign-row { grid-template-columns: 1fr; }.campaign-actions { justify-content: flex-start; } }
+@media (max-width: 760px) { .parameter-grid, .campaign-main { grid-template-columns: 1fr; }.campaign-actions { justify-content: flex-start; } }
 @media (prefers-reduced-motion: reduce) { *, *:before, *:after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; } }

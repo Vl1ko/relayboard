@@ -7,7 +7,7 @@ type Destination = { id: string; integration_id: string; external_id: string; ti
 type DeliveryStatus = "queued" | "sending" | "sent" | "failed" | "paused" | "stopped" | "skipped" | "unknown";
 type Delivery = { id: string; post_id: string; status: DeliveryStatus; attempt_count: number; last_error: string | null; last_error_kind: string | null; sent_at: string | null; queued_at: string; text: string; destination_title: string; platform: Platform };
 type Dashboard = { counts: { integrations: number; destinations: number; sent: number; failed: number }; recent: Delivery[] };
-type Campaign = { id: string; text: string; mode: "now" | "scheduled" | "recurring"; status: string; scheduled_at: string | null; cron_pattern: string | null; timezone: string; interval_seconds: number; max_attempts: number; retry_delay_seconds: number; scheduler_enabled: boolean; destination_count: number; attachment_count: number; sent_count: number; failed_count: number; created_at: string };
+type Campaign = { id: string; text: string; mode: "now" | "scheduled" | "recurring"; status: string; scheduled_at: string | null; cron_pattern: string | null; timezone: string; interval_seconds: number; max_attempts: number; retry_delay_seconds: number; scheduler_enabled: boolean; destination_count: number; destination_ids: string[]; attachment_count: number; sent_count: number; failed_count: number; created_at: string };
 type RemoteGroup = { id: string; title: string; kind?: string; participantsCount?: number };
 type TelegramStatus = { status: string; configured?: boolean; qr?: string | null; qrExpiresAt?: number | null; error?: string | null; profile?: { name: string; username?: string | null } | null };
 type WhatsAppStatus = { status: string; qr?: string | null; error?: string | null };
@@ -173,7 +173,7 @@ function App() {
       <div className="content-shell"><div className="page-heading"><div><h1>{pageMeta[view].title}</h1><p>{pageMeta[view].description}</p></div>{view === "compose" && <span className="ready-chip"><i/>{integrations.filter((item) => item.enabled).length} канала готовы</span>}</div>
         {view === "compose" && <Composer destinations={destinations} onDone={() => { showNotice("Публикация поставлена в очередь"); void refresh(); setView("campaigns"); }}/>} 
         {view === "connections" && <AccountConnections integrations={integrations} destinations={destinations} onDone={() => void refresh()} notify={showNotice}/>} 
-        {view === "campaigns" && <Campaigns campaigns={campaigns} onDone={() => void refresh()} notify={showNotice}/>} 
+        {view === "campaigns" && <Campaigns campaigns={campaigns} destinations={destinations} onDone={() => void refresh()} notify={showNotice}/>} 
         {view === "history" && <History deliveries={dashboard?.recent ?? []} onDone={() => void refresh()} notify={showNotice}/>} 
       </div>
     </main>
@@ -305,15 +305,88 @@ const campaignStatusLabels: Record<string, string> = {
   stopped: "Остановлено", completed: "Завершено", failed: "Ошибка",
 };
 
-function Campaigns({ campaigns, onDone, notify }: { campaigns: Campaign[]; onDone: () => void; notify: (message: string) => void }) {
+function Campaigns({ campaigns, destinations, onDone, notify }: { campaigns: Campaign[]; destinations: Destination[]; onDone: () => void; notify: (message: string) => void }) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [targetQuery, setTargetQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState("");
+  const visibleDestinations = useMemo(() => {
+    const query = targetQuery.trim().toLocaleLowerCase("ru");
+    return destinations.filter((item) => `${item.title} ${item.integration_name}`.toLocaleLowerCase("ru").includes(query));
+  }, [destinations, targetQuery]);
   async function action(id: string, command: "pause"|"resume"|"stop") { await api(`/api/posts/${id}/${command}`, { method:"POST" }); notify(command === "pause" ? "Задание поставлено на паузу" : command === "resume" ? "Задание продолжено" : "Задание остановлено"); onDone(); }
   async function disable(id: string) { await api(`/api/posts/${id}/schedule`, { method:"DELETE" }); notify("Будущие повторы отключены"); onDone(); }
   async function remove(id: string) { if (!window.confirm("Удалить завершённое задание и его файлы?")) return; await api(`/api/posts/${id}`, { method:"DELETE" }); notify("Задание удалено"); onDone(); }
+  function startEdit(item: Campaign) {
+    setEditingId(item.id);
+    setSelected(item.destination_ids || []);
+    setTargetQuery("");
+    setFormError("");
+  }
+  async function saveDestinations(id: string) {
+    if (!selected.length) return setFormError("Выберите хотя бы одну беседу");
+    setBusy(true); setFormError("");
+    try {
+      await api(`/api/posts/${id}/destinations`, { method: "PATCH", body: JSON.stringify({ destinationIds: selected }) });
+      notify("Группы рассылки обновлены");
+      setEditingId(null);
+      onDone();
+    } catch (reason) {
+      setFormError(reason instanceof Error ? reason.message : "Не удалось сохранить группы");
+    } finally { setBusy(false); }
+  }
   const activeCount = campaigns.filter((item) => ["active", "paused"].includes(item.status)).length;
   const scheduledCount = campaigns.filter((item) => item.status === "scheduled").length;
   const deliveredCount = campaigns.reduce((sum, item) => sum + Number(item.sent_count || 0), 0);
   const failedCount = campaigns.reduce((sum, item) => sum + Number(item.failed_count || 0), 0);
-  return <><div className="campaign-stats"><div><span>Активные</span><b>{activeCount}</b><small>работают по расписанию</small></div><div><span>Запланировано</span><b>{scheduledCount}</b><small>ожидают запуска</small></div><div><span>Доставлено</span><b>{deliveredCount}</b><small>во всех заданиях</small></div><div><span>Ошибки</span><b>{failedCount}</b><small>{failedCount ? "требуют внимания" : "все каналы в норме"}</small></div></div><section className="card history-card"><div className="section-heading"><div><h2>Все задания</h2><p>Управление очередью и повторениями</p></div><span className="live-dot">Обновляется</span></div>{campaigns.length === 0 ? <div className="empty large">Заданий пока нет.</div> : <div className="campaign-list">{campaigns.map((item) => <article className="campaign-row" key={item.id}><div><span className={`status status-${item.status}`}>{campaignStatusLabels[item.status] || item.status}</span><h3>{item.text || `${item.attachment_count} вложений`}</h3><p>{item.destination_count} получателей · {item.attachment_count} файлов · интервал {item.interval_seconds} сек. · {item.sent_count} доставлено · {item.failed_count} ошибок</p><small>{item.mode === "recurring" ? `${describeCronPattern(item.cron_pattern)} · по Москве` : item.scheduled_at ? formatMoscow(item.scheduled_at) : formatMoscow(item.created_at)}</small></div><div className="campaign-actions">{["scheduled","active"].includes(item.status) && <button onClick={() => void action(item.id,"pause")}>Пауза</button>}{item.status === "paused" && <button onClick={() => void action(item.id,"resume")}>Продолжить</button>}{!["stopped","completed"].includes(item.status) && <button className="danger-lite" onClick={() => void action(item.id,"stop")}>Остановить</button>}{item.mode === "recurring" && item.scheduler_enabled && <button onClick={() => void disable(item.id)}>Отключить повторы</button>}{["stopped","completed"].includes(item.status) && <button onClick={() => void remove(item.id)}>Удалить</button>}</div></article>)}</div>}</section></>;
+  return <>
+    <div className="campaign-stats"><div><span>Активные</span><b>{activeCount}</b><small>работают по расписанию</small></div><div><span>Запланировано</span><b>{scheduledCount}</b><small>ожидают запуска</small></div><div><span>Доставлено</span><b>{deliveredCount}</b><small>во всех заданиях</small></div><div><span>Ошибки</span><b>{failedCount}</b><small>{failedCount ? "требуют внимания" : "все каналы в норме"}</small></div></div>
+    <section className="card history-card">
+      <div className="section-heading"><div><h2>Все задания</h2><p>Управление очередью и повторениями</p></div><span className="live-dot">Обновляется</span></div>
+      {campaigns.length === 0 ? <div className="empty large">Заданий пока нет.</div> : <div className="campaign-list">{campaigns.map((item) => {
+        const editing = editingId === item.id;
+        return <article className={`campaign-row ${editing ? "is-editing" : ""}`} key={item.id}>
+          <div className="campaign-main">
+            <div>
+              <span className={`status status-${item.status}`}>{campaignStatusLabels[item.status] || item.status}</span>
+              <h3>{item.text || `${item.attachment_count} вложений`}</h3>
+              <p>{item.destination_count} получателей · {item.attachment_count} файлов · интервал {item.interval_seconds} сек. · {item.sent_count} доставлено · {item.failed_count} ошибок</p>
+              <small>{item.mode === "recurring" ? `${describeCronPattern(item.cron_pattern)} · по Москве` : item.scheduled_at ? formatMoscow(item.scheduled_at) : formatMoscow(item.created_at)}</small>
+            </div>
+            <div className="campaign-actions">
+              <button onClick={() => editing ? setEditingId(null) : startEdit(item)}>{editing ? "Закрыть" : "Редактировать"}</button>
+              {["scheduled","active"].includes(item.status) && <button onClick={() => void action(item.id,"pause")}>Пауза</button>}
+              {item.status === "paused" && <button onClick={() => void action(item.id,"resume")}>Продолжить</button>}
+              {!["stopped","completed"].includes(item.status) && <button className="danger-lite" onClick={() => void action(item.id,"stop")}>Остановить</button>}
+              {item.mode === "recurring" && item.scheduler_enabled && <button onClick={() => void disable(item.id)}>Отключить повторы</button>}
+              {["stopped","completed"].includes(item.status) && <button onClick={() => void remove(item.id)}>Удалить</button>}
+            </div>
+          </div>
+          {editing && <div className="campaign-editor">
+            <div className="section-heading"><div><h3>Группы рассылки</h3><p>Снимите или поставьте галочки — изменения применятся к этому заданию</p></div><small>{selected.length} выбрано</small></div>
+            <label className="target-search"><AppIcon name="search"/><input value={targetQuery} onChange={(event) => setTargetQuery(event.target.value)} placeholder="Поиск беседы"/></label>
+            <button type="button" className="ghost select-all" onClick={() => setSelected(selected.length === destinations.length ? [] : destinations.map((destination) => destination.id))}>{selected.length === destinations.length && destinations.length > 0 ? "Снять выбор" : "Выбрать все"}</button>
+            <div className="target-list campaign-target-list">
+              {destinations.length === 0 && <div className="empty">Сначала подключите аккаунт и импортируйте беседы.</div>}
+              {destinations.length > 0 && visibleDestinations.length === 0 && <div className="empty">По вашему запросу ничего не найдено.</div>}
+              {visibleDestinations.map((destination) => <label className={`target-row ${selected.includes(destination.id) ? "selected" : ""}`} key={destination.id}>
+                <input type="checkbox" checked={selected.includes(destination.id)} onChange={() => setSelected((current) => current.includes(destination.id) ? current.filter((id) => id !== destination.id) : [...current, destination.id])}/>
+                <PlatformBadge platform={destination.platform}/>
+                <span><b>{destination.title}</b><small>{platformInfo[destination.platform].label} · {destination.integration_name}</small></span>
+                <i/>
+              </label>)}
+            </div>
+            {formError && <span className="inline-error">{formError}</span>}
+            <div className="campaign-editor-actions">
+              <button type="button" onClick={() => setEditingId(null)}>Отмена</button>
+              <button type="button" className="primary" disabled={busy} onClick={() => void saveDestinations(item.id)}>{busy ? "Сохраняю…" : "Сохранить группы"}</button>
+            </div>
+          </div>}
+        </article>;
+      })}</div>}
+    </section>
+  </>;
 }
 
 const statusLabels: Record<DeliveryStatus,string> = { queued:"В очереди", sending:"Отправляется", sent:"Доставлено", failed:"Ошибка", paused:"Пауза", stopped:"Остановлено", skipped:"Пропущено", unknown:"Исход неизвестен" };

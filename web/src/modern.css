@@ -142,6 +142,8 @@ button, input, textarea, select { font-family: inherit; }
 .campaign-row h3 { font-size: 12px; }
 .campaign-row p, .campaign-row small { font-size: 9px; }
 .campaign-actions button, .retry { border-radius: 8px; }
+.campaign-editor { border-radius: 12px; }
+.campaign-editor-actions button { border-radius: 8px; }
 .status { width: max-content; padding: 5px 8px; border-radius: 999px; font-size: 8px; }
 .status-sent, .status-completed, .status-active { color: #168359; background: #eaf8f1; }
 .status-scheduled, .status-queued { color: #157cd6; background: #eaf5ff; }
@@ -197,7 +199,7 @@ button, input, textarea, select { font-family: inherit; }
   .platform-preview > small { text-align: left; }
   .connection-grid, .campaign-stats, .two-columns { grid-template-columns: 1fr; }
   .history-card > .section-heading { margin: -17px -17px 0; padding: 17px; }
-  .campaign-row { grid-template-columns: 1fr; }
+  .campaign-main { grid-template-columns: 1fr; }
   .campaign-actions { justify-content: flex-start; }
   .history-row { grid-template-columns: 34px 1fr auto; }
   .history-row time { display: none; }
