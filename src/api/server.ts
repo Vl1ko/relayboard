@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import multer from "multer";
 import { z, ZodError } from "zod";
 import { config } from "../core/config.js";
+import { createContactImportRouter, startContactImportCleanup } from "./contact-import-router.js";
 import { isMaxTransportError, listMaxGroups } from "../core/adapters/max.js";
 import { decryptCredentials, encryptCredentials } from "../core/crypto.js";
 import { pool } from "../core/db.js";
@@ -108,6 +109,7 @@ app.get("/api/health", async (_request, response) => {
   const result = await pool.query("SELECT now() AS database_time");
   response.json({ ok: true, databaseTime: result.rows[0].database_time, version: "1.0.0" });
 });
+app.use("/api/ai", createContactImportRouter({ pool, authorize: requireAdmin, enabled: config.CONTACT_IMPORT_ENABLED, ownerScope: "workspace-admin" }));
 app.use("/api", requireAdmin);
 
 app.get("/api/auth/session", (_request, response) => response.json({ authenticated: true, username: config.ADMIN_USERNAME }));
@@ -442,6 +444,7 @@ const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => 
 app.use(errorHandler);
 
 const server = app.listen(config.PORT, () => console.log(`Relayboard API listening on http://localhost:${config.PORT}`));
-async function shutdown() { server.close(); await publishingQueue.close(); await pool.end(); process.exit(0); }
+const stopContactImportCleanup = startContactImportCleanup(pool, config.CONTACT_IMPORT_ENABLED);
+async function shutdown() { server.close(); await stopContactImportCleanup(); await publishingQueue.close(); await pool.end(); process.exit(0); }
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);

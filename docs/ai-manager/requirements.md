@@ -4,7 +4,7 @@
 
 | TZ | Этап | Кейсы | Измеримый результат / текущий gap |
 |---|---|---|---|
-| 2.1 | E03 | TC-IMPORT | CSV/XLSX; строки сходятся, ошибки/дубли; повтор не сбрасывает историю и не отправляет. Пока нет реализации |
+| 2.1 | E03 | TC-IMPORT | Локальные UI/API CSV/XLSX; фикстуры 6/2/2, конкурентный/replayed confirm, rollback и сохранение истории/opt-out. Доказательства — contact-import.md и progress.md; PG16/live UNVERIFIED |
 | 2.2 | E01-C/E04 | TC-CHANNEL | 2 личных канала, account isolation, inbound/outbound/own/human. Только synthetic контракт |
 | 2.3 | E04 | TC-FIRST | Предпросмотр, пустой шаблон, обновление ещё не начатых, интервал/пауза/resume. NOT_STARTED |
 | 2.4 | E02/E04 | TC-DEDUPE | Durable transport/operation dedup и unknown/no replay проверены offline; реальный send и семантика «той же заявки» остаются OPEN |

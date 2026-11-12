@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import ContactsImport from "./ContactsImport";
 
 type Platform = "telegram" | "max" | "whatsapp";
-type View = "compose" | "connections" | "campaigns" | "history";
+type View = "compose" | "contacts" | "connections" | "campaigns" | "history";
 type Integration = { id: string; platform: Platform; name: string; enabled: boolean; destination_count: number };
 type Destination = { id: string; integration_id: string; external_id: string; title: string; kind: string; platform: Platform; integration_name: string };
 type DeliveryStatus = "queued" | "sending" | "sent" | "failed" | "paused" | "stopped" | "skipped" | "unknown";
@@ -38,9 +39,10 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T;
 }
 
-function AppIcon({ name }: { name: "plus" | "connections" | "jobs" | "history" | "bell" | "upload" | "clock" | "search" }) {
+function AppIcon({ name }: { name: "plus" | "contacts" | "connections" | "jobs" | "history" | "bell" | "upload" | "clock" | "search" }) {
   const paths = {
     plus: <><path d="M12 5v14"/><path d="M5 12h14"/></>,
+    contacts: <><path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M16 11h6"/></>,
     connections: <><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 12h8"/><path d="M12 8v8"/></>,
     jobs: <><path d="M5 5h14v14H5z"/><path d="M8 9h8M8 13h8M8 17h5"/></>,
     history: <><path d="M4 12a8 8 0 1 0 2.3-5.7L4 8"/><path d="M4 4v4h4M12 8v5l3 2"/></>,
@@ -148,12 +150,14 @@ function App() {
   async function logout() { await api("/api/auth/logout", { method: "POST" }).catch(() => undefined); setAuthenticated(false); }
   const pageMeta: Record<View, { title: string; description: string }> = {
     compose: { title: "Новая публикация", description: "Одно сообщение для нужных бесед — отправьте сейчас или запланируйте повторение." },
+    contacts: { title: "Клиенты", description: "Импорт контактов из CSV/XLSX с проверкой номеров и дубликатов." },
     connections: { title: "Подключения", description: "Личные аккаунты и беседы, доступные для рассылки." },
     campaigns: { title: "Задания", description: "Активные, запланированные и завершённые публикации." },
     history: { title: "История доставки", description: "Результат каждой отправки по мессенджерам и беседам." },
   };
-  const navigation: Array<{ view: View; label: string; icon: "plus" | "connections" | "jobs" | "history" }> = [
+  const navigation: Array<{ view: View; label: string; icon: "plus" | "contacts" | "connections" | "jobs" | "history" }> = [
     { view: "compose", label: "Новая публикация", icon: "plus" },
+    { view: "contacts", label: "Клиенты", icon: "contacts" },
     { view: "connections", label: "Подключения", icon: "connections" },
     { view: "campaigns", label: "Задания", icon: "jobs" },
     { view: "history", label: "История", icon: "history" },
@@ -172,6 +176,7 @@ function App() {
       {notice && <div className="alert success">{notice}</div>}{loading && <div className="loading-line"/>}
       <div className="content-shell"><div className="page-heading"><div><h1>{pageMeta[view].title}</h1><p>{pageMeta[view].description}</p></div>{view === "compose" && <span className="ready-chip"><i/>{integrations.filter((item) => item.enabled).length} канала готовы</span>}</div>
         {view === "compose" && <Composer destinations={destinations} onDone={() => { showNotice("Публикация поставлена в очередь"); void refresh(); setView("campaigns"); }}/>} 
+        {view === "contacts" && <ContactsImport/>}
         {view === "connections" && <AccountConnections integrations={integrations} destinations={destinations} onDone={() => void refresh()} notify={showNotice}/>} 
         {view === "campaigns" && <Campaigns campaigns={campaigns} destinations={destinations} onDone={() => void refresh()} notify={showNotice}/>} 
         {view === "history" && <History deliveries={dashboard?.recent ?? []} onDone={() => void refresh()} notify={showNotice}/>} 
