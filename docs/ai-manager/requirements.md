@@ -7,7 +7,7 @@
 | 2.1 | E03 | TC-IMPORT | CSV/XLSX; строки сходятся, ошибки/дубли; повтор не сбрасывает историю и не отправляет. Пока нет реализации |
 | 2.2 | E01-C/E04 | TC-CHANNEL | 2 личных канала, account isolation, inbound/outbound/own/human. Только synthetic контракт |
 | 2.3 | E04 | TC-FIRST | Предпросмотр, пустой шаблон, обновление ещё не начатых, интервал/пауза/resume. NOT_STARTED |
-| 2.4 | E02/E04 | TC-DEDUPE | Повторы/рестарт без второго обращения, unknown без resend/self-reply. Durable/business dedup ещё нет |
+| 2.4 | E02/E04 | TC-DEDUPE | Durable transport/operation dedup и unknown/no replay проверены offline; реальный send и семантика «той же заявки» остаются OPEN |
 | 2.5 | E05 | TC-PROVIDER | Один реальный API, versioned настройки, лимит, секреты. BLOCKED O-02 |
 | 2.6 | E07 | TC-QUALIFY | 9 статусов, обязательные поля, уточнения, исключения/handoff. BLOCKED O-02/O-05 для реального сценария |
 | 2.7 | E08 | TC-FOLLOWUP | 4 сценария, часы/лимиты, 7 причин отмены, импорт не оживляет. NOT_STARTED/O-07 |
