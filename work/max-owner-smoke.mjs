@@ -33,11 +33,11 @@ try{
  const action=(await db.query("INSERT INTO ai_outbox(contact_id,conversation_id,logical_key,kind,text,fingerprint,automation_epoch,state,attempt_token) VALUES($1,$2,'synthetic','reply','synthetic','fake',0,'dispatching',$3) RETURNING id",[contact,conversation,randomUUID()])).rows[0].id;
  const second=start();await delay(350);assert.equal(second.output.includes('MAX session owner listening'),false);
  assert.equal((await db.query('SELECT state FROM ai_outbox WHERE id=$1',[action])).rows[0].state,'dispatching');
- await stop(first);await until(()=>second.output.includes('MAX session owner listening'),'next owner did not start');
+ first.child.kill('SIGKILL');await until(()=>first.ended,'killed owner did not exit');await until(()=>second.output.includes('MAX session owner listening'),'next owner did not start');
  assert.equal((await db.query('SELECT state FROM ai_outbox WHERE id=$1',[action])).rows[0].state,'unknown');
  assert.equal((await fetch(base+'/actions/'+action+'/dispatch',{method:'POST',headers})).status,503);
  await stop(second);assert.equal((await db.query('SELECT state FROM ai_outbox WHERE id=$1',[action])).rows[0].state,'unknown');
- console.log('PASS: authenticated MAX RPC, input validation, two-process ownership, interrupted AI send recovery without login or resend');
+ console.log('PASS: authenticated MAX RPC, input validation, two-process ownership, SIGKILL recovery of interrupted AI send without login or resend');
 }finally{
  for(const row of children)if(!row.ended){row.child.kill('SIGTERM');try{await until(()=>row.ended,'shutdown');}catch{row.child.kill('SIGKILL');}}
  await db.end();await admin.query('DROP SCHEMA '+schema+' CASCADE');await admin.end();

@@ -1,0 +1,11 @@
+export type RuntimeScope={testOnly:boolean;accountIds:readonly string[];authorIds:readonly string[]};
+/** Test operation is explicitly allowlisted; missing scope never means all contacts. */
+export function runtimeAllows(scope:RuntimeScope,accountId:string,authorId:string){
+ return !scope.testOnly||(scope.accountIds.includes(accountId)&&scope.authorIds.includes(authorId));
+}
+
+import type {Pool} from 'pg';
+export async function runtimeAllowsConversation(pool:Pool,scope:RuntimeScope,conversationId:string){
+ const source=(await pool.query(`SELECT v.account_id,s.author_id FROM ai_conversations v JOIN ai_request_phases p ON p.id=v.active_phase_id JOIN LATERAL(SELECT author_id FROM ai_request_sources WHERE request_id=p.request_id AND conversation_id=v.id ORDER BY created_at DESC LIMIT 1)s ON true WHERE v.id=$1`,[conversationId])).rows[0];
+ return !!source&&runtimeAllows(scope,source.account_id,source.author_id);
+}

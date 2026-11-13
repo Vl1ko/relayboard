@@ -1,3 +1,4 @@
+import {nextMaxCid} from '../max-cid.js';
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -62,7 +63,7 @@ export async function prepareMaxMediaMessage(ws: MaxTransport, chatId: number, m
     if (signal.aborted || Date.now()>=deadline) throw new DeliveryError("Подготовка MAX истекла до отправки", "transient");
     beforeSend?.();
     let response:Promise<unknown>;
-    try { response=ws.send(64, {chatId,message:{text:message.text,cid:Date.now(),elements:[],attaches},notify:true},Math.max(1,deadline-Date.now())); }
+    try { response=ws.send(64, {chatId,message:{text:message.text,cid:nextMaxCid(),elements:[],attaches},notify:true},Math.max(1,deadline-Date.now())); }
     catch { throw new DeliveryError("MAX не подтвердил результат начатой отправки", "ambiguous"); }
     return response.then(body=>{
       const result=body as {message?:{id?:unknown}};

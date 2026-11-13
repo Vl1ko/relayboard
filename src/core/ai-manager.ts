@@ -87,13 +87,14 @@ export class AiManagerStore {
     });
   }
 
-  async ingest(input: unknown) {
+  async ingest(input: unknown, expectedPhaseId?:string) {
     const event = channelMessageSchema.parse(input);
     uuid.parse(event.accountId);
     return this.tx(async client => {
       const found = (await client.query("SELECT id FROM ai_conversations WHERE account_id=$1 AND external_id=$2", [event.accountId, event.conversationId])).rows[0];
       if (!found) throw new AiStateError("conversation_not_found");
       const { conversation } = await this.lockConversation(client, found.id);
+      if(expectedPhaseId&&conversation.active_phase_id!==uuid.parse(expectedPhaseId))throw new AiStateError('request_phase_changed');
       const account = (await client.query("SELECT platform FROM integrations WHERE id=$1", [event.accountId])).rows[0];
       if (account?.platform !== event.platform) throw new AiStateError("account_platform_mismatch");
       const inserted = await client.query(`INSERT INTO ai_inbox
@@ -114,7 +115,7 @@ export class AiManagerStore {
         const linked=await client.query("SELECT id FROM ai_conversations WHERE contact_id=$1 ORDER BY id FOR UPDATE",[conversation.contact_id]);
         for(const row of linked.rows)await this.invalidate(client,row.id,event.origin==='human'?'manual':'paused',event.origin==='human'?'manager_working':undefined);
       }
-      else if (event.origin === "customer") await this.invalidate(client, conversation.id, conversation.automation_mode);
+      else if (event.origin === "customer" && !(conversation.automation_mode==='paused' && ['qualified','unqualified'].includes(conversation.business_status))) await this.invalidate(client, conversation.id, conversation.automation_mode);
       return { duplicate: false, event: inserted.rows[0] };
     });
   }

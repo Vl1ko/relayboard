@@ -4,7 +4,7 @@ import {DeliveryError} from './delivery-policy.js';
 export async function maxWorkerRequest(path:string,method:'GET'|'POST'='GET'){
  if(!config.MAX_WORKER_URL||!config.MAX_WORKER_SECRET)throw new DeliveryError('MAX worker не настроен','waiting');
  try{
-  const response=await fetch(new URL(path,config.MAX_WORKER_URL),{method,headers:{authorization:'Bearer '+config.MAX_WORKER_SECRET},signal:AbortSignal.timeout(config.SEND_TIMEOUT_MS)});
+  const response=await fetch(new URL(path,config.MAX_WORKER_URL),{method,redirect:'error',headers:{authorization:'Bearer '+config.MAX_WORKER_SECRET},signal:AbortSignal.timeout(config.SEND_TIMEOUT_MS)});
   if(!response.ok){
    const body=await response.json() as {kind?:string};
    const kind=body.kind==='waiting'?'waiting':body.kind==='auth_required'?'auth_required':body.kind==='permanent'?'permanent':'ambiguous';

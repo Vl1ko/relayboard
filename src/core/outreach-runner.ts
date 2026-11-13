@@ -61,9 +61,22 @@ export class OutreachRunner {
   });
  }
  async tick(factory:(target:PreparedChannelSend['target'])=>Promise<PreparedChannelSend>){
+  return this.tickWithDispatch(async(id,target)=>new AiManagerStore(this.pool).dispatch(id,await factory(target)));
+ }
+ async tickWithDispatch(dispatch:(id:string,target:PreparedChannelSend['target'])=>Promise<unknown>,options:{allowsConversation?:(id:string)=>Promise<boolean>;stopped?:()=>boolean}={}){
   const items=(await this.pool.query(`SELECT i.* FROM ai_outreach_items i JOIN ai_outreach_runs r ON r.id=i.run_id LEFT JOIN ai_outbox a ON a.id=i.action_id WHERE r.state='active' AND i.skipped_reason IS NULL AND (i.action_id IS NULL OR a.state='pending') ORDER BY r.created_at,i.request_id LIMIT 100`)).rows;
-  for(const item of items){const id=await this.prepare(item.run_id,item.request_id);if(!id)continue;const target=(await this.pool.query(`SELECT c.account_id AS "accountId",c.external_id AS "externalConversationId",c.platform FROM ai_outbox a JOIN ai_conversations c ON c.id=a.conversation_id WHERE a.id=$1`,[id])).rows[0];await new AiManagerStore(this.pool).dispatch(id,await factory(target));}
+  let deferred=0;
+  for(const item of items){
+   if(options.stopped?.())break;
+   try{
+    if(options.allowsConversation&&!await options.allowsConversation(item.conversation_id))continue;
+    const id=await this.prepare(item.run_id,item.request_id);if(!id)continue;
+    const target=(await this.pool.query(`SELECT c.account_id AS "accountId",c.external_id AS "externalConversationId",c.platform FROM ai_outbox a JOIN ai_conversations c ON c.id=a.conversation_id WHERE a.id=$1`,[id])).rows[0];
+    if(options.stopped?.())break;await dispatch(id,target);
+   }catch{deferred++;}
+  }
   await this.pool.query(`UPDATE ai_outreach_runs r SET state=CASE WHEN EXISTS(SELECT 1 FROM ai_outreach_items i JOIN ai_outbox a ON a.id=i.action_id WHERE i.run_id=r.id AND a.state='unknown') THEN 'review' ELSE 'completed' END WHERE state='active' AND NOT EXISTS(SELECT 1 FROM ai_outreach_items i LEFT JOIN ai_outbox a ON a.id=i.action_id WHERE i.run_id=r.id AND i.skipped_reason IS NULL AND (i.action_id IS NULL OR a.state IN ('pending','dispatching')))`);
+  return {deferred};
  }
 }
 /** Explicit fixture transport. No platform connection, token, phone or network is used. */

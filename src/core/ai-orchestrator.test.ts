@@ -10,3 +10,41 @@ test('unknown commercial input creates a handoff and replay never creates duplic
 test('native human outgoing atomically cancels both linked channels',{skip},async()=>{const f=await fixture();const a=(await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext) VALUES('whatsapp','synthetic','fake') RETURNING id")).rows[0].id;const other=await store.createConversation({contactId:f.contact,accountId:a,externalId:'other'});const auto=await store.setMode(other.id,'auto');await store.enqueue({conversationId:other.id,expectedEpoch:auto.automation_epoch,logicalKey:'different-request',kind:'first_message',text:'pending'});await orchestrator.ingest({...f.event,messageId:'native-human',origin:'human',direction:'outbound'});assert.equal((await pool.query("SELECT count(*)::int n FROM ai_conversations WHERE automation_mode='manual'")).rows[0].n,2);assert.equal((await pool.query('SELECT state FROM ai_outbox')).rows[0].state,'cancelled');});
 test('takeover while model is pending discards late decision and enqueue',{skip},async()=>{const f=await fixture();let done!:(v:unknown)=>void;let entered!:()=>void;const started=new Promise<void>(r=>entered=r),wait=new Promise(r=>done=r);const p=orchestrator.process(f.conv,f.key,{kind:'fixture',complete(){entered();return wait;}});await started;await store.setMode(f.conv,'manual');done(proposal);await assert.rejects(p);assert.equal((await pool.query('SELECT count(*)::int n FROM ai_outbox')).rows[0].n,0);});
 test('server-rejected qualification remains unqualified after manager handoff',{skip},async()=>{const f=await fixture();const event=await orchestrator.ingest({...f.event,messageId:'volume',text:'Нужно 5 тонн'});await orchestrator.process(f.conv,event.event.event_key,{kind:'fixture',async complete(){return{...proposal,extracted:[{field:'volume',value:5,evidenceMessageId:'volume',evidenceQuote:'5 тонн'}],proposedStatus:'unqualified'};}});assert.equal((await pool.query('SELECT business_status FROM ai_conversations WHERE id=$1',[f.conv])).rows[0].business_status,'unqualified');});
+
+async function runtimeFixture(provider:AiProvider,allowed=true){
+ const {AiExecutionRuntime}=await import('./ai-execution-runtime.js'),{syntheticTransport}=await import('./outreach-runner.js'),{ConversationWorkflow}=await import('./conversation-workflow.js');
+ const workflow=new ConversationWorkflow(pool),stop=new AbortController();let clientSends=0,managerSends=0;
+ const runtime=new AiExecutionRuntime(pool,provider,{
+  allowsConversation:async()=>allowed,
+  dispatchAction:async(id,target)=>store.dispatch(id,{target,start:a=>{clientSends++;return syntheticTransport(target).start(a);}}),
+  dispatchNotification:async id=>{const target=await workflow.managerTarget();if(!target)return;return workflow.dispatchNotification(id,{target,start:a=>{managerSends++;return{acknowledgement:Promise.resolve({operationId:a.operationId,outcome:'confirmed',code:'test',externalMessageId:'manager-'+a.operationId,retryCondition:'never'})};}});},
+ },stop.signal);
+ return{runtime,stop,workflow,clientSends:()=>clientSends,managerSends:()=>managerSends};
+}
+test('permanent runtime sends one configured reply and replay never calls the model or transport twice',{skip},async()=>{
+ const f=await fixture();let calls=0;const r=await runtimeFixture({kind:'fixture',complete:async()=>{calls++;return proposal;}});
+ await r.runtime.tick();await r.runtime.tick();assert.equal(calls,1);assert.equal(r.clientSends(),1);
+ assert.equal((await pool.query('SELECT state FROM ai_outbox WHERE conversation_id=$1',[f.conv])).rows[0].state,'confirmed');
+});
+test('restart repairs completion receipt after handoff; extra customer message preserves hold and configured waiting message',{skip},async()=>{
+ const f=await fixture(),{ConversationWorkflow}=await import('./conversation-workflow.js');await new ConversationWorkflow(pool).saveManagerTarget({accountId:f.a,externalId:'-456'});
+ const e=await orchestrator.ingest({...f.event,messageId:'qualified',text:'12'});
+ const qualified:AiProvider={kind:'fixture',async complete(){return{...proposal,extracted:[{field:'volume',value:12,evidenceMessageId:'qualified',evidenceQuote:'12'}],replyKind:'none',askFields:[],proposedStatus:'qualified'};}};
+ await orchestrator.process(f.conv,e.event.event_key,qualified);
+ await orchestrator.ingest({...f.event,messageId:'extra',text:'Хорошо, жду'});
+ let modelCalls=0;const r=await runtimeFixture({kind:'fixture',async complete(){modelCalls++;throw Error('must not resume qualification');}});
+ await r.runtime.tick();await r.runtime.tick();assert.equal(modelCalls,0);assert.equal(r.clientSends(),1);assert.equal(r.managerSends(),1);
+ const state=(await pool.query('SELECT * FROM ai_conversations WHERE id=$1',[f.conv])).rows[0];assert.equal(state.manager_hold,true);assert.equal(state.automation_mode,'paused');
+ const notice=(await pool.query("SELECT * FROM ai_outbox WHERE kind='qualification_notice'")).rows[0];assert.equal(notice.state,'confirmed');assert.match(notice.text,/менеджер/);
+});
+test('test scope rejection leaves the event durable without model calls, actions or notifications',{skip},async()=>{
+ await fixture();let calls=0;const r=await runtimeFixture({kind:'fixture',async complete(){calls++;return proposal;}},false);
+ await r.runtime.tick();assert.equal(calls,0);assert.equal(r.clientSends(),0);assert.equal(r.managerSends(),0);
+ assert.equal((await pool.query('SELECT count(*)::int n FROM ai_engine_decisions')).rows[0].n,0);assert.equal((await orchestrator.pending()).length,1);
+});
+test('stopping execution aborts the in-flight model and cannot persist a handoff or send',{skip},async()=>{
+ await fixture();let entered!:()=>void;const ready=new Promise<void>(r=>entered=r),{setTimeout:wait}=await import('node:timers/promises');
+ const r=await runtimeFixture({kind:'fixture',async complete(input){entered();await wait(10000,undefined,{signal:input.signal});return proposal;}});
+ const work=r.runtime.tick(),rejected=assert.rejects(work,/abort/i);await ready;r.stop.abort();await rejected;
+ assert.equal(r.clientSends(),0);assert.equal((await pool.query('SELECT count(*)::int n FROM ai_engine_decisions')).rows[0].n,0);
+});

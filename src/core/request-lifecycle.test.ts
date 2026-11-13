@@ -110,11 +110,11 @@ test('upgrade from version 12 preserves legacy fields and receipts in an archive
   const conversation=await oldStore.createConversation({contactId:contact.id,accountId:account,externalId:'legacy'});
   await legacy.query(`UPDATE ai_engine_state SET fields='{"volume":25}',reply_count=3 WHERE conversation_id=$1`,[conversation.id]);
   await legacy.query("UPDATE ai_conversations SET business_status='closed' WHERE id=$1",[conversation.id]);
-  assert.deepEqual(await applyAiManagerMigration(legacy),{version:13,applied:true});
+  assert.deepEqual(await applyAiManagerMigration(legacy),{version:14,applied:true});
   const phase=(await legacy.query('SELECT * FROM ai_request_phases WHERE conversation_id=$1',[conversation.id])).rows[0];
   assert.deepEqual(phase.fields_snapshot,{volume:25});assert.equal(phase.reply_count_snapshot,3);assert.ok(phase.closed_at);
   assert.equal((await legacy.query('SELECT lifecycle FROM ai_requests WHERE id=$1',[phase.request_id])).rows[0].lifecycle,'closed');
-  assert.deepEqual(await applyAiManagerMigration(legacy),{version:13,applied:false});
+  assert.deepEqual(await applyAiManagerMigration(legacy),{version:14,applied:false});
  } finally {await legacy.end();await pool.query('DROP SCHEMA '+legacySchema+' CASCADE');}
 });
 
@@ -179,4 +179,20 @@ test('lost MAX publication receipt blocks retry; stopped publication never write
   await assert.rejects(dispatchOwnedMaxPublication(pool,f.connections,f.delivery,f.stop.signal,60000),/остановлена/);assert.equal(sends,1);
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM max_send_receipts WHERE delivery_id=$1',[f.delivery])).rows[0].n,0);
  }finally{f.stop.abort();}
+});
+
+test('explicit criteria restart archives the old phase; its pending notification cannot fire in the new phase',{skip},async()=>{
+ const {beginConfiguredQualification}=await import('./begin-qualification.js'),{ConversationWorkflow}=await import('./conversation-workflow.js');
+ const f=await fixture(),first=await bindSourceRequest(pool,f),workflow=new ConversationWorkflow(pool);
+ const oldPhase=(await pool.query('SELECT active_phase_id FROM ai_conversations WHERE id=$1',[f.conversationId])).rows[0].active_phase_id;
+ await pool.query(`UPDATE ai_engine_state SET fields='{"volume":12}',reply_count=2 WHERE conversation_id=$1`,[f.conversationId]);
+ await workflow.saveManagerTarget({accountId:f.accountId,externalId:'-456'});
+ const notice=await workflow.handoff({conversationId:f.conversationId,key:'old-phase',reason:'human_requested',summary:'synthetic'});
+ const engine=new AiEngineStore(pool),settings=await engine.settings();await engine.saveSettings({expectedVersion:settings.version,settings:{...settings.settings,replyLimit:7}});
+ await beginConfiguredQualification(pool,f.conversationId);
+ const active=(await pool.query('SELECT active_phase_id FROM ai_conversations WHERE id=$1',[f.conversationId])).rows[0].active_phase_id;assert.notEqual(active,oldPhase);
+ const old=(await pool.query('SELECT * FROM ai_request_phases WHERE id=$1',[oldPhase])).rows[0];assert.ok(old.closed_at);assert.deepEqual(old.fields_snapshot,{volume:12});assert.equal(old.reply_count_snapshot,2);
+ const state=(await pool.query('SELECT * FROM ai_engine_state WHERE conversation_id=$1',[f.conversationId])).rows[0];assert.deepEqual(state.fields,{});assert.equal(state.reply_count,0);assert.equal(state.settings_version,settings.version+1);
+ let sends=0;await workflow.dispatchNotification(notice.id,{target:{accountId:f.accountId,externalId:'-456'},start:()=>{sends++;throw Error('must never send');}});assert.equal(sends,0);assert.equal((await pool.query('SELECT state FROM ai_handoff_notifications WHERE id=$1',[notice.id])).rows[0].state,'rejected');
+ assert.equal((await bindSourceRequest(pool,{...f,messageId:'same-request-new-source'})).requestId,first.requestId);
 });

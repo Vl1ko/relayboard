@@ -7,10 +7,10 @@
 | RES00 | DONE | Чистый снимок Git index: 209 PASS / 0 FAIL / 0 SKIP на PG16.16, typecheck и production build PASS. Доказательства: outputs/res00-baseline-2026-11-13; отсутствующие receipts не подтверждаются |
 | RES01 | DONE | Миграция 13, source→request→phase, архив полей/счётчика, граница истории, привязка inbox/outbox/решений/уведомлений/follow-up. 218 PASS / 0 FAIL / 0 SKIP, включая 20 разных источников и upgrade v12; build/typecheck PASS. Live transport — RES03–04 |
 | RES02 | IN_PROGRESS | Общая очередь GigaChat по credential (между процессами), отмена при утрате владения; exclusive publishing worker. 224 PASS / 0 FAIL / 0 SKIP, build/typecheck PASS; настоящий двухпроцессный recovery smoke PASS. Ещё нужны постоянные AI/session workers и live recovery |
-| RES03 | TODO | Полный постоянный MAX transport |
+| RES03 | IN_PROGRESS | Постоянный MAX owner, private inbox и cursor/restart готовы на синтетических тестах; phone/source routing и live-приёмка ещё не закрыты |
 | RES04 | TODO | Полный WhatsApp AI transport; аккаунт пользователь подключит при приёмке |
 | RES05 | TODO | Мониторинг, scoring, автоматический первый контакт |
-| RES06 | TODO | Квалификация и все четыре уведомления |
+| RES06 | IN_PROGRESS | Все четыре dispatcher reasons, completion repair, manager hold и старые фазы проверены; live-корпус и полная бизнес-приёмка впереди |
 | RES07 | TODO | Автоматические follow-up |
 | RES08 | TODO | Полное рабочее место |
 | RES09 | TODO | Retention, зависимости, ресурсы, restore |
@@ -137,3 +137,13 @@ Publishing worker берёт exclusive slot до recovery. Двухпроцес�
 Проверки: 238 PASS / 0 FAIL / 0 SKIP; typecheck PASS. Двухпроцессный HTTP smoke: auth/UUID checks, ожидание владельца, recovery dispatching→unknown без MAX login/сообщений. Доказательства: outputs/res02-max-owner-2026-11-13. Production и локальная реальная сессия не переключались.
 
 Остаток RES02/03: постоянный inbound с курсором, live AI worker, общий source/author routing и интеграция монитора, реальная приёмка MAX после перезапуска. RES04 WhatsApp, RES05 мониторинг и RES06 полная приёмка остаются открытыми; наличие dispatcher не закрывает эти этапы.
+
+## RES02/03 — постоянный inbox и AI worker
+
+Миграция 14: курсор личной переписки и последовательные версии фаз одной заявки. Старый inbound batch отклоняется при смене фазы. Полная timestamp-граница без прогресса сохраняет ошибку и прежний курсор. Native takeover и service echo различаются; pending own receipt задерживает отправку. Тестовый scope без явно разрешённого аккаунта/автора не открывает соединение.
+
+AI worker теперь имеет отдельную роль ownership, live MAX dispatcher и общий durable runtime; qualification completion восстанавливается после сбоя между handoff и постановкой сообщения клиенту. Каждый ответ доставляется по готовности; ожидание других запросов модели не задерживает уже принятое решение. Дополнительный ответ клиента после квалификации не снимает hold и не уничтожает pending waiting message. Старые phase notifications отклоняются. Синтетический режим сохранён отдельно, live fixture запрещён.
+
+Проверки: полный набор 247 PASS / 0 FAIL / 0 SKIP; дополнительный CID regression 3 PASS (один новый случай для разных prepared instances). Typecheck/build PASS. MAX owner и AI owner выдержали SIGKILL и передачу роли второму процессу без повторной отправки/решения; вход в реальные MAX/WhatsApp и внешние запросы в этих проверках не выполнялись. Доказательства: outputs/res02-permanent-inbox-2026-11-13. Операторское описание: runtime.md.
+
+RES02 и RES03 остаются IN_PROGRESS: source/phone routing, реальный end-to-end и WhatsApp owner ещё необходимы. Следующий шаг — реальные transport identity/routing и источники; затем live-тест согласованного MAX-собеседника. Секреты, текущая локальная тестовая сессия и production не переключались.

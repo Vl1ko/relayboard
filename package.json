@@ -22,7 +22,9 @@
     "test": "node --import tsx --test src/**/*.test.ts",
     "test:smoke": "node work/backend-smoke.mjs",
     "load:control": "node work/control-plane-load.mjs",
-    "start:max-worker": "node dist-node/messenger-worker/index.js"
+    "start:max-worker": "node dist-node/messenger-worker/index.js",
+    "start:ai-worker": "node dist-node/ai-worker/index.js",
+    "db:migrate:ai": "tsx src/api/migrate-ai-manager.ts"
   },
   "dependencies": {
     "@ounezz/umax": "^1.0.8",

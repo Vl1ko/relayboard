@@ -580,6 +580,10 @@ export class ConversationWorkflow {
         )
       ).rows[0];
       if (n.state !== "pending") return null;
+      if(n.request_phase_id&&!(await client.query(`SELECT 1 FROM ai_request_phases p JOIN ai_requests r ON r.id=p.request_id JOIN ai_conversations v ON v.active_phase_id=p.id JOIN ai_contacts c ON c.id=v.contact_id WHERE p.id=$1 AND p.closed_at IS NULL AND r.lifecycle='open' AND c.opted_out_at IS NULL`,[n.request_phase_id])).rowCount){
+        await client.query("UPDATE ai_handoff_notifications SET state='rejected',outcome_code='request_phase_closed',updated_at=now() WHERE id=$1",[id]);return null;
+      }
+
       if (!n.target_account_id) {
         const configured = (
           await client.query(
@@ -1128,6 +1132,7 @@ export async function notificationDispatchGate(
     !n.target_external_id
   )
     return false;
+  if(n.request_phase_id&&!(await client.query(`SELECT 1 FROM ai_request_phases p JOIN ai_requests r ON r.id=p.request_id JOIN ai_conversations v ON v.active_phase_id=p.id JOIN ai_contacts c ON c.id=v.contact_id WHERE p.id=$1 AND p.closed_at IS NULL AND r.lifecycle='open' AND c.opted_out_at IS NULL`,[n.request_phase_id])).rowCount)return false;
   return Boolean(
     (
       await client.query(
