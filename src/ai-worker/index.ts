@@ -10,6 +10,7 @@ import {syntheticTransport} from '../core/outreach-runner.js';
 import {AiExecutionRuntime,type RuntimeTransport} from '../core/ai-execution-runtime.js';
 import {runtimeAllowsConversation} from '../core/runtime-scope.js';
 import {maxWorkerRequest} from '../core/max-worker-client.js';
+import {dispatchWhatsAppAction} from '../core/whatsapp-worker-client.js';
 import {withExecutionSlot} from '../core/execution-slot.js';
 const stop=new AbortController();process.once('SIGTERM',()=>stop.abort());process.once('SIGINT',()=>stop.abort());
 async function run(signal:AbortSignal){
@@ -19,7 +20,7 @@ async function run(signal:AbortSignal){
  const scope={testOnly:config.AI_TEST_ONLY,accountIds:config.AI_TEST_ACCOUNT_IDS,authorIds:config.AI_TEST_AUTHOR_IDS};
  const transport:RuntimeTransport=live?{
   allowsConversation:id=>runtimeAllowsConversation(pool,scope,id),
-  async dispatchAction(id,target){if(target.platform!=='max')throw Error('whatsapp_ai_owner_not_ready');return maxWorkerRequest(`/actions/${id}/dispatch`,'POST');},
+  async dispatchAction(id,target){return target.platform==='whatsapp'?dispatchWhatsAppAction(pool,id,target.accountId):maxWorkerRequest(`/actions/${id}/dispatch`,'POST');},
   dispatchNotification:id=>maxWorkerRequest(`/notifications/${id}/dispatch`,'POST'),
  }:{
   allowsConversation:async()=>true,
@@ -27,7 +28,7 @@ async function run(signal:AbortSignal){
   async dispatchNotification(id){const n=(await pool.query('SELECT * FROM ai_handoff_notifications WHERE id=$1',[id])).rows[0];if(!n)return;const target=n.target_account_id?{accountId:n.target_account_id,externalId:n.target_external_id}:await workflow.managerTarget();if(!target)return;return workflow.dispatchNotification(id,{target,start:a=>({acknowledgement:Promise.resolve({operationId:a.operationId,outcome:'confirmed',code:'synthetic_confirmation',externalMessageId:'synthetic:'+a.operationId,retryCondition:'never'})})});},
  };
  const runtime=new AiExecutionRuntime(pool,provider,transport,signal);
- console.log(live?'AI worker: owned live MAX transport':'AI worker: synthetic transport');
+ console.log(live?'AI worker: owned live MAX/WhatsApp transport':'AI worker: synthetic transport');
  while(!signal.aborted){
   try{await runtime.tick();}catch{if(!signal.aborted)console.error('AI iteration deferred; durable state retained');}
   try{await delay(1000,undefined,{signal});}catch{break;}

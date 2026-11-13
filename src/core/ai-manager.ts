@@ -1,3 +1,4 @@
+import {requestHasOutgoing} from './request-greeting.js';
 import {completionTemplate,DEFAULT_GREETING} from './conversation-templates.js';
 import { createHash, randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
@@ -112,7 +113,7 @@ export class AiManagerStore {
         for(const row of linked.rows)await this.invalidate(client,row.id,'paused','refused');
       }
       else if (event.origin === "human" || event.origin === "unresolved") {
-        const linked=await client.query("SELECT id FROM ai_conversations WHERE contact_id=$1 ORDER BY id FOR UPDATE",[conversation.contact_id]);
+        const linked=await client.query("SELECT id FROM ai_conversations WHERE contact_id=$1 AND business_status NOT IN ('closed','refused') ORDER BY id FOR UPDATE",[conversation.contact_id]);
         for(const row of linked.rows)await this.invalidate(client,row.id,event.origin==='human'?'manual':'paused',event.origin==='human'?'manager_working':undefined);
       }
       else if (event.origin === "customer" && !(conversation.automation_mode==='paused' && ['qualified','unqualified'].includes(conversation.business_status))) await this.invalidate(client, conversation.id, conversation.automation_mode);
@@ -179,7 +180,7 @@ export class AiManagerStore {
       const handoff=(await client.query('SELECT 1 FROM ai_handoff_notifications WHERE conversation_id=$1 AND logical_key=$2',[conversation.id,'ai-handoff:'+decisionId])).rowCount;
       if(!handoff||contact.opted_out_at||conversation.automation_mode!=='paused'||conversation.business_status!==decision.business_status||BigInt(conversation.automation_epoch)!==BigInt(decision.automation_epoch)+1n)throw new AiStateError('qualification_notice_forbidden');
       const savedSettings=(await client.query('SELECT settings FROM ai_engine_settings WHERE version=$1',[decision.settings_version])).rows[0].settings;
-      const prior=(await client.query('SELECT 1 FROM ai_outbox WHERE conversation_id=$1 AND dispatch_started_at IS NOT NULL AND request_phase_id IS NOT DISTINCT FROM (SELECT active_phase_id FROM ai_conversations WHERE id=$1) LIMIT 1',[conversation.id])).rowCount;
+      const prior=await requestHasOutgoing(client,conversation.id);
       const noticeText=(prior?'':(savedSettings.greetingMessage??DEFAULT_GREETING)+'\n\n')+completionTemplate(savedSettings,decision.business_status);
       const fingerprint=createHash('sha256').update(JSON.stringify(['qualification_notice',noticeText])).digest('hex');
       return(await client.query(`INSERT INTO ai_outbox(contact_id,conversation_id,logical_key,kind,text,fingerprint,automation_epoch) VALUES($1,$2,$3,'qualification_notice',$4,$5,$6) RETURNING *`,[contact.id,conversation.id,logicalKey,noticeText,fingerprint,conversation.automation_epoch])).rows[0];
@@ -212,7 +213,18 @@ export class AiManagerStore {
     return outreachGuard(client, action, conversation, reserve);
   }
 
-  /** Prepared transport is injected; no live adapter is installed/wired in this increment.
+  /** Check policy before expensive network/browser preparation; dispatch checks again. */
+  async preflight(actionId:string){
+    return this.tx(async client=>{
+      const {contact,conversation,action}=await this.actionContext(client,actionId);
+      if(action.state!=='pending')return{ready:false,state:action.state};
+      const gate=await this.gate(client,contact,conversation,action);
+      if(gate==='cancel')await client.query("UPDATE ai_outbox SET state='cancelled',updated_at=now() WHERE id=$1",[actionId]);
+      return{ready:gate==='ready',state:gate==='cancel'?'cancelled':'pending'};
+    });
+  }
+
+  /** Prepared transport is supplied by the session owner.
    * Persist dispatching first, then re-lock and synchronously initiate before releasing cancellation locks.
    * Never await the external response while holding the contact/conversation transaction.
    */
@@ -235,11 +247,13 @@ export class AiManagerStore {
         if (gate === "cancel") await client.query("UPDATE ai_outbox SET state='cancelled',updated_at=now() WHERE id=$1", [actionId]);
         return false;
       }
-      await client.query("UPDATE ai_outbox SET state='dispatching',attempt_token=$2,updated_at=now() WHERE id=$1", [actionId, attempt]);
+      await client.query("UPDATE ai_outbox SET state='dispatching',attempt_token=$2,attempt_count=attempt_count+1,dispatch_state=NULL,retry_condition=NULL,retry_after=NULL,updated_at=now() WHERE id=$1", [actionId, attempt]);
       return true;
     });
     if (!claimed) return { initiated: false };
     let response: Promise<unknown> | undefined;
+    let initiatedText:string|undefined;
+    let initiatedAt:Date|undefined;
     try {
       await this.tx(async client => {
         const { contact, conversation, action } = await this.actionContext(client, actionId);
@@ -253,19 +267,22 @@ export class AiManagerStore {
         await client.query("UPDATE ai_outbox SET dispatch_started_at=now() WHERE id=$1", [actionId]);
         // Attach a rejection handler immediately; a thrown/invalid outcome remains unknown.
         try {
+          initiatedText=action.text;
           const started = prepared.start({ operationId: actionId, text: action.text, conversationId: conversation.id });
           if (!started || !("acknowledgement" in started)) throw new Error("Invalid prepared transport");
           response = Promise.resolve(started.acknowledgement).catch(() => null);
         }
         catch { response = Promise.resolve(null); }
+        initiatedAt=new Date();
         await client.query("UPDATE ai_outbox SET dispatch_started_at=clock_timestamp() WHERE id=$1",[action.id]);
         // Record after synchronous initiation; this timestamp conservatively bounds the next start.
         await client.query(`UPDATE ai_outreach_clocks SET last_started_at=clock_timestamp() WHERE account_id=$1
           AND EXISTS(SELECT 1 FROM ai_outreach_items WHERE action_id=$2)`, [conversation.account_id,action.id]);
       });
     } catch (error) {
-      // If send might have started, leave the durable dispatching state for reconciliation.
-      throw error;
+      // A failed COMMIT after initiation does not invalidate an actual server receipt.
+      // The first claim is durable; uncertainty remains if acknowledgement/persistence fails.
+      if(!response)throw error;
     }
     if (!response) return { initiated: false };
     const parsed = channelSendOutcomeSchema.safeParse(await response);
@@ -276,10 +293,31 @@ export class AiManagerStore {
       if (action.attempt_token !== attempt || !["dispatching", "unknown"].includes(action.state)) return;
       // Recovery/earlier uncertainty cannot be cleared by a later pre-dispatch rejection.
       const state = action.state === "unknown" && outcome.outcome === "rejected" ? "unknown" : outcome.outcome;
-      await client.query(`UPDATE ai_outbox SET state=$2,outcome_code=$3,external_message_id=$4,updated_at=now() WHERE id=$1`,
-        [actionId, state, outcome.code, outcome.outcome === "confirmed" ? outcome.externalMessageId : null]);
+      await client.query(`UPDATE ai_outbox SET state=$2,outcome_code=$3,external_message_id=$4,
+        text=CASE WHEN $5::text IS NOT NULL THEN $5 ELSE text END,
+        fingerprint=CASE WHEN $6::text IS NOT NULL THEN $6 ELSE fingerprint END,dispatch_started_at=coalesce(dispatch_started_at,$7),
+        dispatch_state=$8,retry_condition=$9,retry_after=CASE WHEN $2='rejected' AND $8='not_started' AND $9 IN ('refresh_auth','after_delay') THEN clock_timestamp()+least(300,5*power(2,least(attempt_count,6))) * interval '1 second' ELSE NULL END,
+        updated_at=now() WHERE id=$1`,
+        [actionId,state,outcome.code,outcome.outcome==='confirmed'?outcome.externalMessageId:null,initiatedText??null,initiatedText===undefined||initiatedText===action.text?null:createHash('sha256').update(JSON.stringify([action.kind,initiatedText])).digest('hex'),initiatedAt??null,state==='rejected'&&outcome.outcome==='rejected'?outcome.dispatchState:null,outcome.retryCondition]);
+      if(initiatedAt&&outcome.outcome!=='rejected')await client.query(`INSERT INTO ai_outreach_clocks(account_id,last_started_at)
+        SELECT v.account_id,clock_timestamp() FROM ai_outbox a JOIN ai_conversations v ON v.id=a.conversation_id WHERE a.id=$1 AND EXISTS(SELECT 1 FROM ai_outreach_items WHERE action_id=a.id)
+        ON CONFLICT(account_id) DO UPDATE SET last_started_at=greatest(ai_outreach_clocks.last_started_at,excluded.last_started_at)`,[actionId]);
     });
     return { initiated: true };
+  }
+
+  /** Reprepare only with persisted proof that no platform command began. */
+  async retryReady(limit=100){
+    const due=(await this.pool.query(`SELECT id FROM ai_outbox WHERE state='rejected' AND dispatch_state='not_started' AND retry_condition IN ('refresh_auth','after_delay') AND retry_after<=clock_timestamp() ORDER BY retry_after,id LIMIT $1`,[limit])).rows;
+    let requeued=0;
+    for(const row of due)await this.tx(async client=>{
+      const {contact,conversation,action}=await this.actionContext(client,row.id);
+      if(action.state!=='rejected'||action.dispatch_state!=='not_started'||!['refresh_auth','after_delay'].includes(action.retry_condition)||new Date(action.retry_after).getTime()>Date.now())return;
+      const gate=await this.gate(client,contact,conversation,action,false);
+      if(gate==='cancel'){await client.query("UPDATE ai_outbox SET state='cancelled',retry_after=NULL,updated_at=now() WHERE id=$1",[action.id]);return;}
+      if(gate!=='ready')return;
+      await client.query("UPDATE ai_outbox SET state='pending',attempt_token=NULL,dispatch_started_at=NULL,retry_after=NULL,updated_at=now() WHERE id=$1",[action.id]);requeued++;
+    });return requeued;
   }
 
   /** Mark a named interrupted attempt unknown; never globally reset/requeue active workers. */

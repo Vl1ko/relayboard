@@ -114,11 +114,11 @@ for(const legacyVersion of [12,14])test('upgrade from version '+legacyVersion+' 
   }
   await oldStore.ingest({version:1,platform:'max',accountId:account,conversationId:'legacy',messageId:'group-source:-456:source-one',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'synthetic'});
   await legacy.query(`UPDATE ai_engine_state SET fields='{"volume":25}',reply_count=3 WHERE conversation_id=$1`,[conversation.id]);await legacy.query("UPDATE ai_conversations SET business_status='closed' WHERE id=$1",[conversation.id]);
-  assert.deepEqual(await applyAiManagerMigration(legacy),{version:15,applied:true});
+  assert.deepEqual(await applyAiManagerMigration(legacy),{version:16,applied:true});
   const phase=(await legacy.query('SELECT * FROM ai_request_phases WHERE conversation_id=$1',[conversation.id])).rows[0];assert.deepEqual(phase.fields_snapshot,{volume:25});assert.equal(phase.reply_count_snapshot,3);assert.ok(phase.closed_at);
   const replay=await bindSourceRequest(legacy,{conversationId:conversation.id,accountId:account,platform:'max',chatId:'-456',messageId:'source-one',authorId:'202'});assert.equal(replay.duplicate,true);assert.equal(replay.requestId,phase.request_id);
   const source=(await legacy.query('SELECT * FROM ai_request_sources')).rows[0];assert.equal(source.reader_account_id,account);assert.equal(source.recipient_id,'202');assert.equal(source.initial_contact,false);
-  assert.equal((await legacy.query('SELECT count(*)::int n FROM ai_requests')).rows[0].n,1);assert.deepEqual(await applyAiManagerMigration(legacy),{version:15,applied:false});
+  assert.equal((await legacy.query('SELECT count(*)::int n FROM ai_requests')).rows[0].n,1);assert.deepEqual(await applyAiManagerMigration(legacy),{version:16,applied:false});
  }finally{await legacy.end();await pool.query('DROP SCHEMA '+legacySchema+' CASCADE');}
 });
 
@@ -299,4 +299,16 @@ test('cross-messenger source preserves its author separately from the verified p
  const row=(await pool.query('SELECT * FROM ai_request_sources')).rows[0];assert.equal(row.platform,'max');assert.equal(row.author_id,f.authorId);assert.equal(row.recipient_id,'79991234567@c.us');assert.equal(row.account_id,sender);assert.equal(row.reader_account_id,f.accountId);
  const scope={testOnly:true,accountIds:[f.accountId,sender],authorIds:[f.authorId]};assert.equal(await runtimeAllowsConversation(pool,scope,v.id),false);
  assert.equal(await runtimeAllowsConversation(pool,{...scope,authorIds:[f.authorId,'79991234567@c.us']},v.id),true);
+});
+
+
+test('greeting is once per request across criteria phases; a later separate request greets again',{skip},async()=>{
+ const {requestHasOutgoing}=await import('./request-greeting.js'),{beginConfiguredQualification}=await import('./begin-qualification.js');
+ const f=await fixture();await bindSourceRequest(pool,f);assert.equal(await requestHasOutgoing(pool,f.conversationId),false);
+ const store=new AiManagerStore(pool),v=(await pool.query('SELECT * FROM ai_conversations WHERE id=$1',[f.conversationId])).rows[0];
+ const action=(await store.enqueue({conversationId:v.id,expectedEpoch:v.automation_epoch,kind:'reply',logicalKey:'greeting',text:'Synthetic greeting'})).action;
+ await store.dispatch(action.id,{target:{accountId:f.accountId,externalConversationId:v.external_id,platform:'max'},start:a=>({acknowledgement:Promise.resolve({operationId:a.operationId,outcome:'confirmed',externalMessageId:'synthetic-greeting',code:'synthetic',retryCondition:'never'})})});
+ assert.equal(await requestHasOutgoing(pool,v.id),true);
+ await beginConfiguredQualification(pool,v.id);assert.equal(await requestHasOutgoing(pool,v.id),true);
+ await pool.query("UPDATE ai_conversations SET business_status='closed' WHERE id=$1",[v.id]);await bindSourceRequest(pool,{...f,messageId:'new-request'});assert.equal(await requestHasOutgoing(pool,v.id),false);
 });

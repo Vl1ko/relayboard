@@ -275,15 +275,13 @@ export class ConversationWorkflow {
       const c = await this.lock(client, input.conversationId);
       if (input.action === "resume") {
         if (
-          c.contact.opted_out_at ||
-          c.conversations.some((v) =>
-            v.manager_hold || ["closed", "refused"].includes(v.business_status),
-          )
+          c.contact.opted_out_at || ['closed','refused'].includes(c.conversation.business_status) ||
+          c.conversations.some(v=>v.manager_hold||v.business_status==='refused')
         )
           throw new WorkflowError("automation_forbidden");
         // A repeated explicit resume must not invalidate already resumed work.
         const changed = c.conversations.filter(
-          (v) => v.automation_mode !== "auto",
+          (v) => v.automation_mode !== 'auto'&&!['closed','refused'].includes(v.business_status),
         );
         if (changed.length) {
           await this.invalidate(client, changed, "auto", "explicit_resume");
@@ -662,6 +660,7 @@ export class ConversationWorkflow {
     const claim = await this.claimNotification(id);
     if (!claim) return { initiated: false };
     let response: Promise<unknown> | undefined;
+    try{
     await this.tx(async (client) => {
       await this.lock(client, claim.conversation_id);
       const current = (
@@ -703,6 +702,7 @@ export class ConversationWorkflow {
         response = Promise.resolve(null);
       }
     });
+    }catch(error){if(!response)throw error;}
     if (!response) return { initiated: false };
     const parsed = channelSendOutcomeSchema.safeParse(await response);
     const outcome =
@@ -823,15 +823,9 @@ export class ConversationWorkflow {
       if (
         c.contact.opted_out_at ||
         c.conversation.automation_mode !== "auto" ||
-        c.conversations.some(
-          (v) =>
-            [
-              "closed",
-              "refused",
-              "manager_required",
-              "manager_working",
-            ].includes(v.business_status) || v.automation_mode === "manual",
-        )
+        ["closed","refused","manager_required","manager_working"].includes(c.conversation.business_status) ||
+        c.conversations.some(v=>v.business_status!=="closed" &&
+          (["refused","manager_required","manager_working"].includes(v.business_status) || v.automation_mode==="manual" || v.manager_hold))
       )
         throw new WorkflowError("automation_forbidden");
       const stored = (
@@ -919,15 +913,9 @@ export class ConversationWorkflow {
         c.contact.opted_out_at ||
         c.conversation.automation_mode !== "auto" ||
         c.conversation.automation_epoch !== j.automation_epoch ||
-        c.conversations.some(
-          (v) =>
-            [
-              "closed",
-              "refused",
-              "manager_required",
-              "manager_working",
-            ].includes(v.business_status) || v.automation_mode === "manual",
-        )
+        ["closed","refused","manager_required","manager_working"].includes(c.conversation.business_status) ||
+        c.conversations.some(v=>v.business_status!=="closed" &&
+          (["refused","manager_required","manager_working"].includes(v.business_status) || v.automation_mode==="manual" || v.manager_hold))
       ) {
         return (
           await client.query(

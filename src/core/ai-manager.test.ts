@@ -20,7 +20,7 @@ before(async () => {
   try { await admin.query("CREATE SCHEMA " + schema); } finally { await admin.end(); }
   pool = new pg.Pool({ connectionString: url, options: "-c search_path=" + schema + ",public" });
   await pool.query(await readFile(new URL("../../database/schema.sql", import.meta.url), "utf8"));
-  assert.deepEqual(await applyAiManagerMigration(pool), { version: 15, applied: true });
+  assert.deepEqual(await applyAiManagerMigration(pool), { version: 16, applied: true });
   store = new AiManagerStore(pool);
 });
 beforeEach(async () => { if (pool) await pool.query("TRUNCATE ai_contacts,integrations CASCADE"); });
@@ -58,7 +58,7 @@ function confirmation(input: { operationId: string }) {
 
 test("migration repeats without changing existing data or deleting legacy tables", { skip }, async () => {
   const old = await fixture();
-  assert.deepEqual(await applyAiManagerMigration(pool), { version: 15, applied: false });
+  assert.deepEqual(await applyAiManagerMigration(pool), { version: 16, applied: false });
   assert.equal((await pool.query("SELECT name FROM integrations WHERE id=$1", [old.account])).rows[0].name, "synthetic");
   assert.ok((await pool.query("SELECT to_regclass('posts') AS name")).rows[0].name);
 });
@@ -309,3 +309,27 @@ test("failed migration leaves no partial AI tables or history record", { skip },
 
 test('manual reply takes over linked automation and dispatches only once', {skip},async()=>{const {ManualReplyStore}=await import('./manual-reply.js');const f=await fixture();const automatic=await enqueue(f);const manual=new ManualReplyStore(pool),input={conversationId:f.conversation,operationId:randomUUID(),text:'Explicit operator reply'};const a=await manual.create(input);assert.equal((await action(automatic.id)).state,'cancelled');let calls=0;await dispatch(a.action.id,i=>{calls++;return confirmation(i);});await dispatch(a.action.id,i=>{calls++;return confirmation(i);});assert.equal(calls,1);await store.optOut(f.contact,'stop');assert.equal((await manual.create(input)).created,false);await assert.rejects(manual.create({...input,operationId:randomUUID()}));});
 test('processing sequence stays ordered when transaction timestamps are identical',{skip},async()=>{const f=await fixture();await store.ingest(event(f,'customer','first'));await store.ingest(event(f,'customer','second'));await pool.query("UPDATE ai_inbox SET received_at='2026-01-01T00:00:00Z'");const rows=(await pool.query('SELECT external_message_id FROM ai_inbox ORDER BY ingest_sequence DESC')).rows;assert.equal(rows[0].external_message_id,'second');});
+
+test('manual reply and native takeover do not reopen a historical closed channel',{skip},async()=>{
+ const {ManualReplyStore}=await import('./manual-reply.js');const old=await fixture();await pool.query("UPDATE ai_conversations SET business_status='closed',automation_mode='paused' WHERE id=$1",[old.conversation]);
+ const current=await fixture('whatsapp',old.contact);
+ const native={...event(current,'human','native-current'),conversationId:'same-dialog'};await store.ingest(native);
+ assert.equal((await pool.query('SELECT business_status FROM ai_conversations WHERE id=$1',[old.conversation])).rows[0].business_status,'closed');
+ const input={conversationId:current.conversation,operationId:randomUUID(),text:'Human reply'};
+ const reply=await new ManualReplyStore(pool).create(input);await dispatch(reply.action.id,i=>confirmation(i));
+ assert.equal((await pool.query('SELECT business_status FROM ai_conversations WHERE id=$1',[old.conversation])).rows[0].business_status,'closed');
+ assert.equal((await new ManualReplyStore(pool).create(input)).created,false);
+});
+
+test('only durable not_started rejection can reprepare after delay; unknown never requeues',{skip},async()=>{
+ const f=await fixture(),out=await enqueue(f,'safe-retry','reply');let starts=0;
+ await dispatch(out.id,async input=>{starts++;return{operationId:input.operationId,outcome:'rejected',dispatchState:'not_started',code:'disconnected',retryCondition:'refresh_auth'};});
+ assert.equal((await action(out.id)).state,'rejected');assert.equal(await store.retryReady(),0);
+ await pool.query("UPDATE ai_outbox SET retry_after=now()-interval '1 second' WHERE id=$1",[out.id]);
+ const counts=await Promise.all(Array.from({length:5},()=>new AiManagerStore(pool).retryReady()));assert.equal(counts.reduce((a,b)=>a+b,0),1);assert.equal((await action(out.id)).dispatch_started_at,null);
+ await dispatch(out.id,input=>{starts++;return confirmation(input);});assert.equal(starts,2);assert.equal((await action(out.id)).state,'confirmed');
+ const uncertain=await enqueue(f,'uncertain','reply');await dispatch(uncertain.id,async input=>({operationId:input.operationId,outcome:'unknown',code:'timeout',retryCondition:'reconcile_or_manual_review'}));await pool.query("UPDATE ai_outbox SET retry_after=now()-interval '1 day' WHERE id=$1",[uncertain.id]);assert.equal(await store.retryReady(),0);assert.equal((await action(uncertain.id)).state,'unknown');
+});
+test('safe retry rechecks manager takeover and cancels instead of resuming automation',{skip},async()=>{
+ const f=await fixture(),out=await enqueue(f,'safe-retry','reply');await dispatch(out.id,async input=>({operationId:input.operationId,outcome:'rejected',dispatchState:'not_started',code:'disconnected',retryCondition:'after_delay'}));await store.setMode(f.conversation,'manual');await pool.query("UPDATE ai_outbox SET retry_after=now()-interval '1 second' WHERE id=$1",[out.id]);assert.equal(await store.retryReady(),0);assert.equal((await action(out.id)).state,'cancelled');
+});

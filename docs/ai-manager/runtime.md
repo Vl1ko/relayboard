@@ -5,6 +5,7 @@
 ## Владение
 
 - `start:max-worker`: один владелец MAX WebSocket; API discovery, AI, менеджерские уведомления и прежние публикации обращаются к нему.
+- `start:whatsapp`: один владелец браузерных профилей WhatsApp; до пяти enabled аккаунтов, второй процесс ждёт до восстановления профилей.
 - `start:ai-worker`: один исполнитель решений и очередей; фактическую отправку выполняет владелец транспорта.
 - `start:worker`: один исполнитель прежних публикаций. Второй процесс ждёт ownership и не исправляет работающие отправки первого.
 - PostgreSQL advisory ownership имеет heartbeat. При потере владения работа отменяется, начатые отправки остаются unknown. Новый владелец не повторяет их. Входящий inbox, outbox, решения, фазы и курсоры хранятся в БД.
@@ -32,7 +33,7 @@ MAX_POLL_INTERVAL_MS=5000
 
 GigaChat credential, scope, CA, DATABASE_URL и остальные обязательные настройки задаются в том же закрытом окружении. Для коммерческого production без тестового ограничения worker отклоняет PERS. Смена флага не оформляет поручение на обработку данных и не покупает коммерческий доступ.
 
-Перед запуском применяются base schema и `db:migrate:ai` (версия 14), собирается приложение. MAX и AI worker запускаются отдельными постоянными процессами с тем же закрытым окружением. В production нужен утверждённый release runbook и supervisor; локальный `npm run` не заменяет deployment.
+Перед запуском применяются base schema и `db:migrate:ai` (версия 16), собирается приложение. MAX и AI worker запускаются отдельными постоянными процессами с тем же закрытым окружением. В production нужен утверждённый release runbook и supervisor; локальный `npm run` не заменяет deployment.
 
 В режиме `synthetic` выполняются только fixture-подтверждения. Сочетать его с live MAX owner нельзя. Live AI отклоняет fixture-провайдер, отсутствие ключа/внешнего разрешения/списка тестовых аккаунтов и собеседников.
 
@@ -47,3 +48,18 @@ GigaChat credential, scope, CA, DATABASE_URL и остальные обязат�
 ## Проверки
 
 `max-private-poller.test.ts`: 250 сообщений с пагинацией, restart, service/native provenance, scope, непроходимая timestamp-граница и смена фазы. `ai-orchestrator.test.ts`: постоянный runtime, repair после handoff, отсутствие повторов, stop и test scope. `work/max-owner-smoke.mjs` и `work/ai-execution-smoke.mjs`: собранные процессы, SIGKILL, ожидание второго владельца, restart/replay и отказ неполной live-конфигурации. Они используют синтетические данные и не доказывают live-приёмку мессенджеров.
+
+
+## WhatsApp: подготовленная отправка и история
+
+Bridge теперь держит `worker:whatsapp-sessions` до создания браузеров. Выключенные/удалённые аккаунты закрываются; шестая сессия не вытесняет работающую. Chromium сам проверяет оставшиеся profile locks: bridge больше не удаляет SingletonLock/SingletonSocket живого или осиротевшего Chrome. При отказе восстановления нужно проверить прежний процесс, а не стирать профиль/сессию. HTTP bridge закрывается существующим серверным секретом, `WHATSAPP_BRIDGE_HOST/PORT` позволяют выделить внутренний интерфейс.
+
+Identity закрепляется по протокольным self PN/LID, смена пользователя под прежним integration отклоняется. Импортированный номер подтверждается точным getNumberId и PN/LID mapping; имя не используется. Route остаётся paused и не создаёт заявку/сообщение. API: `POST /api/ai/outreach/contacts/:id/resolve-whatsapp` с выбранным `accountId`; публичный API передаёт operation ID владельцу, не произвольный receipt.
+
+Для AI заранее подготавливаются private chat, self, ephemeral fields и WA message key. Миграция16 сохраняет intent перед CDP commit. `start` пишет одну готовую команду и повторяет target/self/session checks. Подтверждение требует ack>=1 и точного зарезервированного ID; ack0, потерянный ответ и исключение после commit — unknown. Личка догружается до курсора, максимум500 сообщений за запрос; полный пакет без достижения границы сохраняет ошибку и не продвигает курсор. Непроходимый разрыв требует доработки backfill/операторского разбора, а не пропуска истории. Поздние server ack сверяются по intent/account/target/self/body hash независимо от нового inbox window.
+
+Повторная подготовка разрешена только по сохранённому outcome rejected/not_started с refresh_auth/after_delay, после задержки и свежих business/account gates. Unknown никогда не возвращается в pending. Проверка временного отказа не завершает outreach run преждевременно. Новая попытка сохраняет отдельный зарезервированный ID; прежний intent не переиспользуется. Legacy публикации WhatsApp теперь ждут waitUntilMsgSent и проверяют server ack; полная prepared-граница media и реальная regression-приёмка публикаций ещё остаются в RES04/RES10.
+
+Проверки: whatsapp-ai-text.test.ts (подготовка/commit/привязка/ack), whatsapp-ai-receipts.test.ts (durable intent/late ack/paused/route), whatsapp-private-poller.test.ts (250 сообщений, restart/dedup, manual takeover, scope/gap/phase), whatsapp-sessions.test.ts (5+1/disabled/concurrency). work/whatsapp-prepared-smoke.mjs запускает отдельный временный Chrome с синтетическими WAWeb modules, без WhatsApp. work/whatsapp-owner-smoke.mjs проверяет два собранных процесса и SIGKILL, без браузеров/логина. Эти проверки не заменяют приёмку на разрешённом WhatsApp-аккаунте.
+
+Live мониторинг источников и автоматическая активация заявок пока не подключены; новые компоненты не включались на production или в текущем реальном локальном MAX-контуре.

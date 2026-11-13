@@ -7,6 +7,8 @@ import {prepareMaxAiText} from './adapters/max-ai-text.js';
 /** The process that owns the socket performs the durable dispatch gate itself. */
 export async function dispatchOwnedMax(pool:Pool,connections:MaxConnections,actionId:string,signal:AbortSignal){
  signal.throwIfAborted();
+ const preflight=await new AiManagerStore(pool).preflight(actionId);
+ if(!preflight.ready)return(await pool.query('SELECT state,external_message_id,outcome_code FROM ai_outbox WHERE id=$1',[actionId])).rows[0];
  const target=(await pool.query(`SELECT a.id,v.id AS conversation_id,v.account_id,v.external_id,v.active_phase_id FROM ai_outbox a JOIN ai_conversations v ON v.id=a.conversation_id WHERE a.id=$1 AND v.platform='max'`,[actionId])).rows[0];
  if(!target)throw Error('max_action_missing');
  const source=(await pool.query(`SELECT s.recipient_id AS author_id,s.external_chat_id FROM ai_request_sources s JOIN ai_request_phases p ON p.request_id=s.request_id WHERE p.id=$1 AND s.conversation_id=$2 ORDER BY s.created_at DESC LIMIT 1`,[target.active_phase_id,target.conversation_id])).rows[0];

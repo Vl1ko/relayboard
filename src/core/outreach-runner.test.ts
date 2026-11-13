@@ -10,4 +10,46 @@ test('account interval is measured after actual start, including across restart'
 test('unknown never replays or falls back and inhibits account until reconciliation',{skip},async()=>{const f=await fixture(2);let starts=0;await runner.tick(async target=>({target,start:a=>{starts++;return{acknowledgement:Promise.resolve({operationId:a.operationId,outcome:'unknown',code:'timeout',retryCondition:'reconcile_or_manual_review'})};}}));assert.equal(starts,1);await pool.query("UPDATE ai_outreach_clocks SET last_started_at=now()-interval '1 day'");await new OutreachRunner(pool).tick(async target=>({target,start:a=>{starts++;return syntheticTransport(target).start(a);}}));assert.equal(starts,1);});
 test('opt-out after run creation does not create first action or revive on restart',{skip},async()=>{const f=await fixture();const contact=(await pool.query('SELECT contact_id FROM ai_requests WHERE id=$1',[f.reqs[0]])).rows[0].contact_id;await new AiManagerStore(pool).optOut(contact,'stop');await runner.tick(async()=>{throw Error('no send');});assert.equal((await pool.query('SELECT count(*)::int n FROM ai_outbox')).rows[0].n,0);assert.equal((await runner.items(f.run.id))[0].skipped_reason,'contact_guard_changed');});
 test('two runs cannot reserve the same explicit request',{skip},async()=>{const f=await fixture();await assert.rejects(runner.create({id:randomUUID(),revision:f.s.revision,requestIds:f.reqs}));assert.equal((await runner.list()).length,1);});
-test('separate requests and channels cannot approach the same contact in parallel',{skip},async()=>{const f=await fixture();const contact=(await pool.query('SELECT contact_id FROM ai_requests WHERE id=$1',[f.reqs[0]])).rows[0].contact_id;const account=(await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext)VALUES('whatsapp','fixture','fake')RETURNING id")).rows[0].id;await pool.query("INSERT INTO ai_conversations(contact_id,account_id,platform,external_id,automation_mode)VALUES($1,$2,'whatsapp','wa','auto')",[contact,account]);const service=new OutreachService(pool);const req=await service.createRequest({id:randomUUID(),contactId:contact});const settings=await service.save({...f.s,platforms:['whatsapp','max'],accountIds:[account,f.a]});const run=await runner.create({id:randomUUID(),revision:settings.revision,requestIds:[req.id]});const first=await runner.prepare(f.run.id,f.reqs[0]),second=await runner.prepare(run.id,req.id);assert.ok(first);assert.equal(second,null);let sent=0;const store=new AiManagerStore(pool);await store.dispatch(first!,{target:{accountId:f.a,externalConversationId:'fixture-0',platform:'max'},start:a=>{sent++;return syntheticTransport({accountId:f.a,externalConversationId:'fixture-0',platform:'max'}).start(a);}});assert.equal(sent,1);assert.equal(await runner.prepare(run.id,req.id),null);await pool.query("UPDATE ai_conversations SET business_status='closed' WHERE id=(SELECT conversation_id FROM ai_outreach_items WHERE run_id=$1)",[f.run.id]);assert.ok(await runner.prepare(run.id,req.id));});
+test('separate requests and channels cannot approach the same contact in parallel',{skip},async()=>{const f=await fixture();const contact=(await pool.query('SELECT contact_id FROM ai_requests WHERE id=$1',[f.reqs[0]])).rows[0].contact_id;const account=(await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext)VALUES('whatsapp','fixture','fake')RETURNING id")).rows[0].id;await pool.query("INSERT INTO ai_conversations(contact_id,account_id,platform,external_id,automation_mode)VALUES($1,$2,'whatsapp','wa','auto')",[contact,account]);const service=new OutreachService(pool);const req=await service.createRequest({id:randomUUID(),contactId:contact});const settings=await service.save({...f.s,platforms:['whatsapp','max'],accountIds:[account,f.a]});const run=await runner.create({id:randomUUID(),revision:settings.revision,requestIds:[req.id]});const first=await runner.prepare(f.run.id,f.reqs[0]),second=await runner.prepare(run.id,req.id);assert.ok(first);assert.equal(second,null);let sent=0;const store=new AiManagerStore(pool);await store.dispatch(first!,{target:{accountId:f.a,externalConversationId:'fixture-0',platform:'max'},start:a=>{sent++;return syntheticTransport({accountId:f.a,externalConversationId:'fixture-0',platform:'max'}).start(a);}});assert.equal(sent,1);assert.equal(await runner.prepare(run.id,req.id),null);await pool.query("UPDATE ai_conversations SET business_status='closed' WHERE id=(SELECT conversation_id FROM ai_outreach_items WHERE run_id=$1)",[f.run.id]);const next=await runner.prepare(run.id,req.id);assert.ok(next);await store.dispatch(next!,syntheticTransport({accountId:account,externalConversationId:'wa',platform:'whatsapp'}));assert.equal((await pool.query('SELECT state FROM ai_outbox WHERE id=$1',[next])).rows[0].state,'confirmed');});
+
+test('a server receipt survives start-transaction rollback and preserves the actual pinned text',{skip},async()=>{
+ const f=await fixture(),id=await runner.prepare(f.run.id,f.reqs[0]);assert.ok(id);
+ await new OutreachService(pool).save({...f.s,template:'latest intended text'});
+ let initiated=false,injected=false,starts=0,text='';
+ const interrupted={connect:async()=>{
+  const client=await pool.connect();
+  return new Proxy(client,{get(target,key){
+   if(key==='query')return(...args:unknown[])=>{
+    if(args[0]==='COMMIT'&&initiated&&!injected){injected=true;return Promise.reject(Error('synthetic COMMIT failure'));}
+    return Reflect.apply(target.query,target,args);
+   };
+   const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;
+  }});
+ }} as unknown as pg.Pool;
+ const store=new AiManagerStore(interrupted);
+ await store.dispatch(id!,{target:{accountId:f.a,externalConversationId:'fixture-0',platform:'max'},start:a=>{initiated=true;starts++;text=a.text;return syntheticTransport({accountId:f.a,externalConversationId:'fixture-0',platform:'max'}).start(a);}});
+ assert.equal(injected,true);assert.equal(starts,1);assert.equal(text,'latest intended text');
+ const saved=(await pool.query('SELECT * FROM ai_outbox WHERE id=$1',[id])).rows[0];assert.equal(saved.state,'confirmed');assert.equal(saved.text,text);assert.ok(saved.dispatch_started_at);
+ assert.ok((await pool.query('SELECT last_started_at FROM ai_outreach_clocks WHERE account_id=$1',[f.a])).rows[0].last_started_at);
+});
+test('preflight waits for account interval before any transport preparation',{skip},async()=>{
+ const f=await fixture(2);await runner.prepare(f.run.id,f.reqs[0]);
+ await runner.tick(async target=>syntheticTransport(target));
+ const second=(await runner.items(f.run.id)).find(i=>i.state==='pending');assert.ok(second);
+ const status=await new AiManagerStore(pool).preflight(second.action_id);assert.equal(status.ready,false);assert.equal(status.state,'pending');
+});
+test('closed historical channel does not prevent a separate later request; archived request itself stays blocked',{skip},async()=>{
+ const f=await fixture(),first=await runner.prepare(f.run.id,f.reqs[0]);assert.ok(first);
+ await new AiManagerStore(pool).dispatch(first!,syntheticTransport({accountId:f.a,externalConversationId:'fixture-0',platform:'max'}));
+ const row=(await pool.query('SELECT contact_id,conversation_id FROM ai_outreach_items WHERE request_id=$1',[f.reqs[0]])).rows[0];await pool.query("UPDATE ai_conversations SET business_status='closed',automation_mode='paused' WHERE id=$1",[row.conversation_id]);
+ const other=(await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext) VALUES('whatsapp','synthetic','fake') RETURNING id")).rows[0].id;
+ await pool.query("INSERT INTO ai_conversations(contact_id,account_id,platform,external_id,automation_mode) VALUES($1,$2,'whatsapp','later','auto')",[row.contact_id,other]);
+ const service=new OutreachService(pool),current=await service.settings(),settings=await service.save({...current,platforms:['whatsapp','max'],accountIds:[other,f.a]});
+ const next=await service.createRequest({id:randomUUID(),contactId:row.contact_id});assert.equal((await service.preview({revision:settings.revision,requestIds:[next.id]})).eligible,1);
+ assert.equal((await service.preview({revision:settings.revision,requestIds:f.reqs})).rows[0].reason,'request_closed');
+});
+
+test('known pre-commit rejection keeps run active for safe delayed preparation',{skip},async()=>{
+ const f=await fixture();await runner.tick(async target=>({target,start:a=>({acknowledgement:Promise.resolve({operationId:a.operationId,outcome:'rejected',dispatchState:'not_started',code:'session_changed',retryCondition:'refresh_auth'})})}));assert.equal((await runner.list())[0].state,'active');
+ const item=(await runner.items(f.run.id))[0];await pool.query("UPDATE ai_outbox SET retry_after=now()-interval '1 second' WHERE id=$1",[item.action_id]);await pool.query("UPDATE ai_outreach_clocks SET last_started_at=now()-interval '1 day'");assert.equal(await new AiManagerStore(pool).retryReady(),1);await runner.tick(async target=>syntheticTransport(target));assert.equal((await runner.items(f.run.id))[0].state,'confirmed');assert.equal((await runner.list())[0].state,'completed');
+});

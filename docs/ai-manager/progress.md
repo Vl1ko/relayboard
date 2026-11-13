@@ -6,9 +6,9 @@
 |---|---|---|
 | RES00 | DONE | Чистый снимок Git index: 209 PASS / 0 FAIL / 0 SKIP на PG16.16, typecheck и production build PASS. Доказательства: outputs/res00-baseline-2026-11-13; отсутствующие receipts не подтверждаются |
 | RES01 | DONE | Миграция 13, source→request→phase, архив полей/счётчика, граница истории, привязка inbox/outbox/решений/уведомлений/follow-up. 218 PASS / 0 FAIL / 0 SKIP, включая 20 разных источников и upgrade v12; build/typecheck PASS. Live transport — RES03–04 |
-| RES02 | IN_PROGRESS | MAX/AI/publishing owners, heartbeat, общая очередь модели, inbox/cursor и SIGKILL/restart проверены синтетически. Ещё нужны WhatsApp owner и live recovery |
+| RES02 | IN_PROGRESS | MAX/AI/publishing owners, heartbeat, общая очередь модели, inbox/cursor и SIGKILL/restart проверены синтетически. WhatsApp owner и его SIGKILL recovery добавлены; остаются live recovery и итоговая общая приёмка |
 | RES03 | IN_PROGRESS | Постоянный MAX owner, inbox/cursor, phone/source routing и выбор sender проверены. Миграция 15; 259 PASS/0FAIL/0SKIP. Ещё нужны автоматический source coordinator, UI и live-приёмка |
-| RES04 | IN_PROGRESS | Изучена фактическая граница CDP send в установленном SDK; начинается подготовленный WhatsApp transport. Аккаунт пользователь подключит при приёмке |
+| RES04 | IN_PROGRESS | Prepared CDP text, durable intents/late ack, private cursor, self pin и 5-session owner реализованы; 289 PASS. Остаток: source integration, media prepared boundary и реальная приёмка |
 | RES05 | TODO | Мониторинг, scoring, автоматический первый контакт |
 | RES06 | IN_PROGRESS | Все четыре dispatcher reasons, completion repair, manager hold и старые фазы проверены; live-корпус и полная бизнес-приёмка впереди |
 | RES07 | TODO | Автоматические follow-up |
@@ -159,3 +159,18 @@ MAX phone lookup принимает только единственное точ
 Проверки: 259 PASS / 0 FAIL / 0 SKIP на изолированном PG16.16; typecheck/build PASS. Включены upgrade v12/v14 с историей, 20 конкурентных identities, одинаковые имена, межканальный opt-out, reader≠sender, изменённый source, первый импортный DM и межплатформенный source/recipient со scope. Доказательства: outputs/res03-routing-2026-11-14. Реальные сообщения, GigaChat-запросы, текущая локальная сессия и production на этом этапе не использовались/не переключались.
 
 Следующий шаг: подготовленный WhatsApp send, durable receipts/inbound и подключение обоих transport к общему source coordinator. Полный релиз остаётся незавершённым.
+
+
+## 14 ноября — RES02/04: WhatsApp owner, prepared text и durable receipts
+
+Миграция16: protocol-generated intent IDs до commit, hashes поздних ack без копии текста, private cursor, self pinning и доказательство безопасной повторной подготовки. Bridge владеет worker:whatsapp-sessions до создания Chromium; enabled≤5, disabled закрывается, шестой не вытесняет работающий. Удаление SingletonLock/SingletonSocket убрано. Новый owner переводит только прерванные WhatsApp попытки в unknown. Удаление integration сохраняет минимальную intent/dedup историю.
+
+Подготовленная текстовая отправка заранее получает private target/PN-LID/self/key; под последним core gate синхронно записывается одна CDP команда. Нужны server ack>=1 и точный reserved ID, не локальный ack0. История догружается bounded; пробел не продвигает курсор. 250 сообщений одной секунды, restart/dedup, native manager takeover, scope, смена фазы и late ack за старым курсором проверены. Импортированный телефон подтверждается протоколом, новый маршрут paused и сам не создаёт заявку/отправку. AI worker делегирует WhatsApp owner, manager notifications остаются в MAX.
+
+Core сохраняет фактический receipt даже после ошибки COMMIT уже начатой отправки; preflight ждёт интервал до network preparation. Доказанный rejected/not_started с refresh_auth/after_delay ждёт backoff и свежий gate; unknown не requeue. Run не завершается преждевременно. Исторический closed канал больше не блокирует новую отдельную заявку, manual reply/resume и follow-up, и не переоткрывается при native takeover. Приветствие считается по всей заявке, а не criteria phase; новая отдельная заявка получает новое приветствие. Legacy WhatsApp публикации ждут waitUntilMsgSent и server ack; полная prepared media-граница ещё не завершена.
+
+Проверки текущего снимка: 289 PASS / 0 FAIL / 0 SKIP, PG16.16; typecheck и production build PASS. Отдельный настоящий Chrome/CDP использовал temporary profile и синтетические WAWeb modules, без WhatsApp login/сообщений. Два процесса WhatsApp и MAX проверяют auth, ожидание владельца, SIGKILL и dispatching→unknown без повторной отправки. Доказательства: outputs/res04-whatsapp-owner-2026-11-14 (логи и source manifest).
+
+Один запуск сохранения smoke-логов был прерван одновременной очисткой dist при build (ERR_MODULE_NOT_FOUND); после завершения сборки smoke выполняется последовательно. Устаревшее ожидание HTTP503 в MAX smoke обновлено: повтор unknown получает HTTP200 с сохранённым unknown и не открывает transport. Это изменения тестовой инфраструктуры, не разрешение повтора.
+
+Полный RES04 остаётся IN_PROGRESS: реальный WhatsApp пользователь подключит на приёмке; source/author routing для мониторинга, полная media boundary, расширенный history backfill и ресурсы остаются открытыми. Следующий независимый этап — RES05: настройки и общий source coordinator/scoring, затем автоматические follow-up и UI. Production и текущий реальный локальный MAX-контур не переключались; внешние модели и реальные адресаты не использовались.

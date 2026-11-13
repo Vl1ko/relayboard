@@ -45,7 +45,11 @@ export class OutreachRunner {
    const logical='request:'+requestId;
    const existing=(await c.query("SELECT * FROM ai_outbox WHERE contact_id=$1 AND kind='first_message' AND logical_key=$2",[contact.id,logical])).rows[0];
    if(existing){await c.query('UPDATE ai_outreach_items SET action_id=$3 WHERE run_id=$1 AND request_id=$2',[runId,requestId,existing.id]);return existing.id as string;}
+   const request=(await c.query('SELECT lifecycle FROM ai_requests WHERE id=$1',[requestId])).rows[0];
+   if(request?.lifecycle!=='open'){await c.query("UPDATE ai_outreach_items SET skipped_reason='request_closed' WHERE run_id=$1 AND request_id=$2",[runId,requestId]);return null;}
+   if((await c.query('SELECT 1 FROM ai_conversations WHERE contact_id=$1 AND manager_hold',[contact.id])).rowCount)return null;
    if(contact.opted_out_at||conversation.automation_mode!=='auto'||['closed','refused'].includes(conversation.business_status)){await c.query("UPDATE ai_outreach_items SET skipped_reason='contact_guard_changed' WHERE run_id=$1 AND request_id=$2",[runId,requestId]);return null;}
+   if((await c.query("SELECT 1 FROM ai_outbox WHERE contact_id=$1 AND state IN ('dispatching','unknown')",[contact.id])).rowCount)return null;
    const settings=(await c.query('SELECT * FROM ai_outreach_settings WHERE id=1 FOR SHARE')).rows[0];if(!settings.template.trim())return null;
    const phase=(await c.query('SELECT p.*,r.lifecycle FROM ai_request_phases p JOIN ai_requests r ON r.id=p.request_id WHERE p.id=$1',[conversation.active_phase_id])).rows[0];
    if((await c.query("SELECT 1 FROM ai_request_phases p JOIN ai_requests r ON r.id=p.request_id WHERE r.contact_id=$1 AND r.lifecycle='open' AND p.closed_at IS NULL AND r.id<>$2",[contact.id,requestId])).rowCount)return null;
@@ -80,7 +84,7 @@ export class OutreachRunner {
     if(options.stopped?.())break;await dispatch(id,target);
    }catch{deferred++;}
   }
-  await this.pool.query(`UPDATE ai_outreach_runs r SET state=CASE WHEN EXISTS(SELECT 1 FROM ai_outreach_items i JOIN ai_outbox a ON a.id=i.action_id WHERE i.run_id=r.id AND a.state='unknown') THEN 'review' ELSE 'completed' END WHERE state='active' AND NOT EXISTS(SELECT 1 FROM ai_outreach_items i LEFT JOIN ai_outbox a ON a.id=i.action_id WHERE i.run_id=r.id AND i.skipped_reason IS NULL AND (i.action_id IS NULL OR a.state IN ('pending','dispatching')))`);
+  await this.pool.query(`UPDATE ai_outreach_runs r SET state=CASE WHEN EXISTS(SELECT 1 FROM ai_outreach_items i JOIN ai_outbox a ON a.id=i.action_id WHERE i.run_id=r.id AND a.state='unknown') THEN 'review' ELSE 'completed' END WHERE state='active' AND NOT EXISTS(SELECT 1 FROM ai_outreach_items i LEFT JOIN ai_outbox a ON a.id=i.action_id WHERE i.run_id=r.id AND i.skipped_reason IS NULL AND (i.action_id IS NULL OR (a.state IN ('pending','dispatching') OR a.state='rejected' AND a.dispatch_state='not_started' AND a.retry_condition IN ('refresh_auth','after_delay'))))`);
   return {deferred};
  }
 }

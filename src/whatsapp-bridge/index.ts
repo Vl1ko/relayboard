@@ -1,7 +1,6 @@
 import { sentMessageId } from "../core/whatsapp-receipt.js";
 import express, { type RequestHandler } from "express";
 import { createRequire } from "node:module";
-import { rmSync } from "node:fs";
 import { join } from "node:path";
 import QRCode from "qrcode";
 import pkg from "whatsapp-web.js";
@@ -13,7 +12,16 @@ const { LoadUtils: loadWhatsAppUtils } = nodeRequire("whatsapp-web.js/src/util/I
   LoadUtils: () => void;
 };
 import { pool } from "../core/db.js";
-function createSession(sessionKey: string) {
+import {withExecutionSlot} from '../core/execution-slot.js';
+import {WhatsAppSessions} from '../core/whatsapp-sessions.js';
+import {AiManagerStore} from '../core/ai-manager.js';
+import {WhatsAppAiReceipts} from '../core/whatsapp-ai-receipts.js';
+import {WhatsAppPrivatePoller,type WhatsAppPrivateHistory} from '../core/whatsapp-private-poller.js';
+import {prepareWhatsAppAiText} from '../core/adapters/whatsapp-ai-text.js';
+import {runtimeAllowsConversation} from '../core/runtime-scope.js';
+import {z} from 'zod';
+import {resolveWhatsAppContactRoute} from '../core/whatsapp-contact-route.js';
+function createSession(sessionKey: string, accountId:string, ownerSignal:AbortSignal) {
 const sessionPath = sessionKey === "legacy" ? config.WHATSAPP_SESSION_PATH : join(config.WHATSAPP_SESSION_PATH, sessionKey);
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -33,6 +41,33 @@ let lastHealthyAt = Date.now();
 let recoveryAttempts = 0;
 let recovering = false;
 let closing = false;
+const scope={testOnly:config.AI_TEST_ONLY,accountIds:config.AI_TEST_ACCOUNT_IDS,authorIds:config.AI_TEST_AUTHOR_IDS};
+const receipts=new WhatsAppAiReceipts(pool);
+const privatePoller=new WhatsAppPrivatePoller(pool,readPrivateHistory,ownerSignal,scope);
+let pinnedSelf:string|null=null;
+async function selfAliases(){
+ const page=client.pupPage;if(!page)throw Error('wa_session_not_ready');
+ const ids=await page.evaluate(`(()=>{const p=window.require('WAWebUserPrefsMeUser');return [p.getMaybeMePnUser()?._serialized,p.getMaybeMeLidUser()?._serialized].filter(Boolean);})()`) as string[];
+ if(!Array.isArray(ids)||!ids.length||ids.some(id=>!/^[1-9][0-9]{0,30}@(c\.us|lid)$/.test(id)))throw Error('wa_self_unverified');
+ const row=(await pool.query("UPDATE integrations SET whatsapp_self_id=coalesce(whatsapp_self_id,$2) WHERE id=$1 AND platform='whatsapp' AND enabled AND (whatsapp_self_id IS NULL OR whatsapp_self_id=ANY($3::text[])) RETURNING whatsapp_self_id",[accountId,ids[0],ids])).rows[0];
+ if(!row)throw Error('wa_account_identity_changed');pinnedSelf=row.whatsapp_self_id;return ids;
+}
+async function recipientAliases(recipient:string){
+ if(!/^[1-9][0-9]{0,30}@(c\.us|lid)$/.test(recipient))throw Error('wa_private_target_unverified');
+ const result=await client.getContactLidAndPhone([recipient]);
+ const match=result.find(v=>v.pn===recipient||v.lid===recipient);
+ if(!match)throw Error('wa_private_target_unverified');
+ return [...new Set([match.pn,match.lid].filter((v):v is string=>!!v))];
+}
+async function readPrivateHistory(requestAccount:string,recipient:string,externalId:string):Promise<WhatsAppPrivateHistory>{
+ if(requestAccount!==accountId||!(await probeClientReady()))throw Error('wa_session_not_ready');
+ const aliases=await recipientAliases(recipient),self=await selfAliases();
+ if(!aliases.includes(externalId)||self.some(id=>aliases.includes(id)))throw Error('wa_private_target_unverified');
+ const chat=await client.getChatById(externalId);
+ if(chat.isGroup||!aliases.includes(chat.id._serialized))throw Error('wa_private_target_unverified');
+ const messages=await chat.fetchMessages({limit:500});
+ return{targetId:chat.id._serialized,recipientAliases:aliases,selfAliases:self,exhausted:messages.length<500,messages:messages.map(m=>({id:m.id._serialized,from:m.from,to:m.to,fromMe:m.fromMe,timestamp:m.timestamp,body:m.body,ack:m.ack,type:String(m.type)}))};
+}
 
 const puppeteer: Record<string, unknown> = {
   headless: true,
@@ -146,6 +181,7 @@ async function probeClientReady() {
       // Reading the minimal group fields directly verifies the exact feature
       // this bridge needs without serializing every chat and message.
       await ensureUtilityInjection();
+      await selfAliases();
       await readGroupsDirect();
       markReady("group collection");
       lastHealthyAt=Date.now();
@@ -178,10 +214,8 @@ function startReadyProbes() {
   readyProbeTimer.unref();
 }
 
-const profilePath = join(sessionPath, "session-relayboard");
-for (const filename of ["SingletonLock", "SingletonCookie", "SingletonSocket", "DevToolsActivePort"]) {
-  rmSync(join(profilePath, filename), { force: true });
-}
+// Chromium manages stale profile locks itself. Never remove locks that may
+// still belong to a surviving browser from the previous Node process.
 
 client.on("qr", async (qr) => {
   if (authenticationConfirmed) {
@@ -248,6 +282,42 @@ app.get("/groups", async (_request, response) => {
   }
 });
 
+app.post('/ai/contacts/:id/resolve',async(request,response)=>{
+ if(config.AI_SEND_MODE!=='live')return response.status(409).json({error:'Live WhatsApp is disabled'});
+ const contactId=z.string().uuid().parse(request.params.id);
+ response.json(await resolveWhatsAppContactRoute(pool,scope,{accountId,contactId},async phone=>{
+  if(!(await probeClientReady()))throw Error('wa_session_not_ready');
+  const number=await client.getNumberId(phone.slice(1));
+  const expected=phone.slice(1)+'@c.us';if(!number||number._serialized!==expected)throw Error('wa_phone_unverified');
+  const aliases=await recipientAliases(expected),self=await selfAliases(),chat=await client.getChatById(expected);
+  if(chat.isGroup||!aliases.includes(chat.id._serialized))throw Error('wa_private_target_unverified');
+  return{phone,pn:expected,aliases,selfAliases:self,privateId:chat.id._serialized};
+ }));
+});
+
+app.post('/ai/actions/:id/dispatch',async(request,response)=>{
+ const id=z.string().uuid().parse(request.params.id);
+ if(config.AI_SEND_MODE!=='live'||!await runtimeAllowsConversation(pool,scope,(await pool.query('SELECT conversation_id FROM ai_outbox WHERE id=$1',[id])).rows[0]?.conversation_id))return response.status(409).json({error:'AI action is outside the enabled runtime scope'});
+ const store=new AiManagerStore(pool),preflight=await store.preflight(id);
+ if(!preflight.ready)return response.json({state:preflight.state,deferred:true});
+ const v=(await pool.query("SELECT v.* FROM ai_outbox a JOIN ai_conversations v ON v.id=a.conversation_id WHERE a.id=$1 AND v.account_id=$2 AND v.platform='whatsapp'",[id,accountId])).rows[0];
+ if(!v)return response.status(404).json({error:'WhatsApp action not found'});
+ if(!(await privatePoller.poll(v.id)).complete)return response.status(409).json({error:'Private history awaits verification'});
+ const source=(await pool.query('SELECT recipient_id FROM ai_request_sources WHERE conversation_id=$1 AND request_id=(SELECT request_id FROM ai_request_phases WHERE id=$2) ORDER BY created_at DESC LIMIT 1',[v.id,v.active_phase_id])).rows[0];
+ if(!source)throw Error('wa_private_route_missing');
+ const aliases=await recipientAliases(source.recipient_id),self=await selfAliases(),page=client.pupPage;
+ if(!page)throw Error('wa_session_not_ready');
+ const cdp=await page.createCDPSession(),sendGeneration=generation;
+ let prepared:Awaited<ReturnType<typeof prepareWhatsAppAiText>>|undefined;
+ try{
+  prepared=await prepareWhatsAppAiText({cdp,accountId,conversationId:v.id,operationId:id,externalId:v.external_id,recipientAliases:aliases,selfAliases:self,isActive:()=>!ownerSignal.aborted&&!closing&&!recovering&&state==='ready'&&generation===sendGeneration&&!!pinnedSelf});
+  await receipts.reserve({actionId:id,accountId,conversationId:v.id,messageId:prepared.reservedMessageId,targetId:prepared.actualTargetId,recipientAliases:aliases,selfAliases:prepared.selfIds});
+  await store.dispatch(id,prepared.prepared);
+  await receipts.reconcile(id);
+  response.json((await pool.query('SELECT state,external_message_id,outcome_code FROM ai_outbox WHERE id=$1',[id])).rows[0]);
+ }finally{await prepared?.release();await cdp.detach().catch(()=>{});}
+});
+
 app.post("/send", async (request, response) => {
   const { deliveryId, destinationId, text = "", attachments = [] } = request.body as {
     deliveryId?: string;
@@ -297,16 +367,20 @@ app.post("/send", async (request, response) => {
   }
   async function sendMessage(destinationId: string) {
     await ensureUtilityInjection();
+    const assertSending=()=>{if(closing||ownerSignal.aborted||generation!==sendGeneration||Date.now()>=deadline)throw Error('WhatsApp send interrupted; inspect durable outcome');};
+    assertSending();
     if (attachments.length === 0) {
-      const message = await client.sendMessage(destinationId, text);
+      const message = await client.sendMessage(destinationId, text, {waitUntilMsgSent:true});
       return sentMessageId(message);
     }
-    if (text.length > 1000) sentMessageId(await client.sendMessage(destinationId, text));
+    if (text.length > 1000) sentMessageId(await client.sendMessage(destinationId, text, {waitUntilMsgSent:true}));
     const messageIds: string[] = [];
     for (let index = 0; index < attachments.length; index += 1) {
       if (generation !== sendGeneration || Date.now() >= deadline) throw new Error("Отправка вложений прервана; результат требует проверки");
       const attachment = attachments[index];
-      const message = await client.sendMessage(destinationId, MessageMedia.fromFilePath(attachment.path), {
+      const media=MessageMedia.fromFilePath(attachment.path);assertSending();
+      const message = await client.sendMessage(destinationId, media, {
+        waitUntilMsgSent:true,
         caption: index === 0 && text.length <= 1000 ? text : "",
         sendMediaAsDocument: !attachment.mimeType.startsWith("image/") && !attachment.mimeType.startsWith("video/"),
       });
@@ -345,40 +419,59 @@ const watchdog=setInterval(()=>{
   })().catch(error=>console.error("WhatsApp recovery failed",errorMessage(error)));
 },15_000);
 watchdog.unref();
-return { app, initialized: Promise.resolve(), close: async () => { closing=true;generation+=1;clearInterval(watchdog);if (readyProbeTimer) clearInterval(readyProbeTimer);await client.destroy().catch(() => undefined); } };
+return { app, poll:(id:string)=>privatePoller.poll(id), initialized: Promise.resolve(), close: async () => { closing=true;generation+=1;clearInterval(watchdog);if (readyProbeTimer) clearInterval(readyProbeTimer);await client.destroy().catch(() => undefined); } };
 }
-const app = express();
-const sessions = new Map<string, ReturnType<typeof createSession>>();
-app.use(async (request, response, next) => {
-  if (request.header("authorization") !== `Bearer ${config.WHATSAPP_BRIDGE_SECRET}`) return response.status(401).json({error:"Unauthorized"});
-  const key = request.header("x-account-session");
-  if (!key || !/^(legacy|[0-9a-f-]{36})$/.test(key)) return response.status(400).json({error:"Нужен аккаунт"});
-  try {
-    const account = await pool.query("SELECT id FROM integrations WHERE platform=$1 AND session_key=$2", ["whatsapp", key]);
-    if (!account.rowCount) return response.status(404).json({error:"Аккаунт не найден"});
-    let session = sessions.get(key);
-    if (!session) { session = createSession(key); sessions.set(key, session); }
-    await session.initialized;
-    session.app(request, response, next);
-  } catch (error) { next(error); }
-});
-// Restore saved accounts before accepting deliveries after a restart.
-const existing = await pool.query("SELECT session_key FROM integrations WHERE platform=$1", ["whatsapp"]);
-for (const row of existing.rows) sessions.set(row.session_key, createSession(row.session_key));
-const cleanup = setInterval(() => {
-  void pool.query("SELECT session_key FROM integrations WHERE platform=$1", ["whatsapp"]).then(async result => {
-    const keys = new Set(result.rows.map(row => row.session_key));
-    for (const [key, session] of sessions) if (!keys.has(key)) { sessions.delete(key); await session.close(); }
-  }).catch(error => console.error("Session cleanup failed", error.message));
-}, 30000);
-cleanup.unref();
-const server = app.listen(3010);
-async function shutdown() {
-  clearInterval(cleanup);
-  server.close();
-  await Promise.all([...sessions.values()].map(session => session.close()));
-  await pool.end();
-  process.exit(0);
+const stop=new AbortController();
+process.once('SIGTERM',()=>stop.abort());process.once('SIGINT',()=>stop.abort());
+async function owned(signal:AbortSignal){
+ signal.throwIfAborted();
+ const app=express();
+ const sessions=new WhatsAppSessions(async()=>{
+  const result=await pool.query("SELECT id,session_key FROM integrations WHERE platform='whatsapp' AND enabled ORDER BY created_at,id");
+  return result.rows;
+ },account=>createSession(account.session_key,account.id,signal));
+ // The prior process may have died after submitting a message. Never retry it.
+ await pool.query("UPDATE whatsapp_send_receipts SET status='unknown',updated_at=now() WHERE status='sending'");
+ for(const action of (await pool.query("SELECT a.id,a.attempt_token FROM ai_outbox a JOIN ai_conversations v ON v.id=a.conversation_id WHERE v.platform='whatsapp' AND a.state='dispatching' AND a.attempt_token IS NOT NULL")).rows)await new AiManagerStore(pool).markInterrupted(action.id,action.attempt_token);
+ signal.throwIfAborted();
+ app.use(async(request,response,next)=>{
+  if(request.header('authorization')!==`Bearer ${config.WHATSAPP_BRIDGE_SECRET}`)return response.status(401).json({error:'Unauthorized'});
+  if(signal.aborted)return response.status(503).json({error:'Owner stopped'});
+  if(request.path==='/health')return response.json({ready:!signal.aborted,platform:'whatsapp'});
+  const key=request.header('x-account-session');
+  if(!key||!/^(legacy|[0-9a-f-]{36})$/.test(key))return response.status(400).json({error:'Нужен аккаунт'});
+  try{const session=await sessions.get(key);if(signal.aborted)return response.status(503).json({error:'Owner stopped'});session.app(request,response,next);}
+  catch(error){if(error instanceof Error&&error.message==='whatsapp_account_capacity')return response.status(409).json({error:'Доступно не более пяти одновременных аккаунтов WhatsApp'});
+   if(error instanceof Error&&error.message==='whatsapp_account_disabled_or_missing')return response.status(404).json({error:'Аккаунт выключен или не найден'});next(error);}
+ });
+ app.use(((_error,_request,response,_next)=>response.status(503).json({error:'WhatsApp operation deferred; inspect durable outcome before retry'})) as express.ErrorRequestHandler);
+ let polling:Promise<void>|undefined;
+ const inboxTimer=setInterval(()=>{
+  if(config.AI_SEND_MODE!=='live'||polling||signal.aborted)return;
+  polling=(async()=>{
+   const active=(await pool.query("SELECT v.id,v.account_id,i.session_key FROM ai_conversations v JOIN integrations i ON i.id=v.account_id WHERE v.platform='whatsapp' AND i.enabled AND v.active_phase_id IS NOT NULL AND v.business_status NOT IN ('closed','refused') ORDER BY v.account_id,v.id LIMIT 100")).rows;
+   await Promise.all([...new Set(active.map(v=>v.account_id))].map(async account=>{for(const v of active.filter(v=>v.account_id===account)){
+    try{if(!await runtimeAllowsConversation(pool,{testOnly:config.AI_TEST_ONLY,accountIds:config.AI_TEST_ACCOUNT_IDS,authorIds:config.AI_TEST_AUTHOR_IDS},v.id))continue;await (await sessions.get(v.session_key)).poll(v.id);}catch{console.error('WhatsApp private sync deferred; cursor retained');}
+   }}));
+   for(const row of (await pool.query("SELECT DISTINCT a.id FROM ai_outbox a JOIN ai_whatsapp_send_intents i ON i.action_id=a.id WHERE a.state='unknown' AND i.server_ack>=1 LIMIT 100")).rows)await new WhatsAppAiReceipts(pool).reconcile(row.id);
+  })().catch(()=>console.error('WhatsApp inbox iteration deferred')).finally(()=>{polling=undefined;});
+ },5000);inboxTimer.unref();
+ let refresh:Promise<void>|undefined;
+ const cleanup=setInterval(()=>{if(!refresh&&!signal.aborted)refresh=sessions.refresh().catch(()=>console.error('WhatsApp session refresh deferred')).finally(()=>{refresh=undefined;});},5000);cleanup.unref();
+ let server:ReturnType<typeof app.listen>|undefined;
+ try{
+  await sessions.restore();signal.throwIfAborted();
+  server=app.listen(config.WHATSAPP_BRIDGE_PORT,config.WHATSAPP_BRIDGE_HOST,()=>console.log('WhatsApp session owner listening'));
+  await new Promise<void>((resolve,reject)=>{
+   server!.once('error',reject);
+   const shutdown=()=>{void sessions.close();server!.close(error=>error?reject(error):resolve());};
+   signal.addEventListener('abort',shutdown,{once:true});if(signal.aborted)shutdown();
+  });
+ }finally{clearInterval(cleanup);clearInterval(inboxTimer);server?.close();await refresh;await sessions.close();await polling;}
 }
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
+async function main(){
+ try{if(config.AI_SEND_MODE==='live'&&config.AI_TEST_ONLY&&(!config.AI_TEST_ACCOUNT_IDS.length||!config.AI_TEST_AUTHOR_IDS.length))throw Error('Test allowlists required');await withExecutionSlot(pool,'worker:whatsapp-sessions',owned,stop.signal);}
+ catch{if(!stop.signal.aborted){console.error('WhatsApp session owner stopped');process.exitCode=1;}}
+ finally{await pool.end();}
+}
+void main();

@@ -35,7 +35,7 @@ try{
  assert.equal((await db.query('SELECT state FROM ai_outbox WHERE id=$1',[action])).rows[0].state,'dispatching');
  first.child.kill('SIGKILL');await until(()=>first.ended,'killed owner did not exit');await until(()=>second.output.includes('MAX session owner listening'),'next owner did not start');
  assert.equal((await db.query('SELECT state FROM ai_outbox WHERE id=$1',[action])).rows[0].state,'unknown');
- assert.equal((await fetch(base+'/actions/'+action+'/dispatch',{method:'POST',headers})).status,503);
+ const repeated=await fetch(base+'/actions/'+action+'/dispatch',{method:'POST',headers});assert.equal(repeated.status,200);assert.equal((await repeated.json()).state,'unknown');
  await stop(second);assert.equal((await db.query('SELECT state FROM ai_outbox WHERE id=$1',[action])).rows[0].state,'unknown');
  console.log('PASS: authenticated MAX RPC, input validation, two-process ownership, SIGKILL recovery of interrupted AI send without login or resend');
 }finally{

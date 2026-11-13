@@ -75,15 +75,12 @@ export class ManualReplyStore {
       }
       if (
         contact.opted_out_at ||
-        conversations.some((v) =>
-          ["closed", "refused"].includes(v.business_status),
-        )
+        ["closed", "refused"].includes(conversation.business_status)
       )
         throw new ManualReplyError("manual_reply_forbidden");
       const changed = conversations.filter(
         (v) =>
-          v.automation_mode !== "manual" ||
-          v.business_status !== "manager_working",
+          !['closed','refused'].includes(v.business_status) && (v.automation_mode !== "manual" || v.business_status !== "manager_working"),
       );
       const ids = conversations.map((v) => v.id);
       if (changed.length) {

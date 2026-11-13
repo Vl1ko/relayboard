@@ -1,3 +1,4 @@
+import {whatsappWorkerRequest} from '../core/whatsapp-worker-client.js';
 import {maxWorkerRequest} from '../core/max-worker-client.js';
 import { Router, type RequestHandler, type ErrorRequestHandler } from "express";
 import { z, ZodError } from "zod";
@@ -32,6 +33,11 @@ export function createOutreachRouter(options: {
     if(!options.liveEnabled)return res.status(503).json({error:'Постоянное подключение MAX пока не включено'});
     const accountId=z.string().uuid().parse(req.body?.accountId),contactId=z.string().uuid().parse(req.params.id);
     res.json(await maxWorkerRequest(`/contacts/${contactId}/resolve`,'POST',{accountId}));
+  });
+  router.post('/contacts/:id/resolve-whatsapp',async(req,res)=>{
+    if(!options.liveEnabled)return res.status(503).json({error:'Постоянное подключение WhatsApp пока не включено'});
+    const accountId=z.string().uuid().parse(req.body?.accountId),contactId=z.string().uuid().parse(req.params.id);
+    res.json(await whatsappWorkerRequest(options.pool,accountId,`/ai/contacts/${contactId}/resolve`));
   });
   router.get("/requests", async (_req, res) => {
     res.json(await service.requests());

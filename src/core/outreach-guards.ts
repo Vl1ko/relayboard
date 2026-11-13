@@ -9,7 +9,7 @@ export async function outreachGuard(client:PoolClient,action:{id:string;text:str
  const s=(await client.query('SELECT * FROM ai_outreach_settings WHERE id=1 FOR SHARE')).rows[0];
  if(!s.template.trim())return 'wait';
  if(!s.account_ids.includes(conversation.account_id)||!s.platforms.includes(conversation.platform))return 'cancel';
- const blocked=(await client.query("SELECT 1 FROM ai_conversations WHERE contact_id=$1 AND (automation_mode='manual' OR business_status IN ('closed','refused')) LIMIT 1",[conversation.contact_id])).rowCount;
+ const blocked=(await client.query("SELECT 1 FROM ai_conversations v LEFT JOIN ai_request_phases p ON p.id=v.active_phase_id WHERE v.contact_id=$1 AND v.business_status<>'closed' AND (v.automation_mode='manual' OR v.business_status='refused') AND (p.id IS NULL OR p.closed_at IS NULL) LIMIT 1",[conversation.contact_id])).rowCount;
  if(blocked)return 'cancel';
  await client.query('INSERT INTO ai_outreach_clocks(account_id) VALUES($1) ON CONFLICT DO NOTHING',[conversation.account_id]);
  const clock=(await client.query(`SELECT last_started_at IS NULL OR last_started_at+($2*interval '1 second')<=clock_timestamp() AS ready FROM ai_outreach_clocks WHERE account_id=$1 FOR UPDATE`,[conversation.account_id,s.interval_seconds])).rows[0];

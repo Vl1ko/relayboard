@@ -28,6 +28,8 @@ type Preview = {
   }[];
 };
 const reasons: Record<string, string> = {
+  request_closed: "Эта заявка закрыта — создайте отдельную новую заявку",
+  manager_hold: "Клиент ожидает менеджера. Сначала закройте текущую заявку",
   opted_out: "Контакт отказался от сообщений",
   manual_or_closed: "Ручной режим или закрытый диалог",
   no_ready_conversation:

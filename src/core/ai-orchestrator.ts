@@ -1,3 +1,4 @@
+import {requestHasOutgoing} from './request-greeting.js';
 import {DEFAULT_GREETING} from './conversation-templates.js';
 import type {Pool} from 'pg';
 import {AiManagerStore} from './ai-manager.js';
@@ -20,7 +21,7 @@ export class AiOrchestrator {
   if(decision.disposition==='suppress')return {decision,action:null};
   if(decision.disposition==='reply'){
    const settings=(await this.pool.query('SELECT settings FROM ai_engine_settings WHERE version=$1',[decision.settings_version])).rows[0].settings;
-   const prior=(await this.pool.query('SELECT 1 FROM ai_outbox WHERE conversation_id=$1 AND dispatch_started_at IS NOT NULL AND request_phase_id IS NOT DISTINCT FROM (SELECT active_phase_id FROM ai_conversations WHERE id=$1) LIMIT 1',[conversationId])).rowCount;
+   const prior=await requestHasOutgoing(this.pool,conversationId);
    const rendered=prior?decision.reply:(settings.greetingMessage??DEFAULT_GREETING)+'\n\n'+decision.reply;
    const action=await this.messages.enqueue({conversationId,kind:'reply',logicalKey:'ai-reply:'+decision.id,expectedEpoch:decision.automation_epoch,text:rendered});
    return {decision,action:action.action};

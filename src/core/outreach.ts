@@ -75,14 +75,14 @@ export class OutreachService {
       if (!settings.template.trim())
         throw new OutreachError("template_required", 400);
       const found = await client.query(
-        `SELECT r.id,r.contact_id,c.display_name,c.phone_e164,c.opted_out_at FROM ai_requests r JOIN ai_contacts c ON c.id=r.contact_id WHERE r.id=ANY($1::uuid[])`,
+        `SELECT r.id,r.contact_id,r.lifecycle,c.display_name,c.phone_e164,c.opted_out_at FROM ai_requests r JOIN ai_contacts c ON c.id=r.contact_id WHERE r.id=ANY($1::uuid[])`,
         [data.requestIds],
       );
       if (found.rowCount !== data.requestIds.length)
         throw new OutreachError("request_not_found", 404);
       const routes = (
         await client.query(
-          `SELECT v.*,a.enabled,a.auth_error FROM ai_conversations v LEFT JOIN integrations a ON a.id=v.account_id AND a.platform::text=v.platform WHERE v.contact_id=ANY($1::uuid[])`,
+          `SELECT v.*,a.enabled,a.auth_error,p.closed_at AS phase_closed_at FROM ai_conversations v LEFT JOIN ai_request_phases p ON p.id=v.active_phase_id LEFT JOIN integrations a ON a.id=v.account_id AND a.platform::text=v.platform WHERE v.contact_id=ANY($1::uuid[])`,
           [found.rows.map((r) => r.contact_id)],
         )
       ).rows;
@@ -111,7 +111,7 @@ export class OutreachService {
                 settings.accountIds.indexOf(b.account_id) ||
               a.id.localeCompare(b.id),
           );
-        // Any human takeover/closed linked conversation blocks a parallel approach through another channel.
+        // Current human takeover blocks a parallel approach; historical closed phases do not.
         const contactRoutes = routes.filter(
           (v) => v.contact_id === r.contact_id,
         );
@@ -124,12 +124,13 @@ export class OutreachService {
         );
         const reason = r.opted_out_at
           ? "opted_out"
+          : r.lifecycle==='closed'?'request_closed'
+          : contactRoutes.some(v=>v.manager_hold)?'manager_hold'
           : existing
             ? "existing_" + existing.state
             : contactRoutes.some(
                   (v) =>
-                    v.automation_mode === "manual" ||
-                    ["closed", "refused"].includes(v.business_status),
+                    !v.phase_closed_at && (v.automation_mode==='manual'||v.business_status==='refused'||(v.business_status==='closed'&&!v.active_phase_id)),
                 )
               ? "manual_or_closed"
               : seenContacts.has(r.contact_id)

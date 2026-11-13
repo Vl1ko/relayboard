@@ -735,3 +735,29 @@ test(
     assert.equal(a.id, b.id);
   },
 );
+
+test('manager receipt is recorded once even when the initiation transaction rolls back',{skip},async()=>{
+ const f=await fixture();await service.saveManagerTarget({accountId:f.accounts[0],externalId:'-456'});
+ const notice=await service.handoff({conversationId:f.conversations[0].id,key:'commit-failure',reason:'human_requested',summary:'synthetic'});
+ let initiated=false,injected=false,starts=0;
+ const interrupted={query:pool.query.bind(pool),connect:async()=>{
+  const client=await pool.connect();return new Proxy(client,{get(target,key){
+   if(key==='query')return(...args:unknown[])=>{
+    if(args[0]==='COMMIT'&&initiated&&!injected){injected=true;return Promise.reject(Error('synthetic COMMIT failure'));}
+    return Reflect.apply(target.query,target,args);
+   };
+   const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;
+  }});
+ }} as unknown as pg.Pool;
+ const workflow=new ConversationWorkflow(interrupted),prepared={target:{accountId:f.accounts[0],externalId:'-456'},start:(a:{operationId:string})=>{initiated=true;starts++;return{acknowledgement:Promise.resolve({operationId:a.operationId,outcome:'confirmed',externalMessageId:'actual-test-receipt',code:'test_receipt',retryCondition:'never'})};}};
+ await workflow.dispatchNotification(notice.id,prepared);await workflow.dispatchNotification(notice.id,prepared);
+ assert.equal(injected,true);assert.equal(starts,1);assert.equal((await pool.query('SELECT state FROM ai_handoff_notifications WHERE id=$1',[notice.id])).rows[0].state,'confirmed');
+});
+
+test('historical closed channel does not block follow-up of a later active request',{skip},async()=>{
+ const f=await fixture();await pool.query("UPDATE ai_conversations SET business_status='closed',automation_mode='paused' WHERE id=$1",[f.conversations[0].id]);await allDay();
+ const jobs=await service.scheduleFollowup({conversationId:f.conversations[1].id,scenario:'no_reply',key:'later-active',anchorAt:'2026-11-13T10:00:00Z'});
+ const ready=await service.materializeFollowup(jobs[0].id,new Date('2026-11-13T10:10:00Z'));assert.equal(ready.state,'enqueued');
+ assert.equal((await pool.query('SELECT business_status FROM ai_conversations WHERE id=$1',[f.conversations[0].id])).rows[0].business_status,'closed');
+ await assert.rejects(service.scheduleFollowup({conversationId:f.conversations[0].id,scenario:'no_reply',key:'archived',anchorAt:'2026-11-13T10:00:00Z'}));
+});

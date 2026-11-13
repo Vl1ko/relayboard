@@ -1,3 +1,4 @@
+import {AiManagerStore} from '../core/ai-manager.js';
 import {resolveMaxSourceRoute} from '../core/max-source-route.js';
 import {resolveMaxContactRoute} from '../core/max-contact-route.js';
 import {MaxPrivatePoller} from '../core/max-private-poller.js';
@@ -43,6 +44,7 @@ async function owned(signal:AbortSignal){
  app.post('/actions/:id/dispatch',async(req,res)=>{
   const id=z.string().uuid().parse(req.params.id),action=(await pool.query('SELECT conversation_id FROM ai_outbox WHERE id=$1',[id])).rows[0];
   if(!action)throw new DeliveryError('Действие не найдено','permanent');
+  const preflight=await new AiManagerStore(pool).preflight(id);if(!preflight.ready)return res.json({state:preflight.state,deferred:true});
   if(!(await poller.poll(action.conversation_id)).complete)throw new DeliveryError('Личка ожидает синхронизации или разрешения тестового адресата','waiting');
   res.json(await dispatchOwnedMax(pool,connections,id,signal));
  });

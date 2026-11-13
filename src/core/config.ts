@@ -39,6 +39,8 @@ const schema = z.object({
   QUEUE_DELAY_SCALE: z.coerce.number().min(0).max(1).default(1),
   QUEUE_NAME: z.string().trim().min(1).default("publishing"),
   SEND_TIMEOUT_MS: z.coerce.number().int().min(5000).max(300000).default(60000),
+  WHATSAPP_BRIDGE_HOST: z.string().default("0.0.0.0"),
+  WHATSAPP_BRIDGE_PORT: z.coerce.number().int().min(1).max(65535).default(3010),
   WHATSAPP_BRIDGE_URL: z.string().url().default("http://localhost:3010"),
   WHATSAPP_BRIDGE_SECRET: z.string().min(12),
   WHATSAPP_SESSION_PATH: z.string().default("./data/whatsapp-session"),
