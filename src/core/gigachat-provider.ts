@@ -2,7 +2,19 @@ import { randomUUID } from 'node:crypto';
 import type { AiProvider } from './ai-engine.js';
 
 export type GigaChatScope = 'GIGACHAT_API_PERS' | 'GIGACHAT_API_B2B' | 'GIGACHAT_API_CORP';
-const contract = ' Return only JSON with keys replyDraft,extracted,replyKind,askFields,knowledgeKeys,proposedStatus,handoffReason. replyKind: ask_fields|knowledge|handoff|none; proposedStatus: ai_dialog|qualified|unqualified|insufficient_data|manager_required; handoffReason: unknown_question|requested_human|insufficient_data|null. extracted: [{field,value,evidenceMessageId,evidenceQuote}].';
+const contract = `
+Return exactly ONE JSON object, no markdown. All eight keys are required:
+{"replyDraft":"","extracted":[],"replyKind":"ask_fields","askFields":["field_key"],"knowledgeKeys":[],"proposedStatus":"ai_dialog","handoffReason":null}
+replyDraft must be a string (the server renders configured text).
+extracted is an array of {"field":"field_key","value":"non-empty factual value or number or boolean","evidenceMessageId":"actual customer message ID","evidenceQuote":"exact non-empty quote from that customer message"}.
+If the customer did not supply a field, OMIT its extraction entirely; never emit empty values, empty evidence or placeholders. Use extracted:[] when no facts are known.
+askFields and knowledgeKeys are arrays of STRING KEYS, for example ["volume"], NEVER arrays of objects. Use only keys in data.settings.fields or knowledge.
+replyKind is ask_fields|knowledge|handoff|none.
+proposedStatus is ai_dialog|qualified|unqualified|insufficient_data|manager_required.
+handoffReason is unknown_question|requested_human|insufficient_data|null (JSON null, not a string).
+When asking for missing required volume, a valid result is {"replyDraft":"","extracted":[],"replyKind":"ask_fields","askFields":["volume"],"knowledgeKeys":[],"proposedStatus":"ai_dialog","handoffReason":null}.
+Use the supplied knowledge and evidence; if a commercial fact is unknown, hand off rather than invent it.`;
+
 async function boundedJson(response: Response, limit: number): Promise<any> {
   if (!response.ok) { await response.body?.cancel(); throw Error('gigachat_request_failed'); }
   const reader = response.body?.getReader();

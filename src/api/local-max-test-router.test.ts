@@ -1,0 +1,9 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import express from 'express';
+import {createLocalMaxTestRouter} from './local-max-test-router.js';
+const account='00000000-0000-4000-8000-000000000001',action='00000000-0000-4000-8000-000000000002';
+async function serve(enabled:boolean,query:any,run:(base:string)=>Promise<void>){const app=express();app.use(express.json());app.use(createLocalMaxTestRouter({enabled,chatId:'-123',pool:{query}as any,authorize:(_req,_res,next)=>next()}));const server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server.once('listening',resolve));try{await run('http://127.0.0.1:'+(server.address()as any).port);}finally{await new Promise<void>(resolve=>server.close(()=>resolve()));}}
+test('local MAX test is inaccessible when disabled and never touches a socket/database',async()=>{await serve(false,()=>{throw Error('must not query');},async(base)=>{const r=await fetch(base+'/send',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({accountId:account,actionId:action})});assert.equal(r.status,404);});});
+test('local MAX test binds action lookup to selected account and exact allowed chat',async()=>{let args:any;await serve(true,async(_sql:any,params:any)=>{args=params;return{rows:[]};},async(base)=>{const r=await fetch(base+'/send',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({accountId:account,actionId:action})});assert.equal(r.status,400);assert.deepEqual(args,[action,account,'-123']);});});
+test('local MAX test refuses replay of confirmed/unknown sends before connecting',async()=>{for(const state of ['confirmed','unknown'])await serve(true,async()=>({rows:[{id:action,state}]}),async(base)=>{const r=await fetch(base+'/send',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({accountId:account,actionId:action})});assert.equal(r.status,409);assert.equal((await r.json()as any).state,state);});});

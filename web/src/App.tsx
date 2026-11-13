@@ -1,3 +1,4 @@
+import LocalMaxTestPanel from "./LocalMaxTestPanel";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import AiSettingsPanel from "./AiSettingsPanel";
 import ConversationWorkspace from "./ConversationWorkspace";
@@ -247,6 +248,7 @@ function AccountConnections(props: { integrations: Integration[]; destinations: 
   return <div className="connections-layout">
     <div className="section-heading"><h2>Мои аккаунты</h2><button className="primary" onClick={()=>setAdding(true)}>Добавить аккаунт</button></div>
     <div className="connection-grid">{props.integrations.map(item=><button key={item.id} className="connection-card" aria-pressed={!adding && selected?.id===item.id} onClick={()=>{setSelectedId(item.id);setAdding(false);}}><div className="connection-title"><PlatformBadge platform={item.platform}/><div><h3>{item.name}</h3><p>{platformInfo[item.platform].label} · {item.destination_count} бесед</p></div></div></button>)}</div>
+    <LocalMaxTestPanel accounts={props.integrations}/>
     <Connections key={adding ? "new" : selected?.id || "new"} {...props} integrations={adding || !selected ? [] : [selected]} destinations={adding || !selected ? [] : props.destinations.filter(item=>item.integration_id===selected.id)}/>
   </div>;
 }

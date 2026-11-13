@@ -1,3 +1,5 @@
+import { createLocalMaxTestRouter } from './local-max-test-router.js';
+import { createGigaChatProvider } from '../core/gigachat-provider.js';
 import cors from "cors";
 import express, { type ErrorRequestHandler, type RequestHandler } from "express";
 import { createHash, randomBytes, timingSafeEqual, randomUUID } from "node:crypto";
@@ -116,6 +118,10 @@ app.get("/api/health", async (_request, response) => {
   const result = await pool.query("SELECT now() AS database_time");
   response.json({ ok: true, databaseTime: result.rows[0].database_time, version: "1.0.0" });
 });
+app.use("/api/local-max-test",createLocalMaxTestRouter({pool,authorize:requireAdmin,
+  enabled:config.HOST==='127.0.0.1' && new URL(config.DATABASE_URL).pathname==='/relayboard_local_max' && !!config.LOCAL_MAX_TEST_CHAT_ID,
+  chatId:config.LOCAL_MAX_TEST_CHAT_ID??'',
+  provider:config.AI_ALLOW_EXTERNAL_REQUESTS&&config.GIGACHAT_AUTH_KEY?createGigaChatProvider({authKey:config.GIGACHAT_AUTH_KEY,scope:config.GIGACHAT_SCOPE}):undefined}));
 app.use("/api/ai/protocol", createProtocolRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,syntheticEnabled:config.AI_SEND_MODE === "synthetic"}));
 app.use("/api/ai/workspace", createConversationRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,workflow:new ConversationWorkflow(pool,{verifyQualification:verifyAiQualification})}));
 app.use("/api/ai/leads", createLeadRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED}));
@@ -455,7 +461,7 @@ const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => 
 };
 app.use(errorHandler);
 
-const server = app.listen(config.PORT, () => console.log(`Relayboard API listening on http://localhost:${config.PORT}`));
+const server = app.listen(config.PORT, config.HOST, () => console.log(`Relayboard API listening on http://localhost:${config.PORT}`));
 const stopContactImportCleanup = startContactImportCleanup(pool, config.CONTACT_IMPORT_ENABLED);
 async function shutdown() { server.close(); await stopContactImportCleanup(); await publishingQueue.close(); await pool.end(); process.exit(0); }
 process.on("SIGTERM", shutdown);
