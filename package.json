@@ -33,16 +33,16 @@
     "express": "latest",
     "ioredis": "latest",
     "libphonenumber-js": "1.13.16",
-    "multer": "^2.3.0",
+    "multer": "2.5.0",
     "pg": "latest",
     "qrcode": "latest",
     "react": "latest",
     "react-dom": "latest",
     "teleproto": "^1.229.0",
-    "vite": "6.4.3",
+    "vite": "6.4.6",
     "whatsapp-web.js": "1.34.7",
     "yauzl": "3.4.0",
-    "zod": "latest"
+    "zod": "4.6.6"
   },
   "overrides": {
     "exceljs": {

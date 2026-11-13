@@ -928,7 +928,7 @@
     },
     {
       "path": "node_modules/body-parser",
-      "version": "2.3.0",
+      "version": "2.4.0",
       "license": "MIT",
       "dev": false
     },
@@ -940,7 +940,7 @@
     },
     {
       "path": "node_modules/brace-expansion",
-      "version": "2.1.4",
+      "version": "2.1.8",
       "license": "MIT",
       "dev": false
     },
@@ -959,12 +959,6 @@
     {
       "path": "node_modules/buffer-crc32",
       "version": "1.0.0",
-      "license": "MIT",
-      "dev": false
-    },
-    {
-      "path": "node_modules/buffer-from",
-      "version": "1.1.2",
       "license": "MIT",
       "dev": false
     },
@@ -1097,18 +1091,6 @@
     {
       "path": "node_modules/concat-map",
       "version": "0.0.1",
-      "license": "MIT",
-      "dev": false
-    },
-    {
-      "path": "node_modules/concat-stream",
-      "version": "2.0.0",
-      "license": "MIT",
-      "dev": false
-    },
-    {
-      "path": "node_modules/concat-stream/node_modules/readable-stream",
-      "version": "3.6.2",
       "license": "MIT",
       "dev": false
     },
@@ -2422,7 +2404,7 @@
     },
     {
       "path": "node_modules/multer",
-      "version": "2.3.0",
+      "version": "2.5.0",
       "license": "MIT",
       "dev": false
     },
@@ -2788,7 +2770,7 @@
     },
     {
       "path": "node_modules/proxy-addr",
-      "version": "2.0.7",
+      "version": "2.0.8",
       "license": "MIT",
       "dev": false
     },
@@ -2866,7 +2848,7 @@
     },
     {
       "path": "node_modules/qs",
-      "version": "6.16.0",
+      "version": "6.17.1",
       "license": "BSD-3-Clause",
       "dev": false
     },
@@ -3118,7 +3100,7 @@
     },
     {
       "path": "node_modules/shell-quote",
-      "version": "1.9.0",
+      "version": "1.12.0",
       "license": "MIT",
       "dev": true
     },
@@ -3184,7 +3166,7 @@
     },
     {
       "path": "node_modules/source-map-js",
-      "version": "1.2.1",
+      "version": "1.2.2",
       "license": "BSD-3-Clause",
       "dev": false
     },
@@ -3405,12 +3387,6 @@
       "dev": false
     },
     {
-      "path": "node_modules/typedarray",
-      "version": "0.0.6",
-      "license": "MIT",
-      "dev": false
-    },
-    {
       "path": "node_modules/typedarray.prototype.slice",
       "version": "1.0.6",
       "license": "MIT",
@@ -3478,7 +3454,7 @@
     },
     {
       "path": "node_modules/vite",
-      "version": "6.4.3",
+      "version": "6.4.6",
       "license": "MIT",
       "dev": false
     },
@@ -3790,7 +3766,7 @@
     },
     {
       "path": "node_modules/zod",
-      "version": "4.5.4",
+      "version": "4.6.6",
       "license": "MIT",
       "dev": false
     }
