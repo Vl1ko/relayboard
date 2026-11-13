@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { z } from "zod";
+import { environmentBoolean } from "./environment-flags.js";
 
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -15,7 +16,7 @@ const schema = z.object({
   ADMIN_API_KEY: z.string().min(12),
   ADMIN_USERNAME: z.string().trim().min(2).default("admin"),
   ADMIN_PASSWORD: z.string().min(8).optional(),
-  SESSION_COOKIE_SECURE: z.coerce.boolean().default(false),
+  SESSION_COOKIE_SECURE: environmentBoolean,
   APP_ENCRYPTION_KEY: z.string().min(16),
   UPLOAD_DIR: z.string().default("./data/uploads"),
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(100 * 1024 * 1024),

@@ -1,3 +1,4 @@
+import SearchSourcesPanel from "./SearchSourcesPanel";
 import { useEffect, useRef, useState } from "react";
 type Lead = {
   id: string;
@@ -158,6 +159,7 @@ export default function LeadReview() {
       className="card contact-import-card"
       style={{ overflowWrap: "anywhere" }}
     >
+      <SearchSourcesPanel />
       <h2>Источники заявок — проверка</h2>
       <p>
         Подключённого поиска сейчас нет. Здесь отображаются вручную внесённые
