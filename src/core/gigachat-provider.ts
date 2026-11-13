@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { AiProvider } from './ai-engine.js';
+import type {AiProvider} from './ai-engine.js';
 
 export type GigaChatScope = 'GIGACHAT_API_PERS' | 'GIGACHAT_API_B2B' | 'GIGACHAT_API_CORP';
 const contract = `
@@ -13,6 +13,7 @@ replyKind is ask_fields|knowledge|handoff|none.
 proposedStatus is ai_dialog|qualified|unqualified|insufficient_data|manager_required.
 handoffReason is unknown_question|requested_human|insufficient_data|null (JSON null, not a string).
 When asking for missing required volume, a valid result is {"replyDraft":"","extracted":[],"replyKind":"ask_fields","askFields":["volume"],"knowledgeKeys":[],"proposedStatus":"ai_dialog","handoffReason":null}.
+For fields used by gte/lte rules, extracted.value MUST be a JSON number, never a quoted string.
 Use the supplied knowledge and evidence; if a commercial fact is unknown, hand off rather than invent it.`;
 
 async function boundedJson(response: Response, limit: number): Promise<any> {
@@ -53,10 +54,15 @@ export function createGigaChatProvider(options: { authKey: string; scope?: GigaC
         if (typeof auth.access_token !== 'string' || !auth.access_token || auth.access_token.length > 12000 || !Number.isFinite(expires) || expires <= now() + 1000) throw Error('gigachat_invalid_token');
         token = { value: auth.access_token, expires };
       }
+      const numeric=data.settings.fields.every(f=>data.settings.rules.some(r=>r.field===f.key&&['gte','lte'].includes(r.op)));
+      const schema={type:'object',additionalProperties:false,required:['replyDraft','extracted','replyKind','askFields','knowledgeKeys','proposedStatus','handoffReason'],properties:{
+        replyDraft:{type:'string'},extracted:{type:'array',items:{type:'object',additionalProperties:false,required:['field','value','evidenceMessageId','evidenceQuote'],properties:{field:{type:'string'},value:{type:numeric?'number':['string','number','boolean']},evidenceMessageId:{type:'string'},evidenceQuote:{type:'string'}}}},
+        replyKind:{type:'string',enum:['ask_fields','knowledge','handoff','none']},askFields:{type:'array',items:{type:'string'}},knowledgeKeys:{type:'array',items:{type:'string'}},proposedStatus:{type:'string',enum:['ai_dialog','qualified','unqualified','insufficient_data','manager_required']},handoffReason:{type:['string','null'],enum:['unknown_question','requested_human','insufficient_data',null]}
+      }};
       const response = await request('https://api.giga.chat/v1/chat/completions', {
         method: 'POST', redirect: 'error', signal: deadline,
         headers: { Authorization: 'Bearer ' + token.value, 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ model: data.settings.model, stream: false, temperature: 0.01, max_tokens: 2000, messages: [{ role: 'system', content: system + contract }, { role: 'user', content: JSON.stringify(data) }] }),
+        body: JSON.stringify({ model: data.settings.model, response_format:{type:'json_schema',schema,strict:true},stream: false, temperature: 0.01, max_tokens: 2000, messages: [{ role: 'system', content: system + contract }, { role: 'user', content: JSON.stringify(data) }] }),
       });
       if (response.status === 401) token = undefined;
       const body = await boundedJson(response, 131072), answer = body?.choices?.[0]?.message?.content;

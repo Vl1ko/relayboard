@@ -21,6 +21,7 @@ test('GigaChat exchanges server-only key, caches and refreshes token at expiry',
   assert.equal(new Headers(calls[1].init.headers).get('Authorization'),'Bearer synthetic-access');
   assert.ok(!String(calls[1].init.body).includes('synthetic-key'));
   assert.equal(calls[1].init.redirect,'error');
+  const payload=JSON.parse(String(calls[1].init.body));assert.equal(payload.response_format.strict,true);assert.ok(payload.response_format.schema.required.includes('handoffReason'));
   now+=1_760_000;await provider.complete(input());assert.equal(calls.length,5);
 });
 test('GigaChat fails closed on HTTP, oversized, truncated or malformed responses without exposing bodies', async()=>{

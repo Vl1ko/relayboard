@@ -1,8 +1,10 @@
+import {beginConfiguredQualification} from '../core/begin-qualification.js';
 import {Router,type RequestHandler,type ErrorRequestHandler} from 'express';
 import {randomUUID} from 'node:crypto';
 import {z,ZodError} from 'zod';
 import type {Pool} from 'pg';
 import {UMax} from '@ounezz/umax';
+import {MaxQualificationSession} from '../core/max-qualification-session.js';
 import {AiManagerStore,AiStateError} from '../core/ai-manager.js';
 import {AiOrchestrator} from '../core/ai-orchestrator.js';
 import {decryptCredentials} from '../core/crypto.js';
@@ -16,19 +18,19 @@ class TestError extends Error{}
 /** Local only. Group messages establish authors; AI replies are always private. No automatic sends. */
 export function createLocalMaxTestRouter(options:{pool:Pool;authorize:RequestHandler;enabled:boolean;chatId:string;provider?:AiProvider}){
  const router=Router(),store=new AiManagerStore(options.pool),orchestrator=new AiOrchestrator(options.pool);
- const sources=new Map<string,Source>(),bindings=new Map<string,Binding>();let busy=false;
+ const sources=new Map<string,Source>(),bindings=new Map<string,Binding>();let busy=false;let qualification:MaxQualificationSession|undefined;
  function prune(){for(const [id,s]of sources)if(s.expiresAt<Date.now())sources.delete(id);while(sources.size>256)sources.delete(sources.keys().next().value!);for(const [id,b]of bindings)if(!sources.has(b.sourceId))bindings.delete(id);}
  function source(id:string,accountId:string){prune();const s=sources.get(id);if(!s||s.accountId!==accountId)throw new TestError('Источник устарел или относится к другому аккаунту. Загрузите сообщения заново.');return s;}
- async function withMax<T>(accountId:string,body:(client:UMax,socket:ConnectedMaxTextSocket)=>Promise<T>){
+ async function withMax<T>(accountId:string,body:(client:UMax,socket:ConnectedMaxTextSocket)=>Promise<T>,retain=false){
   const account=(await options.pool.query("SELECT credential_ciphertext FROM integrations WHERE id=$1 AND platform='max' AND enabled AND auth_error IS NULL",[accountId])).rows[0];
   if(!account)throw new TestError('Выбранный аккаунт MAX недоступен');
-  let client:UMax|undefined;
+  let client:UMax|undefined;let retained=false;
   try{client=new UMax(decryptCredentials(account.credential_ciphertext).token);(client.chats as unknown as {subscribe_all:()=>void}).subscribe_all=()=>{};await client.connect();
    if(!client.account?.id)throw new TestError('MAX не подтвердил аккаунт');
    const group=client.chats.list.find(c=>c.type==='CHAT'&&String(c.id)===options.chatId&&c.title==='Тестовая');
    if(!group)throw new TestError('Тестовый чат недоступен выбранному аккаунту');
-   return await body(client,(client as unknown as {ws:ConnectedMaxTextSocket}).ws);
-  }finally{client?.close();}
+   const result=await body(client,(client as unknown as {ws:ConnectedMaxTextSocket}).ws);retained=retain;return result;
+  }finally{if(!retained)client?.close();}
  }
  async function verifySource(client:UMax,socket:ConnectedMaxTextSocket,s:Source){
   const result=await socket.send(49,{chatId:Number(options.chatId),from:new Date(s.occurredAt).getTime(),forward:1,backward:2,getMessages:true})as any;
@@ -46,6 +48,25 @@ export function createLocalMaxTestRouter(options:{pool:Pool;authorize:RequestHan
  router.use(options.authorize);router.use((_req,res,next)=>{res.setHeader('Cache-Control','no-store');next();});
  router.get('/status',async(_req,res)=>res.json({enabled:options.enabled,chatTitle:'Тестовая',replyMode:'private_author',modelReady:!!options.provider}));
  router.use((_req,res,next)=>{if(!options.enabled)return res.status(404).json({error:'Локальная проверка выключена'});next();});
+ router.get('/qualification',async(_req,res)=>res.json(qualification?await qualification.status():{active:false,reason:'not_started'}));
+ router.post('/qualification/stop',async(_req,res)=>{await qualification?.stop();res.json({stopped:true});});
+ router.post('/qualification/start',async(req,res)=>{
+  const data=z.object({accountId:z.string().uuid(),actionId:z.string().uuid(),useCurrentSettings:z.literal(true)}).strict().parse(req.body);
+  if(!options.provider)return res.status(503).json({error:'GigaChat не подключён'});
+  if(busy||qualification?.active)return res.status(409).json({error:'Квалификация уже включена или выполняется проверка'});
+  prune();const b=bindings.get(data.actionId);if(!b||b.accountId!==data.accountId)return res.status(409).json({error:'Подготовьте ответ выбранному автору заново'});
+  const s=source(b.sourceId,data.accountId);busy=true;
+  try{
+   const action=(await options.pool.query(`SELECT a.state,a.dispatch_started_at,c.automation_mode FROM ai_outbox a JOIN ai_conversations c ON c.id=a.conversation_id WHERE a.id=$1 AND c.id=$2 AND c.account_id=$3 AND c.external_id=$4`,[data.actionId,b.conversationId,data.accountId,b.dialogId])).rows[0];
+   if(action?.state!=='confirmed'||!action.dispatch_started_at)return res.status(409).json({error:'Сначала отправьте первый ответ и дождитесь подтверждения MAX'});
+   await withMax(data.accountId,async(client,socket)=>{await verifySource(client,socket,s);const dialog=await privateDialog(client,socket,s);if(dialog!==b.dialogId)throw new TestError('Личка автора изменилась');
+    try{await beginConfiguredQualification(options.pool,b.conversationId);}catch{throw new TestError('Включите квалификацию и задайте критерии в «ИИ-квалификация». При отказе клиента или неизвестной отправке запуск запрещён.');}
+    qualification=new MaxQualificationSession({pool:options.pool,provider:options.provider!,socket,close:()=>client.close(),accountId:data.accountId,conversationId:b.conversationId,dialogId:dialog,authorId:s.authorId,selfId:client.account!.id,since:new Date(action.dispatch_started_at).getTime()});qualification.start();
+   },true);
+   res.json(await qualification!.status());
+  }finally{busy=false;}
+ });
+ router.use((_req,res,next)=>{if(qualification?.active)return res.status(409).json({error:'Сначала остановите квалификацию, чтобы сменить аккаунт или источник'});next();});
  router.get('/sources',async(req,res)=>{
   const accountId=z.string().uuid().parse(req.query.accountId);if(busy)return res.status(409).json({error:'Дождитесь завершения проверки'});busy=true;
   try{const items=await withMax(accountId,async(client,socket)=>{
@@ -96,5 +117,5 @@ export function createLocalMaxTestRouter(options:{pool:Pool;authorize:RequestHan
   if(error instanceof TestError)return res.status(409).json({error:error.message});
   if(error instanceof AiStateError)return res.status(409).json({error:'Состояние диалога изменилось. Проверьте режим или подготовьте новый ответ.'});
   res.status(409).json({error:'Проверка не завершена. Проверьте сессию MAX и доступ к личке автора. При неизвестном результате повторная отправка запрещена.'});
- })as ErrorRequestHandler);return router;
+ })as ErrorRequestHandler);return Object.assign(router,{stopQualification:()=>qualification?.stop()});
 }
