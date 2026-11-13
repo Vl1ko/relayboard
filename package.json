@@ -11,6 +11,7 @@
     "dev:whatsapp": "tsx watch src/whatsapp-bridge/index.ts",
     "dev:telegram": "tsx watch src/telegram-bridge/index.ts",
     "db:migrate": "tsx src/api/migrate.ts",
+    "storage:preview": "tsx src/api/storage-preview.ts",
     "clean": "node scripts/clean.mjs",
     "build": "npm run clean && tsc -p tsconfig.node.json && vite build",
     "start:api": "node dist-node/api/server.js",

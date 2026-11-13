@@ -1,3 +1,4 @@
+import { sentMessageId } from "../core/whatsapp-receipt.js";
 import express, { type RequestHandler } from "express";
 import { createRequire } from "node:module";
 import { rmSync } from "node:fs";
@@ -25,6 +26,13 @@ let authenticationConfirmed = false;
 let lastError: string | null = null;
 let readyProbe: Promise<boolean> | null = null;
 let readyProbeTimer: NodeJS.Timeout | null = null;
+let activeSends = 0;
+let activeSendStartedAt = 0;
+let generation = 0;
+let lastHealthyAt = Date.now();
+let recoveryAttempts = 0;
+let recovering = false;
+let closing = false;
 
 const puppeteer: Record<string, unknown> = {
   headless: true,
@@ -41,12 +49,6 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function sentMessageId(message: unknown) {
-  const id = (message as { id?: { _serialized?: string; $1?: string } } | undefined)?.id;
-  // Recent WhatsApp Web builds may complete sendMessage but omit the returned
-  // model. Reaching this point still means the browser-side send resolved.
-  return id?._serialized ?? id?.$1 ?? `accepted-${Date.now()}`;
-}
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string) {
   return new Promise<T>((resolve, reject) => {
@@ -124,12 +126,21 @@ async function ensureUtilityInjection() {
 }
 
 async function probeClientReady() {
-  if (state === "ready") return true;
-  if (!authenticationConfirmed) return false;
   if (readyProbe) return readyProbe;
 
   readyProbe = (async () => {
     try {
+      const page=client.pupPage;
+      if (!page || recovering || closing) return false;
+      const connected=await withTimeout(page.evaluate(()=>{
+        const w=window as unknown as {require?: (name:string)=>{Socket?:{state?:string}}};
+        return w.require?.("WAWebSocketModel")?.Socket?.state === "CONNECTED";
+      }),4000,"проверка соединения WhatsApp");
+      if (!connected) {
+        if (state === "ready") state="disconnected";
+        return false;
+      }
+      authenticationConfirmed=true;
       // WhatsApp Web 2.3000.x can authenticate without emitting `ready`, and
       // full chat serialization can fail on one malformed/internal model.
       // Reading the minimal group fields directly verifies the exact feature
@@ -137,8 +148,11 @@ async function probeClientReady() {
       await ensureUtilityInjection();
       await readGroupsDirect();
       markReady("group collection");
+      lastHealthyAt=Date.now();
+      recoveryAttempts=0;
       return true;
     } catch (error) {
+      if (state === "ready") state="disconnected";
       lastError = errorMessage(error);
       return false;
     }
@@ -190,7 +204,7 @@ client.on("authenticated", () => {
 });
 client.on("change_state", (nextState) => {
   console.log("WhatsApp connection state changed", nextState);
-  if (String(nextState) === "CONNECTED") markReady("change_state");
+  if (String(nextState) === "CONNECTED") void probeClientReady();
 });
 client.on("auth_failure", (message) => {
   state = "auth_failure";
@@ -217,7 +231,7 @@ app.use(requireBridgeSecret);
 
 app.get("/status", async (_request, response) => {
   await probeClientReady();
-  response.json({ status: state, qr: qrDataUrl, error: lastError });
+  response.json({ status: state, qr: qrDataUrl, error: lastError, recoveryAttempts });
 });
 
 app.get("/groups", async (_request, response) => {
@@ -235,24 +249,62 @@ app.get("/groups", async (_request, response) => {
 });
 
 app.post("/send", async (request, response) => {
-  if (!(await probeClientReady())) return response.status(409).json({ error: "WhatsApp ещё синхронизирует сессию" });
-  const { destinationId, text = "", attachments = [] } = request.body as {
+  const { deliveryId, destinationId, text = "", attachments = [] } = request.body as {
+    deliveryId?: string;
     destinationId?: string;
     text?: string;
     attachments?: Array<{ path: string; name: string; mimeType: string }>;
   };
-  if (!destinationId || (!text.trim() && attachments.length === 0)) {
+  if (!deliveryId || !/^[0-9a-f-]{36}$/i.test(deliveryId) || !destinationId || (!text.trim() && attachments.length === 0)) {
     return response.status(400).json({ error: "Нужны destinationId и текст или файл" });
   }
+  const existing=await pool.query("SELECT status,message_id,session_key,destination_id FROM whatsapp_send_receipts WHERE delivery_id=$1",[deliveryId]);
+  if (existing.rowCount) {
+    const receipt=existing.rows[0];
+    if (receipt.session_key !== sessionKey || receipt.destination_id !== destinationId) return response.status(409).json({error:"Идентификатор отправки уже занят",kind:"ambiguous"});
+    if (receipt.status === "sent") return response.json({messageId:receipt.message_id});
+    return response.status(409).json({error:"Отправка уже начата; повтор заблокирован до проверки результата",kind:"ambiguous"});
+  }
+  if (!(await probeClientReady())) return response.status(409).json({ error: "WhatsApp ещё синхронизирует сессию", kind:"waiting" });
+  if (activeSends) return response.status(409).json({error:"WhatsApp завершает предыдущую отправку",kind:"waiting"});
+  activeSends+=1;
+  activeSendStartedAt=Date.now();
   try {
+    const claimed=await pool.query(`INSERT INTO whatsapp_send_receipts(delivery_id,session_key,destination_id,status)
+      VALUES($1,$2,$3,'sending') ON CONFLICT DO NOTHING RETURNING delivery_id`,[deliveryId,sessionKey,destinationId]);
+    if (!claimed.rowCount) { activeSends-=1;return response.status(409).json({error:"Отправка уже начата",kind:"ambiguous"}); }
+  } catch(error) { activeSends-=1;throw error; }
+  const sendGeneration=generation;
+  const deadline=Date.now()+Math.max(1000,config.SEND_TIMEOUT_MS-15000);
+  // Persist even a late result, after the caller has stopped waiting.
+  const sending=(async()=>{
+    try {
+      const result=await sendMessage(destinationId);
+      await pool.query("UPDATE whatsapp_send_receipts SET status='sent',message_id=$2,updated_at=now() WHERE delivery_id=$1",[deliveryId,result]);
+      return result;
+    } catch(error) {
+      await pool.query("UPDATE whatsapp_send_receipts SET status='unknown',updated_at=now() WHERE delivery_id=$1",[deliveryId]);
+      throw error;
+    } finally { activeSends-=1; }
+  })();
+  try {
+    const messageId=await withTimeout(sending,Math.max(1000,config.SEND_TIMEOUT_MS-15000),"отправка WhatsApp: результат требует проверки");
+    response.json({messageId});
+  } catch(error) {
+    lastError=errorMessage(error);
+    await pool.query("UPDATE whatsapp_send_receipts SET status='unknown',updated_at=now() WHERE delivery_id=$1 AND status='sending'",[deliveryId]);
+    response.status(503).json({error:"Не удалось подтвердить отправку WhatsApp",details:lastError,kind:"ambiguous"});
+  }
+  async function sendMessage(destinationId: string) {
     await ensureUtilityInjection();
     if (attachments.length === 0) {
       const message = await client.sendMessage(destinationId, text);
-      return response.json({ messageId: sentMessageId(message) });
+      return sentMessageId(message);
     }
-    if (text.length > 1000) await client.sendMessage(destinationId, text);
+    if (text.length > 1000) sentMessageId(await client.sendMessage(destinationId, text));
     const messageIds: string[] = [];
     for (let index = 0; index < attachments.length; index += 1) {
+      if (generation !== sendGeneration || Date.now() >= deadline) throw new Error("Отправка вложений прервана; результат требует проверки");
       const attachment = attachments[index];
       const message = await client.sendMessage(destinationId, MessageMedia.fromFilePath(attachment.path), {
         caption: index === 0 && text.length <= 1000 ? text : "",
@@ -260,15 +312,40 @@ app.post("/send", async (request, response) => {
       });
       messageIds.push(sentMessageId(message));
     }
-    response.json({ messageId: messageIds.join(",") });
-  } catch (error) {
-    lastError = errorMessage(error);
-    response.status(503).json({ error: "Не удалось отправить сообщение в WhatsApp", details: lastError });
+    return messageIds.join(",");
   }
 });
 
-const initialized = client.initialize().catch((error) => { state="auth_failure"; lastError=errorMessage(error); });
-return { app, initialized: Promise.resolve(), close: async () => { if (readyProbeTimer) clearInterval(readyProbeTimer); await client.destroy().catch(() => undefined); } };
+function initialize() {
+  const current=++generation;
+  void client.initialize().catch((error) => {
+    if (current !== generation || closing) return;
+    state="disconnected"; lastError=errorMessage(error);
+  });
+}
+initialize();
+const watchdog=setInterval(()=>{
+  if (closing || recovering) return;
+  void (async()=>{
+    const hungSend=activeSends > 0 && Date.now()-activeSendStartedAt >= config.SEND_TIMEOUT_MS*2;
+    if (await probeClientReady() && !hungSend) return;
+    if (closing || recovering || ["qr","auth_failure"].includes(state) || recoveryAttempts >= 3) return;
+    if (activeSends && Date.now()-activeSendStartedAt < config.SEND_TIMEOUT_MS*2) return;
+    if (!hungSend && Date.now()-lastHealthyAt < 180_000 * 2**recoveryAttempts) return;
+    recovering=true; generation+=1; recoveryAttempts+=1;
+    console.warn(`WhatsApp recovering connection (attempt ${recoveryAttempts}/3)`);
+    try {
+      await withTimeout(client.destroy().catch(()=>undefined),10_000,"закрытие WhatsApp");
+      if (closing) return;
+      state="starting"; authenticationConfirmed=false; qrDataUrl=null;
+      lastError="Восстанавливаем подключение WhatsApp";
+      lastHealthyAt=Date.now(); initialize();
+    } catch(error) { lastError=errorMessage(error); }
+    finally { recovering=false; }
+  })().catch(error=>console.error("WhatsApp recovery failed",errorMessage(error)));
+},15_000);
+watchdog.unref();
+return { app, initialized: Promise.resolve(), close: async () => { closing=true;generation+=1;clearInterval(watchdog);if (readyProbeTimer) clearInterval(readyProbeTimer);await client.destroy().catch(() => undefined); } };
 }
 const app = express();
 const sessions = new Map<string, ReturnType<typeof createSession>>();

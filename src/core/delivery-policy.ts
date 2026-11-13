@@ -1,4 +1,14 @@
-export type DeliveryErrorKind = "transient" | "permanent" | "ambiguous";
+export type DeliveryErrorKind = "transient" | "permanent" | "ambiguous" | "waiting" | "auth_required";
+
+export class DeliveryError extends Error {
+  constructor(message: string, public readonly kind: DeliveryErrorKind) { super(message); }
+}
+
+export function isAuthorizationError(error: unknown) {
+  const value = error as { message?: string; payload?: { error?: string; message?: string } } | null;
+  return value?.payload?.error === "login.token" || value?.payload?.message === "FAIL_LOGIN_TOKEN"
+    || /FAIL_LOGIN_TOKEN|login\.token|Ошибка входа.*авториз|invalid token|сессия.*истек/i.test(value?.message || "");
+}
 
 const PERMANENT = [
   /not found/i,
@@ -22,6 +32,8 @@ const AMBIGUOUS = [
 ];
 
 export function classifyDeliveryError(error: unknown): DeliveryErrorKind {
+  if (error instanceof DeliveryError) return error.kind;
+  if (isAuthorizationError(error)) return "auth_required";
   const message = error instanceof Error ? error.message : String(error);
   if (PERMANENT.some((pattern) => pattern.test(message))) return "permanent";
   if (AMBIGUOUS.some((pattern) => pattern.test(message))) return "ambiguous";
