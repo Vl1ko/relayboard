@@ -86,3 +86,13 @@ test('qualified manager notification reaches only configured group and cannot be
  const socket={connected:true,async send(op:number,body:any){if(op===48)return{chats:[{type:'CHAT',id:-456}]};assert.equal(op,64);assert.equal(body.chatId,-456);assert.match(body.message.text,/Заявка прошла квалификацию/);assert.match(body.message.text,/volume: 12/);sends++;return{message:{id:'manager-confirmed'}};}};
  assert.equal((await dispatchMaxManagerNotification(pool,id,{accountId:f.account,socket})as any).state,'confirmed');await dispatchMaxManagerNotification(pool,id,{accountId:f.account,socket});assert.equal(sends,1);
 });
+
+for(const reason of ['human_requested','insufficient_data','reply_limit'] as const){
+ test('manager MAX dispatch supports '+reason+' with one confirmed send',{skip:!url},async()=>{
+  const f=await fixture(ask),{ConversationWorkflow}=await import('./conversation-workflow.js'),{dispatchMaxManagerNotification}=await import('./max-manager-notification.js');
+  const workflow=new ConversationWorkflow(pool);await workflow.saveManagerTarget({accountId:f.account,externalId:'-456'});
+  const n=await workflow.handoff({conversationId:f.conversation.id,key:'all-reasons',reason,summary:'Synthetic summary',parameters:{volume:'12'}});let sends=0;
+  const socket={connected:true,async send(op:number,body:any){if(op===48)return{chats:[{type:'CHAT',id:-456}]};assert.equal(op,64);assert.equal(body.chatId,-456);assert.match(body.message.text,/Synthetic summary/);assert.doesNotMatch(body.message.text,/Заявка прошла квалификацию/);sends++;return{message:{id:'server-confirmed'}};}};
+  assert.equal((await dispatchMaxManagerNotification(pool,n.id,{accountId:f.account,socket})as any).state,'confirmed');await dispatchMaxManagerNotification(pool,n.id,{accountId:f.account,socket});assert.equal(sends,1);
+ });
+}

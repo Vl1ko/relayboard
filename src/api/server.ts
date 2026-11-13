@@ -1,3 +1,4 @@
+import {maxWorkerRequest} from '../core/max-worker-client.js';
 import { createLocalMaxTestRouter } from './local-max-test-router.js';
 import { createGigaChatProvider } from '../core/gigachat-provider.js';
 import cors from "cors";
@@ -120,7 +121,7 @@ app.get("/api/health", async (_request, response) => {
   response.json({ ok: true, databaseTime: result.rows[0].database_time, version: "1.0.0" });
 });
 const localMaxTestRouter=createLocalMaxTestRouter({pool,authorize:requireAdmin,
-  enabled:config.HOST==='127.0.0.1' && new URL(config.DATABASE_URL).pathname==='/relayboard_local_max' && !!config.LOCAL_MAX_TEST_CHAT_ID,
+  enabled:!config.MAX_WORKER_URL && config.HOST==='127.0.0.1' && new URL(config.DATABASE_URL).pathname==='/relayboard_local_max' && !!config.LOCAL_MAX_TEST_CHAT_ID,
   chatId:config.LOCAL_MAX_TEST_CHAT_ID??'',
   provider:config.AI_ALLOW_EXTERNAL_REQUESTS&&config.GIGACHAT_AUTH_KEY?createGigaChatProvider({pool,authKey:config.GIGACHAT_AUTH_KEY,scope:config.GIGACHAT_SCOPE}):undefined});
 app.use("/api/local-max-test",localMaxTestRouter);
@@ -181,7 +182,7 @@ app.post("/api/integrations", async (request, response) => {
     const token = normalizeMaxToken(input.credentials.token);
     if (!token) return response.status(400).json({ error: "Нужен токен личной web-сессии MAX" });
     input.credentials.token = token;
-    try { await listMaxGroups(token); }
+    try { if(!config.MAX_WORKER_URL)await listMaxGroups(token); }
     catch (error) { return response.status(400).json({ error: `MAX не принял токен: ${error instanceof Error ? error.message : "ошибка входа"}` }); }
   }
   const result = await pool.query(
@@ -189,6 +190,10 @@ app.post("/api/integrations", async (request, response) => {
      RETURNING id, platform, name, enabled, created_at`,
     [input.platform, input.name, encryptCredentials(input.credentials)],
   );
+  if(input.platform==='max'&&config.MAX_WORKER_URL){
+    try{await maxWorkerRequest(`/accounts/${result.rows[0].id}/groups`);}
+    catch{await pool.query('DELETE FROM integrations WHERE id=$1',[result.rows[0].id]);return response.status(400).json({error:'MAX не подтвердил новый аккаунт. Проверьте токен и отсутствие дублирующего подключения.'});}
+  }
   response.status(201).json(result.rows[0]);
 });
 
@@ -201,11 +206,17 @@ app.patch("/api/integrations/:id/credentials", async (request, response) => {
   const id=z.string().uuid().parse(request.params.id);
   const input=z.object({token:z.string().min(1)}).parse(request.body);
   const token=normalizeMaxToken(input.token);
-  const account=await pool.query("SELECT id FROM integrations WHERE id=$1 AND platform='max'",[id]);
+  const account=await pool.query("SELECT id,credential_ciphertext,auth_error FROM integrations WHERE id=$1 AND platform='max'",[id]);
   if (!account.rowCount) return response.status(404).json({error:"Аккаунт MAX не найден"});
-  try { await listMaxGroups(token); }
-  catch(error) { return response.status(400).json({error:`MAX не принял токен: ${deliveryErrorMessage(error)}`}); }
-  await pool.query("UPDATE integrations SET credential_ciphertext=$2,auth_error=NULL,updated_at=now() WHERE id=$1",[id,encryptCredentials({token})]);
+  const cipher=encryptCredentials({token});
+  if(config.MAX_WORKER_URL){
+    await pool.query("UPDATE integrations SET credential_ciphertext=$2,auth_error=NULL,updated_at=now() WHERE id=$1",[id,cipher]);
+    try{await maxWorkerRequest(`/accounts/${id}/groups`);}
+    catch{await pool.query('UPDATE integrations SET credential_ciphertext=$3,auth_error=$4 WHERE id=$1 AND credential_ciphertext=$2',[id,cipher,account.rows[0].credential_ciphertext,account.rows[0].auth_error]);return response.status(400).json({error:'MAX не подтвердил этот аккаунт. Предыдущие настройки подключения сохранены.'});}
+  }else{
+    try{await listMaxGroups(token);}catch(error){return response.status(400).json({error:`MAX не принял токен: ${deliveryErrorMessage(error)}`});}
+    await pool.query("UPDATE integrations SET credential_ciphertext=$2,auth_error=NULL,updated_at=now() WHERE id=$1",[id,cipher]);
+  }
   await pool.query(`UPDATE deliveries d SET next_attempt_at=now(),last_error=NULL,last_error_kind=NULL
     FROM destinations dst WHERE d.destination_id=dst.id AND dst.integration_id=$1 AND d.status='queued'`,[id]);
   response.json({updated:true});
@@ -244,7 +255,7 @@ app.get("/api/max/groups/:integrationId", async (request, response) => {
   if (!result.rowCount) return response.status(404).json({ error: "Подключение не найдено" });
   if (result.rows[0].platform !== "max") return response.status(400).json({ error: "Это не подключение MAX" });
   const credentials = decryptCredentials(result.rows[0].credential_ciphertext);
-  try { response.json(await listMaxGroups(credentials.token)); }
+  try { response.json(config.MAX_WORKER_URL?await maxWorkerRequest(`/accounts/${id.data}/groups`):await listMaxGroups(credentials.token)); }
   catch (error) {
     if (isAuthorizationError(error)) await pool.query("UPDATE integrations SET auth_error=$2 WHERE id=$1 AND credential_ciphertext=$3",[id.data,deliveryErrorMessage(error),result.rows[0].credential_ciphertext]);
     if (isMaxTransportError(error)) {
@@ -452,7 +463,7 @@ app.delete("/api/posts/:id", async (request, response) => {
   response.json({ deleted: true });
 });
 app.post("/api/deliveries/:id/retry", async (request, response) => {
-  const receipt=await pool.query("SELECT status FROM whatsapp_send_receipts WHERE delivery_id=$1",[request.params.id]);
+  const receipt=await pool.query("SELECT status FROM whatsapp_send_receipts WHERE delivery_id=$1 UNION ALL SELECT status FROM max_send_receipts WHERE delivery_id=$1",[request.params.id]);
   if (receipt.rowCount) return response.status(409).json({error:receipt.rows[0].status === "sent"
     ? "Отправка уже подтверждена. Обновите журнал."
     : "Отправка уже началась. Проверьте доставку в WhatsApp; повтор может создать дубль."});
@@ -490,7 +501,7 @@ const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => 
   if (error instanceof ZodError) return response.status(400).json({ error: "Проверьте данные формы", details: error.flatten() });
   if (error instanceof multer.MulterError) return response.status(error.code === "LIMIT_FILE_SIZE" ? 413 : 400).json({ error: error.code === "LIMIT_FILE_SIZE" ? "Файл слишком большой" : "Ошибка загрузки файлов" });
   if (error && typeof error === "object" && "constraint" in error && error.constraint === "post_in_flight") {
-    return response.status(409).json({ error: "Дождитесь завершения текущей отправки перед удалением публикации" });
+    return response.status(409).json({ error: "Отправка выполняется или результат неизвестен. Сначала проверьте доставку" });
   }
   if (error && typeof error === "object" && "constraint" in error && error.constraint === "media_not_expired") {
     return response.status(409).json({ error: "Срок хранения вложений истёк. Создайте новую публикацию и загрузите файлы заново" });

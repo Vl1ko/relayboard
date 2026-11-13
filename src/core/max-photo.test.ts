@@ -86,3 +86,10 @@ test("missing acknowledgement after publishing remains ambiguous", async t => {
   const ws: MaxTransport = { send: async opcode => opcode === 80 ? { url: "https://iu.oneme.ru/uploadImage?r=signed" } : {} };
   await assert.rejects(sendMaxPhotoMessage(ws, 123, { text: "caption", attachments: [photo] }, 60000), error => classifyDeliveryError(error) === "ambiguous");
 });
+
+for(const receipt of [{message:{id:''}},new Error('unclassified remote failure')]){
+ test('unconfirmed MAX send never becomes a safe automatic retry: '+String(receipt),async()=>{
+  const ws:MaxTransport={async send(){if(receipt instanceof Error)throw receipt;return receipt;}};
+  await assert.rejects(sendMaxPhotoMessage(ws,123,{text:'synthetic',attachments:[]},60000),error=>classifyDeliveryError(error)==='ambiguous');
+ });
+}

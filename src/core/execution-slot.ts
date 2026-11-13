@@ -16,9 +16,18 @@ export async function withExecutionSlot<T>(pool: Pool, identity: string, work: (
     try {
       locked = (await client.query('SELECT pg_try_advisory_lock($1::bigint) AS acquired', [key])).rows[0].acquired;
       if (locked) {
-        const result = await work(AbortSignal.any([signal, owner.signal]));
-        owner.signal.throwIfAborted();
-        return result;
+        let heartbeat:Promise<void>|undefined;
+        const timer=setInterval(()=>{
+          if(!heartbeat&&!owner.signal.aborted){
+            const probe={text:'SELECT 1',query_timeout:5000};
+            heartbeat=client.query(probe).then(()=>{},()=>lost()).finally(()=>{heartbeat=undefined;});
+          }
+        },10000);timer.unref();
+        try{
+          const result = await work(AbortSignal.any([signal, owner.signal]));
+          owner.signal.throwIfAborted();
+          return result;
+        }finally{clearInterval(timer);await heartbeat;}
       }
     } finally {
       if (locked && !broken) {

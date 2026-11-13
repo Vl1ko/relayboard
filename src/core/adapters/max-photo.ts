@@ -34,7 +34,7 @@ export async function uploadMaxPhoto(ws: MaxTransport, photo: OutgoingAttachment
   return { _type: "PHOTO", photoToken: token };
 }
 
-export async function sendMaxPhotoMessage(ws: MaxTransport, chatId: number, message: OutgoingMessage, timeoutMs: number): Promise<SendResult> {
+export async function prepareMaxMediaMessage(ws: MaxTransport, chatId: number, message: OutgoingMessage, timeoutMs: number, beforeSend?:()=>void): Promise<() => Promise<SendResult>> {
   const budget = Math.max(1000, timeoutMs - 5000);
   const deadline = Date.now() + budget;
   const signal = AbortSignal.timeout(budget);
@@ -58,9 +58,20 @@ export async function sendMaxPhotoMessage(ws: MaxTransport, chatId: number, mess
     if (signal.aborted) throw new DeliveryError("Загрузка вложений MAX превысила время ожидания; сообщение не отправлено", "transient");
     throw error;
   }
-  const result = await ws.send(64, {
-    chatId, message: { text: message.text, cid: Date.now(), elements: [], attaches }, notify: true,
-  }, Math.max(1, deadline - Date.now())) as { message?: { id?: string | number } };
-  if (result.message?.id == null) throw new DeliveryError("MAX не подтвердил идентификатор отправленного сообщения", "ambiguous");
-  return { externalMessageId: String(result.message.id) };
+  return () => {
+    if (signal.aborted || Date.now()>=deadline) throw new DeliveryError("Подготовка MAX истекла до отправки", "transient");
+    beforeSend?.();
+    let response:Promise<unknown>;
+    try { response=ws.send(64, {chatId,message:{text:message.text,cid:Date.now(),elements:[],attaches},notify:true},Math.max(1,deadline-Date.now())); }
+    catch { throw new DeliveryError("MAX не подтвердил результат начатой отправки", "ambiguous"); }
+    return response.then(body=>{
+      const result=body as {message?:{id?:unknown}};
+      if(result?.message?.id==null||!String(result.message.id).trim())throw new DeliveryError("MAX не подтвердил идентификатор отправленного сообщения", "ambiguous");
+      return {externalMessageId:String(result.message.id)};
+    },()=>{throw new DeliveryError("MAX не подтвердил результат начатой отправки", "ambiguous");});
+  };
+}
+
+export async function sendMaxPhotoMessage(ws:MaxTransport,chatId:number,message:OutgoingMessage,timeoutMs:number):Promise<SendResult>{
+ return (await prepareMaxMediaMessage(ws,chatId,message,timeoutMs))();
 }

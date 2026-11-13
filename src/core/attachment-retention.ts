@@ -8,6 +8,8 @@ const eligible = `p.status IN ('completed','stopped') AND p.mode <> 'recurring'
   AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.post_id=p.id
     AND d.status IN ('queued','sending','paused','unknown'))
   AND NOT EXISTS (SELECT 1 FROM whatsapp_send_receipts r JOIN deliveries d ON d.id=r.delivery_id
+    WHERE d.post_id=p.id AND r.status IN ('sending','unknown'))
+  AND NOT EXISTS (SELECT 1 FROM max_send_receipts r JOIN deliveries d ON d.id=r.delivery_id
     WHERE d.post_id=p.id AND r.status IN ('sending','unknown'))`;
 
 function validateDays(days: number) {

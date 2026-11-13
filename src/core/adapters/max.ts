@@ -1,3 +1,4 @@
+import {maxWorkerRequest} from '../max-worker-client.js';
 import { UMax } from "@ounezz/umax";
 import { DeliveryError, isAuthorizationError } from "../delivery-policy.js";
 import { config } from "../config.js";
@@ -115,6 +116,12 @@ export class MaxAdapter implements MessengerAdapter {
   constructor(private readonly token: string) {}
 
   async send(destinationId: string, message: OutgoingMessage): Promise<SendResult> {
+    if(config.MAX_WORKER_URL){
+      if(!message.deliveryId||!/^[0-9a-f-]{36}$/i.test(message.deliveryId))throw new DeliveryError("MAX owner требует ID сохранённой отправки","permanent");
+      const result=await maxWorkerRequest(`/deliveries/${message.deliveryId}/dispatch`,'POST') as {externalMessageId?:unknown};
+      if(typeof result.externalMessageId!=='string'||!result.externalMessageId.trim())throw new DeliveryError("MAX owner не подтвердил отправку","ambiguous");
+      return {externalMessageId:result.externalMessageId};
+    }
     return withConnectedClient(this.token, async (client) => {
       const chat = await client.chats.get(Number(destinationId));
       if (message.attachments.some(item => item.mimeType.startsWith("image/"))) {

@@ -225,3 +225,11 @@ test("re-running migration preserves already recorded completion dates", { skip:
   const after = (await pool.query("SELECT finished_at FROM posts WHERE id=$1", [item.post])).rows[0].finished_at;
   assert.deepEqual(after, before);
 });
+
+test('unknown MAX receipt protects media and outcome metadata even when delivery says failed',{skip:!enabled},async()=>{
+ const item=await fixture({status:'stopped',delivery:'failed',age:100});
+ await pool.query("INSERT INTO max_send_receipts(delivery_id,account_id,destination_id,status) VALUES($1,$2,'group','unknown')",[item.delivery,randomUUID()]);
+ assert.equal((await previewAttachmentRetention(pool,30)).files,0);assert.equal(await expirePostAttachments(pool,30),0);
+ await assert.rejects(pool.query('DELETE FROM posts WHERE id=$1',[item.post]),error=>error instanceof Error&&'constraint'in error&&error.constraint==='post_in_flight');
+ assert.equal(await readFile(item.path,'utf8'),'retained media');
+});

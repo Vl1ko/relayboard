@@ -133,3 +133,50 @@ test('twenty distinct simultaneous sources for the same author share one open re
  assert.equal(new Set(rows.map(r=>r.requestId)).size,1);assert.equal(rows.filter(r=>r.created).length,1);
  assert.equal((await pool.query('SELECT count(*)::int AS n FROM ai_request_sources')).rows[0].n,20);
 });
+
+test('socket owner verifies the private author and sends a durable action only once', {skip},async()=>{
+ const {MaxConnections}=await import('./max-connections.js'),{dispatchOwnedMax}=await import('./owned-max-dispatch.js'),{encryptCredentials}=await import('./crypto.js');
+ const f=await fixture();f.authorId='202';await pool.query("UPDATE ai_conversations SET external_id='303' WHERE id=$1",[f.conversationId]);
+ await pool.query('UPDATE integrations SET credential_ciphertext=$2 WHERE id=$1',[f.accountId,encryptCredentials({token:'synthetic'})]);await bindSourceRequest(pool,f);
+ const epoch=(await pool.query('SELECT automation_epoch FROM ai_conversations WHERE id=$1',[f.conversationId])).rows[0].automation_epoch;
+ const action=(await store.enqueue({conversationId:f.conversationId,expectedEpoch:epoch,kind:'reply',logicalKey:'owned',text:'configured test'})).action;
+ let sends=0,wrong=false;const stop=new AbortController();
+ const connections=new MaxConnections(pool,stop.signal,async()=>({selfId:101,groups:[],close(){},socket:{connected:true,async send(op){if(op===48)return{chats:[{id:303,type:'DIALOG',participants:wrong?{'101':{},'999':{}}:{'101':{},'202':{}}}]};assert.equal(op,64);sends++;return{message:{id:'server-receipt'}};}}}));
+ try{
+  wrong=true;await assert.rejects(dispatchOwnedMax(pool,connections,action.id,stop.signal),/target_unverified/);assert.equal(sends,0);
+  wrong=false;assert.equal((await dispatchOwnedMax(pool,connections,action.id,stop.signal)).state,'confirmed');
+  await dispatchOwnedMax(pool,connections,action.id,stop.signal);assert.equal(sends,1);
+ }finally{stop.abort();}
+});
+
+async function publicationFixture(send:(op:number,body:Record<string,unknown>)=>Promise<unknown>){
+ const {MaxConnections}=await import('./max-connections.js'),{encryptCredentials}=await import('./crypto.js');
+ const f=await fixture();await pool.query('UPDATE integrations SET credential_ciphertext=$2 WHERE id=$1',[f.accountId,encryptCredentials({token:'synthetic'})]);
+ const destination=(await pool.query("INSERT INTO destinations(integration_id,external_id,title) VALUES($1,'-456','synthetic group') RETURNING id",[f.accountId])).rows[0].id;
+ const post=(await pool.query("INSERT INTO posts(text,mode,status) VALUES('stored publication','now','active') RETURNING id")).rows[0].id;
+ const delivery=(await pool.query("INSERT INTO deliveries(post_id,destination_id,occurrence_key,status) VALUES($1,$2,'synthetic','sending') RETURNING id",[post,destination])).rows[0].id;
+ const stop=new AbortController(),connections=new MaxConnections(pool,stop.signal,async()=>({selfId:101,groups:[],close(){},socket:{connected:true,send}}));
+ return {stop,connections,delivery,post};
+}
+test('twenty publication RPC retries initiate one MAX message and preserve its receipt',{skip},async()=>{
+ const {dispatchOwnedMaxPublication}=await import('./owned-max-publication.js');let sends=0;
+ const f=await publicationFixture(async(op,body)=>{assert.equal(op,64);assert.equal(body.chatId,-456);assert.equal((body.message as {text:string}).text,'stored publication');sends++;return{message:{id:'publication-receipt'}};});
+ try{
+  const results=await Promise.allSettled(Array.from({length:20},()=>dispatchOwnedMaxPublication(pool,f.connections,f.delivery,f.stop.signal,60000)));
+  assert.ok(results.some(r=>r.status==='fulfilled'));assert.equal(sends,1);
+  assert.deepEqual(await dispatchOwnedMaxPublication(pool,f.connections,f.delivery,f.stop.signal,60000),{externalMessageId:'publication-receipt'});assert.equal(sends,1);
+ }finally{f.stop.abort();}
+});
+test('lost MAX publication receipt blocks retry; stopped publication never writes to the socket',{skip},async()=>{
+ const {dispatchOwnedMaxPublication}=await import('./owned-max-publication.js');let sends=0;
+ const f=await publicationFixture(async()=>{sends++;throw Error('unclassified connection loss');});
+ try{
+  await assert.rejects(dispatchOwnedMaxPublication(pool,f.connections,f.delivery,f.stop.signal,60000),/не подтверждена/);
+  assert.equal((await pool.query('SELECT status FROM max_send_receipts WHERE delivery_id=$1',[f.delivery])).rows[0].status,'unknown');
+  await assert.rejects(dispatchOwnedMaxPublication(pool,f.connections,f.delivery,f.stop.signal,60000),/требует проверки/);assert.equal(sends,1);
+  await pool.query('DELETE FROM max_send_receipts WHERE delivery_id=$1',[f.delivery]);
+  await pool.query("UPDATE posts SET status='stopped' WHERE id=$1",[f.post]);
+  await assert.rejects(dispatchOwnedMaxPublication(pool,f.connections,f.delivery,f.stop.signal,60000),/остановлена/);assert.equal(sends,1);
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM max_send_receipts WHERE delivery_id=$1',[f.delivery])).rows[0].n,0);
+ }finally{f.stop.abort();}
+});

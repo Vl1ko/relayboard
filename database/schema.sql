@@ -239,12 +239,26 @@ CREATE TRIGGER attachments_cleanup_outbox AFTER DELETE OR UPDATE OF expired_at O
 
 CREATE OR REPLACE FUNCTION guard_post_media_deletion() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM deliveries WHERE post_id=OLD.id AND status='sending') THEN
+  IF EXISTS (SELECT 1 FROM deliveries d LEFT JOIN whatsapp_send_receipts w ON w.delivery_id=d.id LEFT JOIN max_send_receipts m ON m.delivery_id=d.id WHERE d.post_id=OLD.id AND (d.status IN ('sending','unknown') OR w.status IN ('sending','unknown') OR m.status IN ('sending','unknown'))) THEN
     RAISE EXCEPTION USING ERRCODE='23514', CONSTRAINT='post_in_flight',
-      MESSAGE='Дождитесь завершения текущей отправки перед удалением публикации';
+      MESSAGE='Отправка выполняется или её результат неизвестен. Сначала проверьте доставку';
   END IF;
   RETURN OLD;
 END $$;
 DROP TRIGGER IF EXISTS posts_media_deletion_guard ON posts;
 CREATE TRIGGER posts_media_deletion_guard BEFORE DELETE ON posts
   FOR EACH ROW EXECUTE FUNCTION guard_post_media_deletion();
+
+-- MAX owner receipts keep RPC retries from publishing the same delivery twice.
+CREATE TABLE IF NOT EXISTS max_send_receipts (
+ delivery_id uuid PRIMARY KEY REFERENCES deliveries(id) ON DELETE CASCADE,
+ account_id uuid NOT NULL,
+ destination_id text NOT NULL,
+ status text NOT NULL CHECK(status IN ('sending','sent','unknown')),
+ message_id text,
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ CHECK(status<>'sent' OR (message_id IS NOT NULL AND btrim(message_id)<>''))
+);
+ALTER TABLE integrations ADD COLUMN IF NOT EXISTS max_self_id bigint;
+CREATE UNIQUE INDEX IF NOT EXISTS integrations_enabled_max_identity_idx ON integrations(max_self_id)
+ WHERE platform='max' AND enabled AND max_self_id IS NOT NULL;

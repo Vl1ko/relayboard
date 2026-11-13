@@ -21,7 +21,8 @@
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p web/tsconfig.json --noEmit",
     "test": "node --import tsx --test src/**/*.test.ts",
     "test:smoke": "node work/backend-smoke.mjs",
-    "load:control": "node work/control-plane-load.mjs"
+    "load:control": "node work/control-plane-load.mjs",
+    "start:max-worker": "node dist-node/messenger-worker/index.js"
   },
   "dependencies": {
     "@ounezz/umax": "^1.0.8",

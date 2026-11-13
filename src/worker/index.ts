@@ -212,6 +212,9 @@ async function reconcileReceipts() {
     sent_at=r.updated_at,last_error=NULL,last_error_kind=NULL
     FROM whatsapp_send_receipts r WHERE r.delivery_id=d.id AND r.status='sent'
       AND d.status IN ('unknown','sending')`);
+  await pool.query(`UPDATE deliveries d SET status='sent',external_message_id=r.message_id,
+    sent_at=r.updated_at,last_error=NULL,last_error_kind=NULL FROM max_send_receipts r
+    WHERE r.delivery_id=d.id AND r.status='sent' AND d.status IN ('unknown','sending')`);
 }
 // This recovery runs only under the exclusive publishing-worker slot.
 // A process exit after claiming a delivery does not prove it was never sent.
