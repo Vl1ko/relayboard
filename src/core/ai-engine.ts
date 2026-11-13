@@ -44,6 +44,9 @@ export const aiSettingsSchema = z
       .max(100),
     fields: z.array(fieldSchema).max(30),
     rules: z.array(ruleSchema).max(50),
+    greetingMessage:z.string().trim().min(1).max(2000).optional(),
+    qualifiedMessage:z.string().trim().min(1).max(2000).optional(),
+    unqualifiedMessage:z.string().trim().min(1).max(2000).optional(),
     qualificationEnabled: z.boolean(),
     tone: z.string().trim().min(1).max(500),
     replyLimit: z.number().int().min(1).max(100),
@@ -266,6 +269,7 @@ export function validateAiDecision(input: {
       !settings.knowledge.some((k) => k.subject === item.subject)
     )
       return handoff("unknown_commercial_fact", fields);
+  if(/(?:ты|вы)\s+(?:бот|ии|робот)|(?:кто|человек).{0,15}(?:отвеча|пиш|обща)/iu.test(latest))return handoff('requested_human',fields);
   let businessStatus: AiDecision["businessStatus"] = "ai_dialog";
   if (settings.qualificationEnabled) {
     if (
@@ -422,6 +426,7 @@ export class AiEngineStore {
     ).rows[0];
     if (
       !found ||
+      found.manager_hold ||
       found.opted_out_at ||
       found.automation_mode !== "auto" ||
       ["closed", "refused"].includes(found.business_status)

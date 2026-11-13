@@ -1,3 +1,4 @@
+import {DEFAULT_GREETING} from './conversation-templates.js';
 import type {Pool} from 'pg';
 import {AiManagerStore} from './ai-manager.js';
 import {AiEngineStore,verifyAiQualification,type AiProvider} from './ai-engine.js';
@@ -18,7 +19,10 @@ export class AiOrchestrator {
   const decision=await this.engine.evaluate(conversationId,eventKey,provider);
   if(decision.disposition==='suppress')return {decision,action:null};
   if(decision.disposition==='reply'){
-   const action=await this.messages.enqueue({conversationId,kind:'reply',logicalKey:'ai-reply:'+decision.id,expectedEpoch:decision.automation_epoch,text:decision.reply});
+   const settings=(await this.pool.query('SELECT settings FROM ai_engine_settings WHERE version=$1',[decision.settings_version])).rows[0].settings;
+   const prior=(await this.pool.query('SELECT 1 FROM ai_outbox WHERE conversation_id=$1 AND dispatch_started_at IS NOT NULL LIMIT 1',[conversationId])).rowCount;
+   const rendered=prior?decision.reply:(settings.greetingMessage??DEFAULT_GREETING)+'\n\n'+decision.reply;
+   const action=await this.messages.enqueue({conversationId,kind:'reply',logicalKey:'ai-reply:'+decision.id,expectedEpoch:decision.automation_epoch,text:rendered});
    return {decision,action:action.action};
   }
   const reason=decision.business_status==='qualified'?'qualified':decision.reason==='reply_limit'?'reply_limit':decision.reason==='requested_human'?'human_requested':'insufficient_data';

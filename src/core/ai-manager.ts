@@ -1,3 +1,4 @@
+import {completionTemplate,DEFAULT_GREETING} from './conversation-templates.js';
 import { createHash, randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
@@ -122,6 +123,7 @@ export class AiManagerStore {
     z.enum(["auto", "manual", "paused"]).parse(mode);
     return this.tx(async client => {
       const { contact, conversation } = await this.lockConversation(client, conversationId);
+      if(mode==='auto'&&(await client.query('SELECT 1 FROM ai_conversations WHERE contact_id=$1 AND manager_hold',[contact.id])).rowCount)throw new AiStateError('manager_hold');
       if (mode === "auto" && (contact.opted_out_at || ["closed", "refused"].includes(conversation.business_status))) throw new AiStateError("automation_forbidden");
       if (conversation.automation_mode === mode) return conversation;
       // Manual/paused may be repeated; they must never silently resume automation.
@@ -175,8 +177,11 @@ export class AiManagerStore {
       const old=(await client.query("SELECT * FROM ai_outbox WHERE kind='qualification_notice' AND logical_key=$1",[logicalKey])).rows[0];if(old)return old;
       const handoff=(await client.query('SELECT 1 FROM ai_handoff_notifications WHERE conversation_id=$1 AND logical_key=$2',[conversation.id,'ai-handoff:'+decisionId])).rowCount;
       if(!handoff||contact.opted_out_at||conversation.automation_mode!=='paused'||conversation.business_status!==decision.business_status||BigInt(conversation.automation_epoch)!==BigInt(decision.automation_epoch)+1n)throw new AiStateError('qualification_notice_forbidden');
-      const fingerprint=createHash('sha256').update(JSON.stringify(['qualification_notice',QUALIFICATION_NOTICE_TEXT])).digest('hex');
-      return(await client.query(`INSERT INTO ai_outbox(contact_id,conversation_id,logical_key,kind,text,fingerprint,automation_epoch) VALUES($1,$2,$3,'qualification_notice',$4,$5,$6) RETURNING *`,[contact.id,conversation.id,logicalKey,QUALIFICATION_NOTICE_TEXT,fingerprint,conversation.automation_epoch])).rows[0];
+      const savedSettings=(await client.query('SELECT settings FROM ai_engine_settings WHERE version=$1',[decision.settings_version])).rows[0].settings;
+      const prior=(await client.query('SELECT 1 FROM ai_outbox WHERE conversation_id=$1 AND dispatch_started_at IS NOT NULL LIMIT 1',[conversation.id])).rowCount;
+      const noticeText=(prior?'':(savedSettings.greetingMessage??DEFAULT_GREETING)+'\n\n')+completionTemplate(savedSettings,decision.business_status);
+      const fingerprint=createHash('sha256').update(JSON.stringify(['qualification_notice',noticeText])).digest('hex');
+      return(await client.query(`INSERT INTO ai_outbox(contact_id,conversation_id,logical_key,kind,text,fingerprint,automation_epoch) VALUES($1,$2,$3,'qualification_notice',$4,$5,$6) RETURNING *`,[contact.id,conversation.id,logicalKey,noticeText,fingerprint,conversation.automation_epoch])).rows[0];
     });
   }
 
@@ -193,10 +198,11 @@ export class AiManagerStore {
     const account = (await client.query("SELECT enabled,auth_error FROM integrations WHERE id=$1 FOR SHARE", [conversation.account_id])).rows[0];
     if (contact.opted_out_at || (action.kind === "qualification_notice" ? conversation.automation_mode !== "paused" || !["qualified","unqualified"].includes(conversation.business_status) : action.kind === "manual_reply" ? conversation.automation_mode !== "manual" : conversation.automation_mode !== "auto") || ["closed", "refused"].includes(conversation.business_status)
       || conversation.automation_epoch !== action.automation_epoch || action.cancellation_requested) return "cancel";
+    if(!['manual_reply','qualification_notice'].includes(action.kind)&&(await client.query('SELECT 1 FROM ai_conversations WHERE contact_id=$1 AND manager_hold',[conversation.contact_id])).rowCount)return 'cancel';
     if (!account) return "cancel";
     if (!account.enabled || account.auth_error) return "wait";
     if(action.kind==='qualification_notice'){
-      const proof=await client.query(`SELECT 1 FROM ai_outbox a JOIN ai_engine_decisions d ON a.logical_key='qualification-notice:'||d.id::text AND a.conversation_id=d.conversation_id JOIN ai_handoff_notifications n ON n.conversation_id=d.conversation_id AND n.logical_key='ai-handoff:'||d.id::text WHERE a.id=$1 AND d.disposition='handoff' AND d.business_status=$2 AND d.business_status IN ('qualified','unqualified') AND d.automation_epoch+1=$3 AND a.text=$4`,[action.id,conversation.business_status,conversation.automation_epoch,QUALIFICATION_NOTICE_TEXT]);
+      const proof=await client.query(`SELECT 1 FROM ai_outbox a JOIN ai_engine_decisions d ON a.logical_key='qualification-notice:'||d.id::text AND a.conversation_id=d.conversation_id JOIN ai_engine_settings k ON k.version=d.settings_version JOIN ai_handoff_notifications n ON n.conversation_id=d.conversation_id AND n.logical_key='ai-handoff:'||d.id::text WHERE a.id=$1 AND d.disposition='handoff' AND d.business_status=$2 AND d.business_status IN ('qualified','unqualified') AND d.automation_epoch+1=$3 AND a.text IN (CASE WHEN d.business_status='qualified' THEN coalesce(k.settings->>'qualifiedMessage',$4) ELSE coalesce(k.settings->>'unqualifiedMessage',$5) END,coalesce(k.settings->>'greetingMessage',$6)||E'\\n\\n'||CASE WHEN d.business_status='qualified' THEN coalesce(k.settings->>'qualifiedMessage',$4) ELSE coalesce(k.settings->>'unqualifiedMessage',$5) END)`,[action.id,conversation.business_status,conversation.automation_epoch,completionTemplate({},'qualified'),completionTemplate({},'unqualified'),DEFAULT_GREETING]);
       if(!proof.rowCount)return 'cancel';
       if((await client.query("SELECT 1 FROM ai_outbox WHERE conversation_id=$1 AND id<>$2 AND state IN ('unknown','dispatching')",[conversation.id,action.id])).rowCount)return 'wait';
     }

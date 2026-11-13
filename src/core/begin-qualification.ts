@@ -7,6 +7,7 @@ export async function beginConfiguredQualification(pool:Pool,conversationId:stri
   const target=(await c.query('SELECT contact_id FROM ai_conversations WHERE id=$1',[conversationId])).rows[0];if(!target)throw Error('conversation_missing');
   const contact=(await c.query('SELECT opted_out_at FROM ai_contacts WHERE id=$1 FOR UPDATE',[target.contact_id])).rows[0];
   const conversation=(await c.query('SELECT * FROM ai_conversations WHERE id=$1 FOR UPDATE',[conversationId])).rows[0];
+  if((await c.query('SELECT 1 FROM ai_conversations WHERE contact_id=$1 AND manager_hold',[target.contact_id])).rowCount)throw Error('manager_hold');
   if(contact.opted_out_at||['closed','refused'].includes(conversation.business_status))throw Error('qualification_forbidden');
   if((await c.query("SELECT 1 FROM ai_outbox WHERE conversation_id=$1 AND state IN ('dispatching','unknown')",[conversationId])).rowCount)throw Error('uncertain_send');
   const settings=(await c.query('SELECT version,settings FROM ai_engine_settings ORDER BY version DESC LIMIT 1 FOR SHARE')).rows[0];

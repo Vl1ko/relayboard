@@ -13,12 +13,12 @@ before(async()=>{if(!url)return;if(new URL(url).pathname!='/relayboard_ai_manage
 beforeEach(async()=>{if(pool)await pool.query('TRUNCATE ai_contacts,integrations CASCADE');});
 after(async()=>{if(pool){await pool.query('DROP SCHEMA '+schema+' CASCADE');await pool.end();}});
 async function fixture(provider:AiProvider,ignoreIds:string[]=[]){
- const engine=new AiEngineStore(pool),settings=await engine.settings();await engine.saveSettings({expectedVersion:settings.version,settings:{...settings.settings,qualificationEnabled:true,fields:[{key:'volume',question:'Какой объём?',required:true}],rules:[{field:'volume',op:'gte',value:10}]}});
+ const engine=new AiEngineStore(pool),settings=await engine.settings();await engine.saveSettings({expectedVersion:settings.version,settings:{...settings.settings,greetingMessage:'Здравствуйте, тестовый клиент!',qualifiedMessage:'Спасибо, ожидайте менеджера.',unqualifiedMessage:'Спасибо за обращение. Всего доброго!',qualificationEnabled:true,fields:[{key:'volume',question:'Какой объём?',required:true}],rules:[{field:'volume',op:'gte',value:10}]}});
  const account=(await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext)VALUES('max','synthetic','fake')RETURNING id")).rows[0].id;
  const store=new AiManagerStore(pool),contact=await store.createContact('synthetic'),conversation=await store.createConversation({contactId:contact.id,accountId:account,externalId:'303'});await beginConfiguredQualification(pool,conversation.id);
- let items:any[]=[],sent=0;const socket={connected:true,async send(op:number,body:any){if(op===49)return{messages:items};assert.equal(op,64);assert.equal(body.chatId,303);sent++;return{message:{id:'service-'+sent}};}};
+ let items:any[]=[],sent=0;const sentTexts:string[]=[];const socket={connected:true,async send(op:number,body:any){if(op===49)return{messages:items};assert.equal(op,64);assert.equal(body.chatId,303);sentTexts.push(body.message.text);sent++;return{message:{id:'service-'+sent}};}};
  const session=new MaxQualificationSession({pool,provider,socket,close:()=>{},accountId:account,conversationId:conversation.id,dialogId:'303',authorId:'202',selfId:101,since:Date.now()-1000,ignoreIds});
- return{session,store,conversation,account,socket,set:(m:any[])=>items=m,sent:()=>sent};
+ return{session,store,conversation,account,socket,set:(m:any[])=>items=m,sent:()=>sent,sentTexts};
 }
 const ask:AiProvider={kind:'fixture',async complete(){return{replyDraft:'never send',extracted:[],replyKind:'ask_fields',askFields:['volume'],knowledgeKeys:[],proposedStatus:'insufficient_data',handoffReason:null};}};
 const m=(id:string,text:string,sender=202)=>({id,text,sender,time:Date.now(),type:'USER'});
@@ -61,4 +61,28 @@ test('completion notice is cancelled if manager takes over before its dispatch',
  await f.store.ingest({version:1,platform:'max',accountId:f.account,conversationId:'303',messageId:'manager-after',occurredAt:new Date().toISOString(),direction:'outbound',origin:'human',text:'Дальше я'});
  await f.store.dispatch(notice.id,{target:{accountId:f.account,externalConversationId:'303',platform:'max'},start(){throw Error('Must not send after takeover');}});
  assert.equal((await pool.query('SELECT state FROM ai_outbox WHERE id=$1',[notice.id])).rows[0].state,'cancelled');
+});
+
+test('greeting is configured and sent once; successful qualification remains blocked until manager closes',{skip:!url},async()=>{
+ const f=await fixture(ask);f.set([m('g1','Здравствуйте')]);await f.session.poll();await until(()=>f.sent()===1);assert.ok(f.sentTexts[0].startsWith('Здравствуйте, тестовый клиент!'));
+ f.set([m('g1','Здравствуйте'),m('g2','Не знаю')]);await f.session.poll();await until(()=>f.sent()===2);assert.equal(f.sentTexts[1],'Какой объём?');await f.session.stop();
+ const {AiOrchestrator}=await import('./ai-orchestrator.js'),{ConversationWorkflow}=await import('./conversation-workflow.js');await f.store.setMode(f.conversation.id,'auto');
+ const o=new AiOrchestrator(pool),e=await o.ingest({version:1,platform:'max',accountId:f.account,conversationId:'303',messageId:'final-12',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'12'});
+ const provider:AiProvider={kind:'fixture',async complete(){return{replyDraft:'',extracted:[{field:'volume',value:12,evidenceMessageId:'final-12',evidenceQuote:'12'}],replyKind:'none',askFields:[],knowledgeKeys:[],proposedStatus:'qualified',handoffReason:null};}};
+ await o.process(f.conversation.id,e.event.event_key,provider);await assert.rejects(f.store.setMode(f.conversation.id,'auto'),/manager_hold/);await assert.rejects(beginConfiguredQualification(pool,f.conversation.id),/manager_hold/);
+ const wf=new ConversationWorkflow(pool);await assert.rejects(wf.control({conversationId:f.conversation.id,action:'resume'}));await wf.setStatus({conversationId:f.conversation.id,status:'closed',reason:'manager closed'});assert.equal((await pool.query('SELECT manager_hold FROM ai_conversations WHERE id=$1',[f.conversation.id])).rows[0].manager_hold,false);
+});
+test('unqualified customer receives configured farewell rather than success text',{skip:!url},async()=>{
+ const provider:AiProvider={kind:'fixture',async complete(input){const c=input.data.messages.at(-1)!;return{replyDraft:'',extracted:[{field:'volume',value:5,evidenceMessageId:c.messageId,evidenceQuote:'5'}],replyKind:'none',askFields:[],knowledgeKeys:[],proposedStatus:'unqualified',handoffReason:null};}};
+ const f=await fixture(provider);f.set([m('low','5')]);await f.session.poll();await until(()=>!f.session.active);assert.equal((await f.session.status()).businessStatus,'unqualified');assert.equal(f.sentTexts[0],'Здравствуйте, тестовый клиент!\n\nСпасибо за обращение. Всего доброго!');
+});
+
+test('qualified manager notification reaches only configured group and cannot be sent twice',{skip:!url},async()=>{
+ const f=await fixture(ask),{AiOrchestrator}=await import('./ai-orchestrator.js'),{ConversationWorkflow}=await import('./conversation-workflow.js'),{dispatchMaxManagerNotification}=await import('./max-manager-notification.js');
+ const workflow=new ConversationWorkflow(pool);await workflow.saveManagerTarget({accountId:f.account,externalId:'-456'});
+ const o=new AiOrchestrator(pool),e=await o.ingest({version:1,platform:'max',accountId:f.account,conversationId:'303',messageId:'manager-notify',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'12'});
+ const provider:AiProvider={kind:'fixture',async complete(){return{replyDraft:'',extracted:[{field:'volume',value:12,evidenceMessageId:'manager-notify',evidenceQuote:'12'}],replyKind:'none',askFields:[],knowledgeKeys:[],proposedStatus:'qualified',handoffReason:null};}};
+ const result=await o.process(f.conversation.id,e.event.event_key,provider),id=('notification'in result?result.notification:null)!.id;let sends=0;
+ const socket={connected:true,async send(op:number,body:any){if(op===48)return{chats:[{type:'CHAT',id:-456}]};assert.equal(op,64);assert.equal(body.chatId,-456);assert.match(body.message.text,/Заявка прошла квалификацию/);assert.match(body.message.text,/volume: 12/);sends++;return{message:{id:'manager-confirmed'}};}};
+ assert.equal((await dispatchMaxManagerNotification(pool,id,{accountId:f.account,socket})as any).state,'confirmed');await dispatchMaxManagerNotification(pool,id,{accountId:f.account,socket});assert.equal(sends,1);
 });

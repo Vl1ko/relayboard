@@ -277,7 +277,7 @@ export class ConversationWorkflow {
         if (
           c.contact.opted_out_at ||
           c.conversations.some((v) =>
-            ["closed", "refused"].includes(v.business_status),
+            v.manager_hold || ["closed", "refused"].includes(v.business_status),
           )
         )
           throw new WorkflowError("automation_forbidden");
@@ -389,6 +389,7 @@ export class ConversationWorkflow {
         input.status,
         Boolean(proof),
       );
+      if(c.conversation.manager_hold&&!["manager_working","closed","refused","qualified"].includes(input.status))throw new WorkflowError("manager_hold");
       if (c.contact.opted_out_at && input.status !== "closed")
         throw new WorkflowError("automation_forbidden");
       if (c.conversation.business_status !== input.status) {
@@ -401,6 +402,7 @@ export class ConversationWorkflow {
         );
         await this.history(client, c.conversation, input.status, input.reason);
       }
+      if(input.status==='closed')await client.query('UPDATE ai_conversations SET manager_hold=false WHERE id=$1',[input.conversationId]);
       return (
         await client.query("SELECT * FROM ai_conversations WHERE id=$1", [
           input.conversationId,
@@ -527,6 +529,7 @@ export class ConversationWorkflow {
             : (data.resultStatus ?? "manager_required"),
           "handoff:" + data.reason,
         );
+      if(data.reason==='qualified')await client.query('UPDATE ai_conversations SET manager_hold=true WHERE id=$1',[data.conversationId]);
       const target = (
         await client.query("SELECT * FROM ai_manager_target WHERE id=1")
       ).rows[0];

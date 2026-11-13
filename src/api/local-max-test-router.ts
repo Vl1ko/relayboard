@@ -1,3 +1,4 @@
+import {dispatchMaxManagerNotification} from '../core/max-manager-notification.js';
 import {beginConfiguredQualification} from '../core/begin-qualification.js';
 import {Router,type RequestHandler,type ErrorRequestHandler} from 'express';
 import {randomUUID} from 'node:crypto';
@@ -50,6 +51,12 @@ export function createLocalMaxTestRouter(options:{pool:Pool;authorize:RequestHan
  router.use((_req,res,next)=>{if(!options.enabled)return res.status(404).json({error:'Локальная проверка выключена'});next();});
  router.get('/qualification',async(_req,res)=>res.json(qualification?await qualification.status():{active:false,reason:'not_started'}));
  router.post('/qualification/stop',async(_req,res)=>{await qualification?.stop();res.json({stopped:true});});
+ router.post('/qualification/notify-managers',async(req,res)=>{
+  const data=z.object({accountId:z.string().uuid(),actionId:z.string().uuid()}).strict().parse(req.body);prune();const b=bindings.get(data.actionId);
+  if(!b||b.accountId!==data.accountId)throw new TestError('Загрузите сообщение тестового автора заново');source(b.sourceId,data.accountId);
+  if(busy||qualification?.active)return res.status(409).json({error:'Дождитесь завершения текущей операции'});busy=true;
+  try{const n=(await options.pool.query("SELECT id FROM ai_handoff_notifications WHERE conversation_id=$1 AND reason='qualified' ORDER BY created_at DESC LIMIT 1",[b.conversationId])).rows[0];if(!n)throw new TestError('Квалификация ещё не завершена');res.json(await dispatchMaxManagerNotification(options.pool,n.id));}finally{busy=false;}
+ });
  router.post('/qualification/acknowledge',async(req,res)=>{
   const data=z.object({accountId:z.string().uuid(),actionId:z.string().uuid()}).strict().parse(req.body);
   if(busy||qualification?.active)return res.status(409).json({error:'Дождитесь завершения квалификации'});
@@ -73,11 +80,11 @@ export function createLocalMaxTestRouter(options:{pool:Pool;authorize:RequestHan
    const action=(await options.pool.query(`SELECT a.state,a.dispatch_started_at,c.automation_mode FROM ai_outbox a JOIN ai_conversations c ON c.id=a.conversation_id WHERE a.id=$1 AND c.id=$2 AND c.account_id=$3 AND c.external_id=$4`,[data.actionId,b.conversationId,data.accountId,b.dialogId])).rows[0];
    if(action?.state!=='confirmed'||!action.dispatch_started_at)return res.status(409).json({error:'Сначала отправьте первый ответ и дождитесь подтверждения MAX'});
    await withMax(data.accountId,async(client,socket)=>{await verifySource(client,socket,s);const dialog=await privateDialog(client,socket,s);if(dialog!==b.dialogId)throw new TestError('Личка автора изменилась');
-    try{await beginConfiguredQualification(options.pool,b.conversationId);}catch{throw new TestError('Включите квалификацию и задайте критерии в «ИИ-квалификация». При отказе клиента или неизвестной отправке запуск запрещён.');}
+    try{await beginConfiguredQualification(options.pool,b.conversationId);}catch(error){if(error instanceof Error&&error.message==='manager_hold')throw new TestError('Заявка передана менеджеру. Автоматические ответы заблокированы до её закрытия менеджером.');throw new TestError('Включите квалификацию и задайте критерии в «ИИ-квалификация». При отказе клиента или неизвестной отправке запуск запрещён.');}
     const recorded=(await options.pool.query('SELECT external_message_id FROM ai_inbox WHERE conversation_id=$1 ORDER BY ingest_sequence DESC LIMIT 2000',[b.conversationId])).rows.map(r=>String(r.external_message_id));
     const history=await socket.send(49,{chatId:Number(dialog),from:Date.now(),backward:50,forward:0,getMessages:true},10000)as any;
     const ownHistory=(history?.messages??[]).filter((m:any)=>Number(m.sender)===client.account!.id).map((m:any)=>String(m.id));
-    qualification=new MaxQualificationSession({pool:options.pool,provider:options.provider!,socket,close:()=>client.close(),accountId:data.accountId,conversationId:b.conversationId,dialogId:dialog,authorId:s.authorId,selfId:client.account!.id,since:new Date(action.dispatch_started_at).getTime(),ignoreIds:[...recorded,...ownHistory]});qualification.start();
+    qualification=new MaxQualificationSession({pool:options.pool,provider:options.provider!,socket,close:()=>client.close(),accountId:data.accountId,conversationId:b.conversationId,dialogId:dialog,authorId:s.authorId,selfId:client.account!.id,since:new Date(action.dispatch_started_at).getTime(),ignoreIds:[...recorded,...ownHistory],notifyManagers:id=>dispatchMaxManagerNotification(options.pool,id,{accountId:data.accountId,socket})});qualification.start();
    },true);
    res.json(await qualification!.status());
   }finally{busy=false;}
@@ -100,7 +107,7 @@ export function createLocalMaxTestRouter(options:{pool:Pool;authorize:RequestHan
    if(conversation.opted_out_at||['closed','refused'].includes(conversation.business_status))return res.status(409).json({error:'Диалог закрыт или получен отказ. Продолжение запрещено.'});
    if(conversation.automation_mode!=='auto'){
     const confirmed=(await options.pool.query("SELECT id,text,state FROM ai_outbox WHERE conversation_id=$1 AND state='confirmed' AND kind='reply' ORDER BY dispatch_started_at LIMIT 1",[conversation.id])).rows[0];
-    if(confirmed){bindings.set(confirmed.id,{accountId:data.accountId,sourceId:s.id,dialogId,conversationId:conversation.id});return res.json({accountId:data.accountId,authorId:s.authorId,sourceId:s.id,dialogId,action:confirmed,decision:'reply',reason:'explicit_restart_required',paused:true,qualificationCompleted:['qualified','unqualified'].includes(conversation.business_status)});}
+    if(confirmed){bindings.set(confirmed.id,{accountId:data.accountId,sourceId:s.id,dialogId,conversationId:conversation.id});return res.json({accountId:data.accountId,authorId:s.authorId,sourceId:s.id,dialogId,action:confirmed,decision:'reply',reason:'explicit_restart_required',paused:true,qualificationCompleted:['qualified','unqualified'].includes(conversation.business_status),managerHold:conversation.manager_hold});}
     return res.status(409).json({canResume:true,error:'Диалог на паузе. Нажмите «Продолжить тест».'});
    }
    const event=await orchestrator.ingest({version:1,platform:'max',accountId:data.accountId,conversationId:dialogId,messageId:'group-source:'+options.chatId+':'+s.messageId,occurredAt:s.occurredAt,direction:'inbound',origin:'customer',text:s.text,sourceChatId:options.chatId,sourceMessageId:s.messageId,sourceAuthorId:s.authorId});
