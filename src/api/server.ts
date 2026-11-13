@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import multer from "multer";
 import { z, ZodError } from "zod";
 import { config } from "../core/config.js";
+import { createOutreachRouter } from "./outreach-router.js";
 import { createContactImportRouter, startContactImportCleanup } from "./contact-import-router.js";
 import { isMaxTransportError, listMaxGroups } from "../core/adapters/max.js";
 import { decryptCredentials, encryptCredentials } from "../core/crypto.js";
@@ -109,6 +110,7 @@ app.get("/api/health", async (_request, response) => {
   const result = await pool.query("SELECT now() AS database_time");
   response.json({ ok: true, databaseTime: result.rows[0].database_time, version: "1.0.0" });
 });
+app.use("/api/ai/outreach", createOutreachRouter({pool, authorize:requireAdmin, enabled:config.CONTACT_IMPORT_ENABLED}));
 app.use("/api/ai", createContactImportRouter({ pool, authorize: requireAdmin, enabled: config.CONTACT_IMPORT_ENABLED, ownerScope: "workspace-admin" }));
 app.use("/api", requireAdmin);
 

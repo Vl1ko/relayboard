@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import "./contacts-import.css";
+import OutreachPanel from "./OutreachPanel";
 
 type Contact = { id: string; displayName: string; phone: string | null; comment: string; stage: string; optedOut: boolean };
 type Summary = { total: number; new: number; duplicate: number; invalid: number };
@@ -273,5 +274,6 @@ export default function ContactsImport() {
         <button type="button" disabled={listLoading || offset + pageSize >= total} onClick={() => setOffset(value => value + pageSize)}>Следующие контакты</button>
       </div>
     </section>
+    <OutreachPanel/>
   </div>;
 }

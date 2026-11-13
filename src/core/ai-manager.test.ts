@@ -20,7 +20,7 @@ before(async () => {
   try { await admin.query("CREATE SCHEMA " + schema); } finally { await admin.end(); }
   pool = new pg.Pool({ connectionString: url, options: "-c search_path=" + schema + ",public" });
   await pool.query(await readFile(new URL("../../database/schema.sql", import.meta.url), "utf8"));
-  assert.deepEqual(await applyAiManagerMigration(pool), { version: 2, applied: true });
+  assert.deepEqual(await applyAiManagerMigration(pool), { version: 3, applied: true });
   store = new AiManagerStore(pool);
 });
 beforeEach(async () => { if (pool) await pool.query("TRUNCATE ai_contacts,integrations CASCADE"); });
@@ -58,7 +58,7 @@ function confirmation(input: { operationId: string }) {
 
 test("migration repeats without changing existing data or deleting legacy tables", { skip }, async () => {
   const old = await fixture();
-  assert.deepEqual(await applyAiManagerMigration(pool), { version: 2, applied: false });
+  assert.deepEqual(await applyAiManagerMigration(pool), { version: 3, applied: false });
   assert.equal((await pool.query("SELECT name FROM integrations WHERE id=$1", [old.account])).rows[0].name, "synthetic");
   assert.ok((await pool.query("SELECT to_regclass('posts') AS name")).rows[0].name);
 });
