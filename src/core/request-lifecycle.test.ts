@@ -85,7 +85,7 @@ test('verified second channel joins the open request; manager close archives bot
  const old=(await pool.query('SELECT contact_id FROM ai_conversations WHERE id=$1',[f.conversationId])).rows[0];
  const account=(await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext) VALUES('whatsapp','synthetic','fake') RETURNING id")).rows[0].id;
  const v=await store.createConversation({contactId:old.contact_id,accountId:account,externalId:'other-channel'});
- const second=await bindSourceRequest(pool,{...f,conversationId:v.id,accountId:account,platform:'whatsapp',chatId:'other-source'});
+ const second=await bindSourceRequest(pool,{...f,conversationId:v.id,accountId:account,platform:'whatsapp',chatId:'other-source',allowAdditionalChannel:true});
  assert.equal(second.requestId,first.requestId);assert.equal(second.created,false);
  await pool.query("UPDATE ai_conversations SET business_status='closed' WHERE id=$1",[f.conversationId]);
  const phases=(await pool.query('SELECT closed_at FROM ai_request_phases WHERE request_id=$1',[first.requestId])).rows;
@@ -93,29 +93,33 @@ test('verified second channel joins the open request; manager close archives bot
  assert.equal((await pool.query('SELECT business_status FROM ai_conversations WHERE id=$1',[v.id])).rows[0].business_status,'closed');
 });
 
-test('upgrade from version 12 preserves legacy fields and receipts in an archived phase', {skip},async()=>{
- const {createHash}=await import('node:crypto');
- const legacySchema='upgrade_'+randomUUID().replaceAll('-','');
- await pool.query('CREATE SCHEMA '+legacySchema);
+for(const legacyVersion of [12,14])test('upgrade from version '+legacyVersion+' preserves fields, sources and replay protection',{skip},async()=>{
+ const {createHash}=await import('node:crypto');const legacySchema='upgrade_'+randomUUID().replaceAll('-','');await pool.query('CREATE SCHEMA '+legacySchema);
  const legacy=new pg.Pool({connectionString:url,options:'-c search_path='+legacySchema+',public'});
- try {
+ try{
   await legacy.query(await readFile(new URL('../../database/schema.sql',import.meta.url),'utf8'));
   await legacy.query('CREATE TABLE ai_schema_migrations(version integer PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now())');
-  for(const [i,name] of ['ai-manager.sql','ai-manager-import.sql','ai-manager-outreach.sql','ai-manager-outreach-runs.sql','ai-manager-ai-engine.sql','ai-manager-workflows.sql','ai-manager-leads.sql','ai-manager-manual.sql','ai-manager-ingest-order.sql','ai-manager-search-sources.sql','ai-manager-qualification-notice.sql','ai-manager-manager-hold.sql'].entries()){
-   const sql=await readFile(new URL('../../database/'+name,import.meta.url),'utf8');await legacy.query(sql);
-   await legacy.query('INSERT INTO ai_schema_migrations(version,checksum) VALUES($1,$2)',[i+1,createHash('sha256').update(sql).digest('hex')]);
+  const files=['ai-manager.sql','ai-manager-import.sql','ai-manager-outreach.sql','ai-manager-outreach-runs.sql','ai-manager-ai-engine.sql','ai-manager-workflows.sql','ai-manager-leads.sql','ai-manager-manual.sql','ai-manager-ingest-order.sql','ai-manager-search-sources.sql','ai-manager-qualification-notice.sql','ai-manager-manager-hold.sql','ai-manager-request-phases.sql','ai-manager-max-cursors.sql'];
+  for(const [i,name] of files.slice(0,legacyVersion).entries()){
+   const sql=await readFile(new URL('../../database/'+name,import.meta.url),'utf8');await legacy.query(sql);await legacy.query('INSERT INTO ai_schema_migrations(version,checksum) VALUES($1,$2)',[i+1,createHash('sha256').update(sql).digest('hex')]);
   }
   const oldStore=new AiManagerStore(legacy),contact=await oldStore.createContact('legacy');
   const account=(await legacy.query("INSERT INTO integrations(platform,name,credential_ciphertext) VALUES('max','legacy','fake') RETURNING id")).rows[0].id;
   const conversation=await oldStore.createConversation({contactId:contact.id,accountId:account,externalId:'legacy'});
-  await legacy.query(`UPDATE ai_engine_state SET fields='{"volume":25}',reply_count=3 WHERE conversation_id=$1`,[conversation.id]);
-  await legacy.query("UPDATE ai_conversations SET business_status='closed' WHERE id=$1",[conversation.id]);
-  assert.deepEqual(await applyAiManagerMigration(legacy),{version:14,applied:true});
-  const phase=(await legacy.query('SELECT * FROM ai_request_phases WHERE conversation_id=$1',[conversation.id])).rows[0];
-  assert.deepEqual(phase.fields_snapshot,{volume:25});assert.equal(phase.reply_count_snapshot,3);assert.ok(phase.closed_at);
-  assert.equal((await legacy.query('SELECT lifecycle FROM ai_requests WHERE id=$1',[phase.request_id])).rows[0].lifecycle,'closed');
-  assert.deepEqual(await applyAiManagerMigration(legacy),{version:14,applied:false});
- } finally {await legacy.end();await pool.query('DROP SCHEMA '+legacySchema+' CASCADE');}
+  if(legacyVersion>=13){
+   const request=randomUUID();await legacy.query('INSERT INTO ai_requests(id,contact_id) VALUES($1,$2)',[request,contact.id]);
+   const phase=(await legacy.query('INSERT INTO ai_request_phases(request_id,conversation_id,settings_version) VALUES($1,$2,1) RETURNING id',[request,conversation.id])).rows[0].id;
+   await legacy.query('UPDATE ai_conversations SET active_phase_id=$2 WHERE id=$1',[conversation.id,phase]);
+   await legacy.query("INSERT INTO ai_request_sources(account_id,platform,external_chat_id,external_message_id,author_id,request_id,conversation_id) VALUES($1,'max','-456','source-one','202',$2,$3)",[account,request,conversation.id]);
+  }
+  await oldStore.ingest({version:1,platform:'max',accountId:account,conversationId:'legacy',messageId:'group-source:-456:source-one',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'synthetic'});
+  await legacy.query(`UPDATE ai_engine_state SET fields='{"volume":25}',reply_count=3 WHERE conversation_id=$1`,[conversation.id]);await legacy.query("UPDATE ai_conversations SET business_status='closed' WHERE id=$1",[conversation.id]);
+  assert.deepEqual(await applyAiManagerMigration(legacy),{version:15,applied:true});
+  const phase=(await legacy.query('SELECT * FROM ai_request_phases WHERE conversation_id=$1',[conversation.id])).rows[0];assert.deepEqual(phase.fields_snapshot,{volume:25});assert.equal(phase.reply_count_snapshot,3);assert.ok(phase.closed_at);
+  const replay=await bindSourceRequest(legacy,{conversationId:conversation.id,accountId:account,platform:'max',chatId:'-456',messageId:'source-one',authorId:'202'});assert.equal(replay.duplicate,true);assert.equal(replay.requestId,phase.request_id);
+  const source=(await legacy.query('SELECT * FROM ai_request_sources')).rows[0];assert.equal(source.reader_account_id,account);assert.equal(source.recipient_id,'202');assert.equal(source.initial_contact,false);
+  assert.equal((await legacy.query('SELECT count(*)::int n FROM ai_requests')).rows[0].n,1);assert.deepEqual(await applyAiManagerMigration(legacy),{version:15,applied:false});
+ }finally{await legacy.end();await pool.query('DROP SCHEMA '+legacySchema+' CASCADE');}
 });
 
 test('pre-ledger group-source inbox identity remains deduplicated after upgrade and close', {skip},async()=>{
@@ -195,4 +199,104 @@ test('explicit criteria restart archives the old phase; its pending notification
  const state=(await pool.query('SELECT * FROM ai_engine_state WHERE conversation_id=$1',[f.conversationId])).rows[0];assert.deepEqual(state.fields,{});assert.equal(state.reply_count,0);assert.equal(state.settings_version,settings.version+1);
  let sends=0;await workflow.dispatchNotification(notice.id,{target:{accountId:f.accountId,externalId:'-456'},start:()=>{sends++;throw Error('must never send');}});assert.equal(sends,0);assert.equal((await pool.query('SELECT state FROM ai_handoff_notifications WHERE id=$1',[notice.id])).rows[0].state,'rejected');
  assert.equal((await bindSourceRequest(pool,{...f,messageId:'same-request-new-source'})).requestId,first.requestId);
+});
+
+async function identityAccount(platform='max'){return (await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext) VALUES($1,'synthetic','fake') RETURNING id",[platform])).rows[0].id as string;}
+test('remote identity deduplicates across accounts while equal names remain different contacts',{skip},async()=>{
+ const {bindRemoteIdentity}=await import('./remote-identities.js');const account=await identityAccount(),other=await identityAccount();
+ const input={platform:'max' as const,remoteUserId:'202',accountId:account,verificationKind:'source_author' as const,displayName:'Same Name'};
+ const results=await Promise.all(Array.from({length:20},()=>bindRemoteIdentity(pool,input)));assert.equal(new Set(results.map(r=>r.contactId)).size,1);assert.equal(results.filter(r=>r.created).length,1);
+ assert.equal((await bindRemoteIdentity(pool,{...input,accountId:other})).contactId,results[0].contactId);
+ assert.notEqual((await bindRemoteIdentity(pool,{...input,remoteUserId:'203'})).contactId,results[0].contactId);
+ assert.equal((await pool.query('SELECT count(*)::int n FROM ai_contacts')).rows[0].n,2);
+});
+test('verified phone links MAX and WhatsApp to an imported excluded contact without overwriting its data',{skip},async()=>{
+ const {bindRemoteIdentity}=await import('./remote-identities.js'),max=await identityAccount(),wa=await identityAccount('whatsapp');
+ const old=(await pool.query("INSERT INTO ai_contacts(display_name,phone_e164,comment,opted_out_at) VALUES('Imported','+79991234567','keep',now()) RETURNING id")).rows[0].id;
+ const first=await bindRemoteIdentity(pool,{platform:'max',remoteUserId:'202',accountId:max,verifiedPhone:'+79991234567',verificationKind:'max_contact',displayName:'Remote Name'});
+ const second=await bindRemoteIdentity(pool,{platform:'whatsapp',remoteUserId:'79991234567@c.us',accountId:wa,verifiedPhone:'+79991234567',verificationKind:'whatsapp_contact'});
+ assert.equal(first.contactId,old);assert.equal(second.contactId,old);assert.equal(first.optedOut,true);
+ const before=(await pool.query("SELECT phone_verified_at FROM ai_remote_identities WHERE platform='max'")).rows[0].phone_verified_at;
+ await bindRemoteIdentity(pool,{platform:'max',remoteUserId:'202',accountId:max,verificationKind:'source_author'});
+ const contact=(await pool.query('SELECT * FROM ai_contacts WHERE id=$1',[old])).rows[0];assert.equal(contact.display_name,'Imported');assert.equal(contact.comment,'keep');assert.ok(contact.opted_out_at);
+ assert.deepEqual((await pool.query("SELECT phone_verified_at FROM ai_remote_identities WHERE platform='max'")).rows[0].phone_verified_at,before);
+ await assert.rejects(bindRemoteIdentity(pool,{platform:'max',remoteUserId:'203',accountId:max,verifiedPhone:'+79991234567',verificationKind:'max_contact'}),/identity_conflict/);
+ await assert.rejects(bindRemoteIdentity(pool,{platform:'max',remoteUserId:'202',accountId:max,verifiedPhone:'+79991234568',verificationKind:'max_contact'}),/phone_changed/);
+});
+test('new public source on another channel attaches to the open request without starting another approach',{skip},async()=>{
+ const f=await fixture(),first=await bindSourceRequest(pool,f),contact=(await pool.query('SELECT contact_id FROM ai_conversations WHERE id=$1',[f.conversationId])).rows[0].contact_id;
+ const account=await identityAccount('whatsapp'),other=await store.createConversation({contactId:contact,accountId:account,externalId:'wa'});
+ const result=await bindSourceRequest(pool,{...f,accountId:account,platform:'whatsapp',conversationId:other.id,messageId:'other-source'});
+ assert.equal(result.requestId,first.requestId);assert.equal(result.activated,false);assert.equal(result.initialContact,false);
+ const v=(await pool.query('SELECT * FROM ai_conversations WHERE id=$1',[other.id])).rows[0];assert.equal(v.active_phase_id,null);assert.equal(v.automation_mode,'paused');
+});
+test('a delayed source posted before manager close is never turned into a new request',{skip},async()=>{
+ const f=await fixture(),first=await bindSourceRequest(pool,f),posted=new Date(Date.now()-1000).toISOString();
+ await pool.query("UPDATE ai_conversations SET business_status='closed' WHERE id=$1",[f.conversationId]);
+ const delayed=await bindSourceRequest(pool,{...f,messageId:'delayed',occurredAt:posted});assert.equal(delayed.requestId,first.requestId);assert.equal(delayed.created,false);assert.equal(delayed.initialContact,false);
+ assert.equal((await pool.query('SELECT count(*)::int n FROM ai_requests')).rows[0].n,1);
+});
+test('source reader and selected sender are distinct; the same source cannot move to a second sender',{skip},async()=>{
+ const f=await fixture(),reader=await identityAccount();
+ const first=await bindSourceRequest(pool,{...f,sourceAccountId:reader});assert.equal(first.initialContact,true);
+ const row=(await pool.query('SELECT * FROM ai_request_sources')).rows[0];assert.equal(row.reader_account_id,reader);assert.equal(row.account_id,f.accountId);assert.equal(row.recipient_id,f.authorId);
+ const replay=await bindSourceRequest(pool,{...f,sourceAccountId:reader});assert.equal(replay.initialContact,true);assert.equal(replay.duplicate,true);
+ const contact=(await pool.query('SELECT contact_id FROM ai_conversations WHERE id=$1',[f.conversationId])).rows[0].contact_id,other=await identityAccount();
+ const v=await store.createConversation({contactId:contact,accountId:other,externalId:'other-private'});
+ await assert.rejects(bindSourceRequest(pool,{...f,accountId:other,conversationId:v.id,sourceAccountId:reader}),/source_identity_conflict/);
+});
+
+test('imported contact resolves to a verified private route; no send occurs before the explicit outreach run',{skip},async()=>{
+ const {encryptCredentials}=await import('./crypto.js'),{MaxConnections}=await import('./max-connections.js'),{resolveMaxContactRoute}=await import('./max-contact-route.js'),{OutreachService}=await import('./outreach.js'),{OutreachRunner}=await import('./outreach-runner.js'),{MaxPrivatePoller}=await import('./max-private-poller.js'),{dispatchOwnedMax}=await import('./owned-max-dispatch.js');
+ const account=await identityAccount();await pool.query('UPDATE integrations SET credential_ciphertext=$2 WHERE id=$1',[account,encryptCredentials({token:'synthetic'})]);
+ const contact=(await pool.query("INSERT INTO ai_contacts(display_name,phone_e164) VALUES('Imported','+79991234567') RETURNING id")).rows[0].id;
+ let sends=0;const stop=new AbortController(),scope={testOnly:true,accountIds:[account],authorIds:['202']};
+ const connections=new MaxConnections(pool,stop.signal,async()=>({selfId:101,groups:[],openDialog:async()=> '303',close(){},socket:{connected:true,async send(op,body){
+  if(op===37)return{result:[{id:202,phone:79991234567}]};
+  if(op===48)return{chats:[{id:303,type:'DIALOG',participants:{'101':{},'202':{}}}]};
+  if(op===49)return{messages:[]};assert.equal(op,64);assert.equal(body.chatId,303);assert.equal((body.message as {text:string}).text,'Configured import greeting');sends++;return{message:{id:'import-confirmed'}};
+ }}}));
+ try{
+  const route=await resolveMaxContactRoute(pool,connections,scope,{contactId:contact,accountId:account});assert.equal(route.recipientId,'202');assert.equal(sends,0);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM ai_outbox')).rows[0].n,0);assert.equal((await pool.query('SELECT automation_mode FROM ai_conversations WHERE id=$1',[route.conversationId])).rows[0].automation_mode,'paused');
+  await store.setMode(route.conversationId,'auto');const service=new OutreachService(pool),current=await service.settings();
+  const settings=await service.save({...current,template:'Configured import greeting',platforms:['max'],accountIds:[account],intervalSeconds:1});const request=await service.createRequest({id:randomUUID(),contactId:contact});
+  const runner=new OutreachRunner(pool),run=await runner.create({id:randomUUID(),revision:settings.revision,requestIds:[request.id]}),action=await runner.prepare(run.id,request.id);assert.ok(action);
+  assert.equal((await new MaxPrivatePoller(pool,connections,stop.signal,scope).poll(route.conversationId)).complete,true);
+  assert.equal((await dispatchOwnedMax(pool,connections,action!,stop.signal)).state,'confirmed');await dispatchOwnedMax(pool,connections,action!,stop.signal);assert.equal(sends,1);
+ }finally{stop.abort();}
+});
+
+test('live source routing reads the selected group but opens the author private dialog from the selected sender only',{skip},async()=>{
+ const {encryptCredentials}=await import('./crypto.js'),{MaxConnections}=await import('./max-connections.js'),{LeadIntakeStore}=await import('./lead-intake.js'),{OutreachService}=await import('./outreach.js'),{resolveMaxSourceRoute}=await import('./max-source-route.js');
+ const reader=await identityAccount(),sender=await identityAccount();await pool.query('UPDATE integrations SET credential_ciphertext=$2 WHERE id=$1',[reader,encryptCredentials({token:'reader'})]);await pool.query('UPDATE integrations SET credential_ciphertext=$2 WHERE id=$1',[sender,encryptCredentials({token:'sender'})]);
+ await pool.query("INSERT INTO ai_search_sources(account_id,chat_id,platform) VALUES($1,'-456','max')",[reader]);
+ const service=new OutreachService(pool),settings=await service.settings();await service.save({...settings,template:'configured',platforms:['max'],accountIds:[sender]});
+ const time=Date.now();let text='Нужен щебень',privateOpens=0,writes=0;const stop=new AbortController();
+ const connections=new MaxConnections(pool,stop.signal,async token=>({selfId:token==='reader'?101:111,groups:[],close(){},async openDialog(id){assert.equal(token,'sender');assert.equal(id,202);privateOpens++;return'303';},socket:{connected:true,async send(op,body){
+  if(op===64){writes++;throw Error('lookup cannot send');}
+  if(op===32)return{contacts:[{id:202,names:[{firstName:'Test Author'}],phone:0}]};
+  if(op===49){assert.equal(token,'reader');assert.equal(body.chatId,-456);return{messages:[{id:'source-message',time,sender:202,text,type:'USER'}]};}
+  assert.equal(op,48);return token==='reader'?{chats:[{id:-456,type:'CHAT'}]}:{chats:[{id:303,type:'DIALOG',participants:{'111':{},'202':{}}}]};
+ }}}));
+ try{
+  const intake=new LeadIntakeStore(pool),lead=await intake.ingest({platform:'max',accountId:reader,chatId:'-456',authorId:'202',messageId:'source-message',occurredAt:new Date(time).toISOString(),text,sourceKind:'manual',params:[],confidence:0.99});
+  const id=lead.lead.id,scope={testOnly:true,accountIds:[reader,sender],authorIds:['202']};
+  const route=await resolveMaxSourceRoute(pool,connections,scope,{leadId:id});assert.equal(route.accountId,sender);assert.equal(route.sourceAccountId,reader);assert.equal(route.recipientId,'202');assert.equal(route.dialogId,'303');assert.equal(writes,0);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM ai_requests')).rows[0].n,0);assert.equal((await pool.query('SELECT count(*)::int n FROM ai_outbox')).rows[0].n,0);
+  assert.equal((await resolveMaxSourceRoute(pool,connections,scope,{leadId:id})).conversationId,route.conversationId);
+  text='Source was edited';await assert.rejects(resolveMaxSourceRoute(pool,connections,scope,{leadId:id}),/source_changed/);assert.equal(privateOpens,2);assert.equal(writes,0);
+ }finally{stop.abort();}
+});
+
+test('cross-messenger source preserves its author separately from the verified private recipient',{skip},async()=>{
+ const {runtimeAllowsConversation}=await import('./runtime-scope.js');const f=await fixture(),sender=await identityAccount('whatsapp');
+ const contact=(await pool.query('SELECT contact_id FROM ai_conversations WHERE id=$1',[f.conversationId])).rows[0].contact_id;
+ const v=await store.createConversation({contactId:contact,accountId:sender,externalId:'79991234567@c.us'});
+ const data={...f,accountId:sender,platform:'whatsapp' as const,conversationId:v.id,sourceAccountId:f.accountId,sourcePlatform:'max' as const};
+ await assert.rejects(bindSourceRequest(pool,data),/cross_channel_recipient_required/);
+ const result=await bindSourceRequest(pool,{...data,recipientId:'79991234567@c.us'});assert.equal(result.initialContact,true);
+ const row=(await pool.query('SELECT * FROM ai_request_sources')).rows[0];assert.equal(row.platform,'max');assert.equal(row.author_id,f.authorId);assert.equal(row.recipient_id,'79991234567@c.us');assert.equal(row.account_id,sender);assert.equal(row.reader_account_id,f.accountId);
+ const scope={testOnly:true,accountIds:[f.accountId,sender],authorIds:[f.authorId]};assert.equal(await runtimeAllowsConversation(pool,scope,v.id),false);
+ assert.equal(await runtimeAllowsConversation(pool,{...scope,authorIds:[f.authorId,'79991234567@c.us']},v.id),true);
 });

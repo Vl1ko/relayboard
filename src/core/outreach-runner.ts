@@ -55,6 +55,11 @@ export class OutreachRunner {
     const linked=(await c.query('INSERT INTO ai_request_phases(request_id,conversation_id,settings_version,first_ingest_sequence) VALUES($1,$2,$3,$4) RETURNING id',[requestId,conversation.id,state.settings_version,first])).rows[0];
     await c.query('UPDATE ai_conversations SET active_phase_id=$2 WHERE id=$1',[conversation.id,linked.id]);
    }
+   const route=(await c.query('SELECT * FROM ai_verified_routes WHERE conversation_id=$1 AND contact_id=$2 AND account_id=$3 AND external_id=$4',[conversation.id,contact.id,conversation.account_id,conversation.external_id])).rows[0];
+   if(route){
+    await c.query(`INSERT INTO ai_request_sources(reader_account_id,platform,external_chat_id,external_message_id,author_id,request_id,conversation_id,account_id,recipient_id,occurred_at,initial_contact)
+     VALUES($1,$2,$3,$4::text,$5,$4::uuid,$6,$1,$5,now(),true) ON CONFLICT DO NOTHING`,[conversation.account_id,conversation.platform,'import:'+requestId,requestId,route.recipient_id,conversation.id]);
+   }
    const text=settings.template,fingerprint=createHash('sha256').update(JSON.stringify(['first_message',text])).digest('hex');
    const action=(await c.query(`INSERT INTO ai_outbox(contact_id,conversation_id,logical_key,kind,text,fingerprint,automation_epoch) VALUES($1,$2,$3,'first_message',$4,$5,$6) RETURNING id`,[contact.id,conversation.id,logical,text,fingerprint,conversation.automation_epoch])).rows[0];
    await c.query('UPDATE ai_outreach_items SET action_id=$3 WHERE run_id=$1 AND request_id=$2',[runId,requestId,action.id]);return action.id as string;

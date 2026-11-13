@@ -4,7 +4,7 @@ import {UMax} from '@ounezz/umax';
 import {decryptCredentials} from './crypto.js';
 import type {ConnectedMaxTextSocket} from './adapters/max-ai-text.js';
 
-export type MaxConnection={socket:ConnectedMaxTextSocket;selfId:number;groups:Array<{id:string;title:string;participantsCount:number}>;close:()=>void};
+export type MaxConnection={socket:ConnectedMaxTextSocket;selfId:number;groups:Array<{id:string;title:string;participantsCount:number}>;openDialog?:(authorId:number)=>Promise<string>;close:()=>void};
 export type MaxConnectionFactory=(token:string,signal:AbortSignal)=>Promise<MaxConnection>;
 export const connectMax:MaxConnectionFactory=async(token,signal)=>{
  const client=new UMax(token);
@@ -14,7 +14,7 @@ export const connectMax:MaxConnectionFactory=async(token,signal)=>{
   signal.throwIfAborted();await client.connect();signal.throwIfAborted();
   const socket=(client as unknown as{ws:ConnectedMaxTextSocket}).ws;
   if(!client.account?.id||!socket.connected)throw Error('max_connection_unverified');
-  return {socket,selfId:client.account.id,groups:client.chats.list.filter(c=>c.type==='CHAT').map(c=>({id:String(c.id),title:c.title,participantsCount:c.participants_count})),close(){signal.removeEventListener('abort',close);client.close();}};
+  return {socket,selfId:client.account.id,async openDialog(authorId){signal.throwIfAborted();const chat=await client.chats.new(authorId);signal.throwIfAborted();return String(chat.id);},groups:client.chats.list.filter(c=>c.type==='CHAT').map(c=>({id:String(c.id),title:c.title,participantsCount:c.participants_count})),close(){signal.removeEventListener('abort',close);client.close();}};
  }catch(error){signal.removeEventListener('abort',close);client.close();throw error;}
 };
 

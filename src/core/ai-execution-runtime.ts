@@ -36,7 +36,7 @@ export class AiExecutionRuntime{
      if(['qualified','unqualified'].includes(result.decision.business_status)){
       const notice=await this.messages.enqueueQualificationNotice(result.decision.id);await this.deliver(notice.id);
      }
-     this.signal.throwIfAborted();await this.transport.dispatchNotification(result.notification.id);
+     this.signal.throwIfAborted();if(result.notification.state==='pending')await this.transport.dispatchNotification(result.notification.id);
     }
    }catch{if(!this.signal.aborted)console.error('AI event deferred; durable state retained');}
   }));

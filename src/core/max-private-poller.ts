@@ -24,11 +24,11 @@ export class MaxPrivatePoller{
  }
  private async read(id:string){
   this.signal.throwIfAborted();
-  const v=(await this.pool.query(`SELECT v.*,p.started_at,c.through_time,c.phase_id AS cursor_phase,s.author_id,s.external_chat_id FROM ai_conversations v
+  const v=(await this.pool.query(`SELECT v.*,p.started_at,c.through_time,c.phase_id AS cursor_phase,s.author_id,s.external_chat_id,s.reader_account_id,s.source_author_id FROM ai_conversations v
    JOIN ai_request_phases p ON p.id=v.active_phase_id
    LEFT JOIN ai_max_private_cursors c ON c.conversation_id=v.id
-   JOIN LATERAL(SELECT author_id,external_chat_id FROM ai_request_sources WHERE request_id=p.request_id AND conversation_id=v.id ORDER BY created_at DESC LIMIT 1)s ON true WHERE v.id=$1 AND v.platform='max'`,[id])).rows[0];
-  if(!v||!runtimeAllows(this.scope,v.account_id,v.author_id))return{complete:false,reason:'outside_runtime_scope'};
+   JOIN LATERAL(SELECT recipient_id AS author_id,author_id AS source_author_id,reader_account_id,external_chat_id FROM ai_request_sources WHERE request_id=p.request_id AND conversation_id=v.id ORDER BY created_at DESC LIMIT 1)s ON true WHERE v.id=$1 AND v.platform='max'`,[id])).rows[0];
+  if(!v||(!runtimeAllows(this.scope,v.account_id,v.author_id)||!runtimeAllows(this.scope,v.reader_account_id,v.source_author_id)))return{complete:false,reason:'outside_runtime_scope'};
   if(['closed','refused'].includes(v.business_status))return{complete:false,reason:'request_inactive'};
   const since=v.cursor_phase===v.active_phase_id?Number(v.through_time):Math.max(0,new Date(v.started_at).getTime()-1),until=this.now();
   if(until<since)throw Error('max_clock_moved_backwards');

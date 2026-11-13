@@ -74,7 +74,7 @@ test('greeting is configured and sent once; successful qualification remains blo
 });
 test('unqualified customer receives configured farewell rather than success text',{skip:!url},async()=>{
  const provider:AiProvider={kind:'fixture',async complete(input){const c=input.data.messages.at(-1)!;return{replyDraft:'',extracted:[{field:'volume',value:5,evidenceMessageId:c.messageId,evidenceQuote:'5'}],replyKind:'none',askFields:[],knowledgeKeys:[],proposedStatus:'unqualified',handoffReason:null};}};
- const f=await fixture(provider);f.set([m('low','5')]);await f.session.poll();await until(()=>!f.session.active);assert.equal((await f.session.status()).businessStatus,'unqualified');assert.equal(f.sentTexts[0],'Здравствуйте, тестовый клиент!\n\nСпасибо за обращение. Всего доброго!');
+ const f=await fixture(provider);f.set([m('low','5')]);await f.session.poll();await until(()=>!f.session.active);assert.equal((await f.session.status()).businessStatus,'unqualified');assert.equal(f.sentTexts[0],'Здравствуйте, тестовый клиент!\n\nСпасибо за обращение. Всего доброго!');assert.equal((await pool.query('SELECT state FROM ai_handoff_notifications WHERE conversation_id=$1',[f.conversation.id])).rows[0].state,'rejected');
 });
 
 test('qualified manager notification reaches only configured group and cannot be sent twice',{skip:!url},async()=>{

@@ -1,3 +1,5 @@
+import {resolveMaxSourceRoute} from '../core/max-source-route.js';
+import {resolveMaxContactRoute} from '../core/max-contact-route.js';
 import {MaxPrivatePoller} from '../core/max-private-poller.js';
 import {runtimeAllows} from '../core/runtime-scope.js';
 import {DeliveryError} from '../core/delivery-policy.js';
@@ -29,6 +31,14 @@ async function owned(signal:AbortSignal){
  app.get('/accounts/:id/groups',async(req,res)=>{
   const id=z.string().uuid().parse(req.params.id);res.json((await connections.get(id)).groups);
  });
+ app.post('/leads/:id/resolve',async(req,res)=>{
+  const accountId=z.string().uuid().optional().parse(req.body?.accountId);
+  res.json(await resolveMaxSourceRoute(pool,connections,scope,{leadId:z.string().uuid().parse(req.params.id),accountId}));
+ });
+ app.post('/contacts/:id/resolve',async(req,res)=>{
+  const accountId=z.string().uuid().parse(req.body?.accountId);
+  res.json(await resolveMaxContactRoute(pool,connections,scope,{contactId:z.string().uuid().parse(req.params.id),accountId}));
+ });
  app.post('/deliveries/:id/dispatch',async(req,res)=>res.json(await dispatchOwnedMaxPublication(pool,connections,z.string().uuid().parse(req.params.id),signal,config.SEND_TIMEOUT_MS)));
  app.post('/actions/:id/dispatch',async(req,res)=>{
   const id=z.string().uuid().parse(req.params.id),action=(await pool.query('SELECT conversation_id FROM ai_outbox WHERE id=$1',[id])).rows[0];
@@ -38,8 +48,8 @@ async function owned(signal:AbortSignal){
  });
  app.post('/notifications/:id/dispatch',async(req,res)=>{
   const id=z.string().uuid().parse(req.params.id);
-  const source=(await pool.query(`SELECT v.account_id,s.author_id FROM ai_handoff_notifications n JOIN ai_conversations v ON v.id=n.conversation_id JOIN ai_request_phases p ON p.id=n.request_phase_id JOIN ai_request_sources s ON s.request_id=p.request_id AND s.conversation_id=v.id WHERE n.id=$1 ORDER BY s.created_at DESC LIMIT 1`,[id])).rows[0];
-  if(!source||!runtimeAllows(scope,source.account_id,source.author_id))throw new DeliveryError('Источник уведомления вне разрешённой тестовой области','waiting');
+  const source=(await pool.query(`SELECT v.account_id,s.recipient_id,s.reader_account_id,s.author_id FROM ai_handoff_notifications n JOIN ai_conversations v ON v.id=n.conversation_id JOIN ai_request_phases p ON p.id=n.request_phase_id JOIN ai_request_sources s ON s.request_id=p.request_id AND s.conversation_id=v.id WHERE n.id=$1 ORDER BY s.created_at DESC LIMIT 1`,[id])).rows[0];
+  if(!source||(!runtimeAllows(scope,source.account_id,source.recipient_id)||!runtimeAllows(scope,source.reader_account_id,source.author_id)))throw new DeliveryError('Источник уведомления вне разрешённой тестовой области','waiting');
   res.json(await dispatchMaxManagerNotification(pool,id,undefined,async account=>(await connections.get(account)).socket));
  });
  app.use(((error,_req,res,_next)=>res.status(error instanceof z.ZodError?400:503).json({error:error instanceof z.ZodError?'Invalid request':'MAX operation deferred; inspect durable outcome before retry',kind:error instanceof DeliveryError?error.kind:'ambiguous'})) as express.ErrorRequestHandler);

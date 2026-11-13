@@ -535,7 +535,7 @@ export class ConversationWorkflow {
       ).rows[0];
       return (
         await client.query(
-          `INSERT INTO ai_handoff_notifications(conversation_id,logical_key,fingerprint,reason,summary,parameters,source,contact_snapshot,channel_snapshot,target_account_id,target_external_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+          `INSERT INTO ai_handoff_notifications(conversation_id,logical_key,fingerprint,reason,summary,parameters,source,contact_snapshot,channel_snapshot,target_account_id,target_external_id,state,outcome_code) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
           [
             data.conversationId,
             data.key,
@@ -556,6 +556,8 @@ export class ConversationWorkflow {
             },
             target?.account_id ?? null,
             target?.external_id ?? null,
+            data.resultStatus==='unqualified'&&data.reason==='insufficient_data'?'rejected':'pending',
+            data.resultStatus==='unqualified'&&data.reason==='insufficient_data'?'qualification_not_passed':null,
           ],
         )
       ).rows[0];

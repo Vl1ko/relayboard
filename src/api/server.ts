@@ -129,7 +129,7 @@ app.use("/api/ai/protocol", createProtocolRouter({pool,authorize:requireAdmin,en
 app.use("/api/ai/workspace", createConversationRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,workflow:new ConversationWorkflow(pool,{verifyQualification:verifyAiQualification})}));
 app.use("/api/ai/leads", createLeadRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED}));
 app.use("/api/ai/engine", createAiEngineRouter({pool, authorize:requireAdmin, enabled:config.CONTACT_IMPORT_ENABLED}));
-app.use("/api/ai/outreach", createOutreachRouter({pool, authorize:requireAdmin, enabled:config.CONTACT_IMPORT_ENABLED, syntheticEnabled:config.AI_SEND_MODE === "synthetic"}));
+app.use("/api/ai/outreach", createOutreachRouter({pool, authorize:requireAdmin, enabled:config.CONTACT_IMPORT_ENABLED, syntheticEnabled:config.AI_SEND_MODE === "synthetic",liveEnabled:config.AI_SEND_MODE==='live'&&!!config.MAX_WORKER_URL}));
 app.use("/api/ai", createContactImportRouter({ pool, authorize: requireAdmin, enabled: config.CONTACT_IMPORT_ENABLED, ownerScope: "workspace-admin" }));
 app.use("/api", requireAdmin);
 

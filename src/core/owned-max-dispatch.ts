@@ -9,7 +9,7 @@ export async function dispatchOwnedMax(pool:Pool,connections:MaxConnections,acti
  signal.throwIfAborted();
  const target=(await pool.query(`SELECT a.id,v.id AS conversation_id,v.account_id,v.external_id,v.active_phase_id FROM ai_outbox a JOIN ai_conversations v ON v.id=a.conversation_id WHERE a.id=$1 AND v.platform='max'`,[actionId])).rows[0];
  if(!target)throw Error('max_action_missing');
- const source=(await pool.query(`SELECT s.author_id,s.external_chat_id FROM ai_request_sources s JOIN ai_request_phases p ON p.request_id=s.request_id WHERE p.id=$1 AND s.conversation_id=$2 ORDER BY s.created_at DESC LIMIT 1`,[target.active_phase_id,target.conversation_id])).rows[0];
+ const source=(await pool.query(`SELECT s.recipient_id AS author_id,s.external_chat_id FROM ai_request_sources s JOIN ai_request_phases p ON p.request_id=s.request_id WHERE p.id=$1 AND s.conversation_id=$2 ORDER BY s.created_at DESC LIMIT 1`,[target.active_phase_id,target.conversation_id])).rows[0];
  if(!source)throw Error('max_private_route_missing');
  const connection=await connections.get(target.account_id);
  const metadata=await connection.socket.send(48,{chatIds:[Number(target.external_id)]}) as {chats?:Array<{id:unknown;type:unknown;participants:unknown}>};

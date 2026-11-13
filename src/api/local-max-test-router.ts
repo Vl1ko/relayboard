@@ -106,12 +106,10 @@ export function createLocalMaxTestRouter(options:{pool:Pool;authorize:RequestHan
    let conversation=(await options.pool.query('SELECT v.*,c.opted_out_at FROM ai_conversations v JOIN ai_contacts c ON c.id=v.contact_id WHERE v.account_id=$1 AND v.external_id=$2',[data.accountId,dialogId])).rows[0];
    if(!conversation){const contact=await store.createContact('Тестовый автор MAX');conversation=await store.createConversation({contactId:contact.id,accountId:data.accountId,externalId:dialogId});conversation=await store.setMode(conversation.id,'auto');}
    if(!conversation.manager_hold){
-    const request=await bindSourceRequest(options.pool,{conversationId:conversation.id,accountId:data.accountId,platform:'max',chatId:options.chatId,messageId:s.messageId,authorId:String(s.authorId)});
-    if(request.duplicate){
-     const phase=(await options.pool.query('SELECT p.request_id FROM ai_conversations v JOIN ai_request_phases p ON p.id=v.active_phase_id WHERE v.id=$1',[conversation.id])).rows[0];
-     if(phase?.request_id!==request.requestId||conversation.business_status==='closed')return res.status(409).json({error:'Это сообщение относится к завершённой заявке. Выберите новое сообщение автора.'});
-    }
+    const request=await bindSourceRequest(options.pool,{conversationId:conversation.id,accountId:data.accountId,platform:'max',chatId:options.chatId,messageId:s.messageId,authorId:String(s.authorId),occurredAt:s.occurredAt});
     conversation=(await options.pool.query('SELECT v.*,c.opted_out_at FROM ai_conversations v JOIN ai_contacts c ON c.id=v.contact_id WHERE v.id=$1',[conversation.id])).rows[0];
+    const phase=(await options.pool.query('SELECT p.request_id FROM ai_conversations v JOIN ai_request_phases p ON p.id=v.active_phase_id WHERE v.id=$1',[conversation.id])).rows[0];
+    if(phase?.request_id!==request.requestId||conversation.business_status==='closed')return res.status(409).json({error:'Этот источник относится к прежней или уже активной заявке. Для нового обращения выберите новое сообщение после закрытия предыдущей.'});
    }
    if(conversation.opted_out_at||conversation.business_status==='refused')return res.status(409).json({error:'Получен отказ. Продолжение запрещено.'});
    if(conversation.automation_mode!=='auto'){

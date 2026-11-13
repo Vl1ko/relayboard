@@ -1,4 +1,4 @@
-# Выполнение утверждённого плана, 13 ноября 2026
+# Выполнение утверждённого плана, 14 ноября 2026
 
 Пользователь утвердил [RELEASE_PLAN.md](RELEASE_PLAN.md) и поручил завершить проект. Полный релиз пока не готов. Аудит: [RELEASE_AUDIT_2026-11-13.md](RELEASE_AUDIT_2026-11-13.md).
 
@@ -6,9 +6,9 @@
 |---|---|---|
 | RES00 | DONE | Чистый снимок Git index: 209 PASS / 0 FAIL / 0 SKIP на PG16.16, typecheck и production build PASS. Доказательства: outputs/res00-baseline-2026-11-13; отсутствующие receipts не подтверждаются |
 | RES01 | DONE | Миграция 13, source→request→phase, архив полей/счётчика, граница истории, привязка inbox/outbox/решений/уведомлений/follow-up. 218 PASS / 0 FAIL / 0 SKIP, включая 20 разных источников и upgrade v12; build/typecheck PASS. Live transport — RES03–04 |
-| RES02 | IN_PROGRESS | Общая очередь GigaChat по credential (между процессами), отмена при утрате владения; exclusive publishing worker. 224 PASS / 0 FAIL / 0 SKIP, build/typecheck PASS; настоящий двухпроцессный recovery smoke PASS. Ещё нужны постоянные AI/session workers и live recovery |
-| RES03 | IN_PROGRESS | Постоянный MAX owner, private inbox и cursor/restart готовы на синтетических тестах; phone/source routing и live-приёмка ещё не закрыты |
-| RES04 | TODO | Полный WhatsApp AI transport; аккаунт пользователь подключит при приёмке |
+| RES02 | IN_PROGRESS | MAX/AI/publishing owners, heartbeat, общая очередь модели, inbox/cursor и SIGKILL/restart проверены синтетически. Ещё нужны WhatsApp owner и live recovery |
+| RES03 | IN_PROGRESS | Постоянный MAX owner, inbox/cursor, phone/source routing и выбор sender проверены. Миграция 15; 259 PASS/0FAIL/0SKIP. Ещё нужны автоматический source coordinator, UI и live-приёмка |
+| RES04 | IN_PROGRESS | Изучена фактическая граница CDP send в установленном SDK; начинается подготовленный WhatsApp transport. Аккаунт пользователь подключит при приёмке |
 | RES05 | TODO | Мониторинг, scoring, автоматический первый контакт |
 | RES06 | IN_PROGRESS | Все четыре dispatcher reasons, completion repair, manager hold и старые фазы проверены; live-корпус и полная бизнес-приёмка впереди |
 | RES07 | TODO | Автоматические follow-up |
@@ -147,3 +147,15 @@ AI worker теперь имеет отдельную роль ownership, live MA
 Проверки: полный набор 247 PASS / 0 FAIL / 0 SKIP; дополнительный CID regression 3 PASS (один новый случай для разных prepared instances). Typecheck/build PASS. MAX owner и AI owner выдержали SIGKILL и передачу роли второму процессу без повторной отправки/решения; вход в реальные MAX/WhatsApp и внешние запросы в этих проверках не выполнялись. Доказательства: outputs/res02-permanent-inbox-2026-11-13. Операторское описание: runtime.md.
 
 RES02 и RES03 остаются IN_PROGRESS: source/phone routing, реальный end-to-end и WhatsApp owner ещё необходимы. Следующий шаг — реальные transport identity/routing и источники; затем live-тест согласованного MAX-собеседника. Секреты, текущая локальная тестовая сессия и production не переключались.
+
+## 14 ноября — RES03: identities и реальные маршруты
+
+Миграция 15 отделяет автора/reader исходного сообщения от выбранного sender и частного recipient, сохраняет source timestamp и признак единственного первого контакта. Подтверждённый MAX ID связывается между аккаунтами; точный подтверждённый телефон связывает MAX и WhatsApp с существующей карточкой. Имя не является ключом; opt-out, имя, комментарий и история импортированной карточки сохраняются. Противоречивые связи останавливаются для проверки менеджером, без автоматического слияния истории.
+
+MAX phone lookup принимает только единственное точное совпадение реально возвращённого номера; совпадение номера с именем не подходит. Source resolver повторно читает выбранный CHAT и сообщение, сверяет фактического автора/текст, затем открывает и проверяет DIALOG с выбранного разрешённого аккаунта. Проверка маршрута не создаёт заявку или отправку. Импортированный маршрут остаётся paused; после явного разрешения и запуска first outreach используются verified route и durable request source.
+
+Новый публичный источник на другом канале не начинает дополнительное обращение, пока заявка открыта. Подтверждённый личный ответ может присоединить вторую фазу. Запоздавшее сообщение, датированное до закрытия, не создаёт новую автоматическую заявку. Старый source сохраняет свой request при replay. Точно отрицательная квалификация получает farewell; она не маскируется под недостаток данных и не создаёт лишнее manager alert.
+
+Проверки: 259 PASS / 0 FAIL / 0 SKIP на изолированном PG16.16; typecheck/build PASS. Включены upgrade v12/v14 с историей, 20 конкурентных identities, одинаковые имена, межканальный opt-out, reader≠sender, изменённый source, первый импортный DM и межплатформенный source/recipient со scope. Доказательства: outputs/res03-routing-2026-11-14. Реальные сообщения, GigaChat-запросы, текущая локальная сессия и production на этом этапе не использовались/не переключались.
+
+Следующий шаг: подготовленный WhatsApp send, durable receipts/inbound и подключение обоих transport к общему source coordinator. Полный релиз остаётся незавершённым.
