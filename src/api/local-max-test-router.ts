@@ -1,3 +1,4 @@
+import {bindSourceRequest} from '../core/request-lifecycle.js';
 import {dispatchMaxManagerNotification} from '../core/max-manager-notification.js';
 import {beginConfiguredQualification} from '../core/begin-qualification.js';
 import {Router,type RequestHandler,type ErrorRequestHandler} from 'express';
@@ -104,7 +105,15 @@ export function createLocalMaxTestRouter(options:{pool:Pool;authorize:RequestHan
    const dialogId=await withMax(data.accountId,async(client,socket)=>{await verifySource(client,socket,s);return privateDialog(client,socket,s);});
    let conversation=(await options.pool.query('SELECT v.*,c.opted_out_at FROM ai_conversations v JOIN ai_contacts c ON c.id=v.contact_id WHERE v.account_id=$1 AND v.external_id=$2',[data.accountId,dialogId])).rows[0];
    if(!conversation){const contact=await store.createContact('Тестовый автор MAX');conversation=await store.createConversation({contactId:contact.id,accountId:data.accountId,externalId:dialogId});conversation=await store.setMode(conversation.id,'auto');}
-   if(conversation.opted_out_at||['closed','refused'].includes(conversation.business_status))return res.status(409).json({error:'Диалог закрыт или получен отказ. Продолжение запрещено.'});
+   if(!conversation.manager_hold){
+    const request=await bindSourceRequest(options.pool,{conversationId:conversation.id,accountId:data.accountId,platform:'max',chatId:options.chatId,messageId:s.messageId,authorId:String(s.authorId)});
+    if(request.duplicate){
+     const phase=(await options.pool.query('SELECT p.request_id FROM ai_conversations v JOIN ai_request_phases p ON p.id=v.active_phase_id WHERE v.id=$1',[conversation.id])).rows[0];
+     if(phase?.request_id!==request.requestId||conversation.business_status==='closed')return res.status(409).json({error:'Это сообщение относится к завершённой заявке. Выберите новое сообщение автора.'});
+    }
+    conversation=(await options.pool.query('SELECT v.*,c.opted_out_at FROM ai_conversations v JOIN ai_contacts c ON c.id=v.contact_id WHERE v.id=$1',[conversation.id])).rows[0];
+   }
+   if(conversation.opted_out_at||conversation.business_status==='refused')return res.status(409).json({error:'Получен отказ. Продолжение запрещено.'});
    if(conversation.automation_mode!=='auto'){
     const confirmed=(await options.pool.query("SELECT id,text,state FROM ai_outbox WHERE conversation_id=$1 AND state='confirmed' AND kind='reply' ORDER BY dispatch_started_at LIMIT 1",[conversation.id])).rows[0];
     if(confirmed){bindings.set(confirmed.id,{accountId:data.accountId,sourceId:s.id,dialogId,conversationId:conversation.id});return res.json({accountId:data.accountId,authorId:s.authorId,sourceId:s.id,dialogId,action:confirmed,decision:'reply',reason:'explicit_restart_required',paused:true,qualificationCompleted:['qualified','unqualified'].includes(conversation.business_status),managerHold:conversation.manager_hold});}

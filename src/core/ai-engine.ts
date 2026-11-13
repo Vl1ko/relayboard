@@ -434,7 +434,7 @@ export class AiEngineStore {
       throw new AiEngineError("automation_forbidden");
     const all = (
       await this.pool.query(
-        `SELECT event_key,external_message_id AS "messageId",left(text,4000) AS text,origin FROM ai_inbox WHERE conversation_id=$1 ORDER BY ingest_sequence DESC LIMIT 20`,
+        `SELECT event_key,external_message_id AS "messageId",left(text,4000) AS text,origin FROM ai_inbox WHERE conversation_id=$1 AND ingest_sequence>=coalesce((SELECT first_ingest_sequence FROM ai_request_phases WHERE id=(SELECT active_phase_id FROM ai_conversations WHERE id=$1)),0) ORDER BY ingest_sequence DESC LIMIT 20`,
         [conversationId],
       )
     ).rows.reverse();

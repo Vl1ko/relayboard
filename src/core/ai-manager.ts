@@ -178,7 +178,7 @@ export class AiManagerStore {
       const handoff=(await client.query('SELECT 1 FROM ai_handoff_notifications WHERE conversation_id=$1 AND logical_key=$2',[conversation.id,'ai-handoff:'+decisionId])).rowCount;
       if(!handoff||contact.opted_out_at||conversation.automation_mode!=='paused'||conversation.business_status!==decision.business_status||BigInt(conversation.automation_epoch)!==BigInt(decision.automation_epoch)+1n)throw new AiStateError('qualification_notice_forbidden');
       const savedSettings=(await client.query('SELECT settings FROM ai_engine_settings WHERE version=$1',[decision.settings_version])).rows[0].settings;
-      const prior=(await client.query('SELECT 1 FROM ai_outbox WHERE conversation_id=$1 AND dispatch_started_at IS NOT NULL LIMIT 1',[conversation.id])).rowCount;
+      const prior=(await client.query('SELECT 1 FROM ai_outbox WHERE conversation_id=$1 AND dispatch_started_at IS NOT NULL AND request_phase_id IS NOT DISTINCT FROM (SELECT active_phase_id FROM ai_conversations WHERE id=$1) LIMIT 1',[conversation.id])).rowCount;
       const noticeText=(prior?'':(savedSettings.greetingMessage??DEFAULT_GREETING)+'\n\n')+completionTemplate(savedSettings,decision.business_status);
       const fingerprint=createHash('sha256').update(JSON.stringify(['qualification_notice',noticeText])).digest('hex');
       return(await client.query(`INSERT INTO ai_outbox(contact_id,conversation_id,logical_key,kind,text,fingerprint,automation_epoch) VALUES($1,$2,$3,'qualification_notice',$4,$5,$6) RETURNING *`,[contact.id,conversation.id,logicalKey,noticeText,fingerprint,conversation.automation_epoch])).rows[0];

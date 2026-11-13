@@ -47,6 +47,14 @@ export class OutreachRunner {
    if(existing){await c.query('UPDATE ai_outreach_items SET action_id=$3 WHERE run_id=$1 AND request_id=$2',[runId,requestId,existing.id]);return existing.id as string;}
    if(contact.opted_out_at||conversation.automation_mode!=='auto'||['closed','refused'].includes(conversation.business_status)){await c.query("UPDATE ai_outreach_items SET skipped_reason='contact_guard_changed' WHERE run_id=$1 AND request_id=$2",[runId,requestId]);return null;}
    const settings=(await c.query('SELECT * FROM ai_outreach_settings WHERE id=1 FOR SHARE')).rows[0];if(!settings.template.trim())return null;
+   const phase=(await c.query('SELECT p.*,r.lifecycle FROM ai_request_phases p JOIN ai_requests r ON r.id=p.request_id WHERE p.id=$1',[conversation.active_phase_id])).rows[0];
+   if((await c.query("SELECT 1 FROM ai_request_phases p JOIN ai_requests r ON r.id=p.request_id WHERE r.contact_id=$1 AND r.lifecycle='open' AND p.closed_at IS NULL AND r.id<>$2",[contact.id,requestId])).rowCount)return null;
+   if(!phase||phase.request_id!==requestId){
+    const state=(await c.query('SELECT settings_version FROM ai_engine_state WHERE conversation_id=$1',[conversation.id])).rows[0];
+    const first=(await c.query('SELECT coalesce(max(ingest_sequence),0)::bigint+1 AS n FROM ai_inbox WHERE conversation_id=$1',[conversation.id])).rows[0].n;
+    const linked=(await c.query('INSERT INTO ai_request_phases(request_id,conversation_id,settings_version,first_ingest_sequence) VALUES($1,$2,$3,$4) RETURNING id',[requestId,conversation.id,state.settings_version,first])).rows[0];
+    await c.query('UPDATE ai_conversations SET active_phase_id=$2 WHERE id=$1',[conversation.id,linked.id]);
+   }
    const text=settings.template,fingerprint=createHash('sha256').update(JSON.stringify(['first_message',text])).digest('hex');
    const action=(await c.query(`INSERT INTO ai_outbox(contact_id,conversation_id,logical_key,kind,text,fingerprint,automation_epoch) VALUES($1,$2,$3,'first_message',$4,$5,$6) RETURNING id`,[contact.id,conversation.id,logical,text,fingerprint,conversation.automation_epoch])).rows[0];
    await c.query('UPDATE ai_outreach_items SET action_id=$3 WHERE run_id=$1 AND request_id=$2',[runId,requestId,action.id]);return action.id as string;
