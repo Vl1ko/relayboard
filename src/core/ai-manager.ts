@@ -16,7 +16,7 @@ const enqueueSchema = z.object({
 });
 
 type ContactGuard = { opted_out_at: Date | null };
-type ConversationGuard = { contact_id: string; platform: string; account_id: string; automation_mode: string; business_status: string; automation_epoch: string };
+type ConversationGuard = { id:string; contact_id: string; platform: string; account_id: string; automation_mode: string; business_status: string; automation_epoch: string };
 type ActionGuard = { id: string; text: string; kind: string; automation_epoch: string; cancellation_requested: boolean };
 
 export type PreparedChannelSend = {
@@ -25,6 +25,7 @@ export type PreparedChannelSend = {
   start(action: { operationId: string; text: string; conversationId: string }): { acknowledgement: Promise<unknown> };
 };
 
+export const QUALIFICATION_NOTICE_TEXT = 'Спасибо, параметры заявки сохранены.';
 export class AiStateError extends Error {
   constructor(public readonly code: string) { super(code); }
 }
@@ -163,6 +164,22 @@ export class AiManagerStore {
     });
   }
 
+  /** One factual completion receipt, bound to an accepted decision and its completed handoff. */
+  async enqueueQualificationNotice(decisionId:string){
+    uuid.parse(decisionId);
+    return this.tx(async client=>{
+      const decision=(await client.query("SELECT * FROM ai_engine_decisions WHERE id=$1 AND disposition='handoff' AND business_status IN ('qualified','unqualified')",[decisionId])).rows[0];
+      if(!decision)throw new AiStateError('qualification_notice_proof_required');
+      const {contact,conversation}=await this.lockConversation(client,decision.conversation_id);
+      const logicalKey='qualification-notice:'+decisionId;
+      const old=(await client.query("SELECT * FROM ai_outbox WHERE kind='qualification_notice' AND logical_key=$1",[logicalKey])).rows[0];if(old)return old;
+      const handoff=(await client.query('SELECT 1 FROM ai_handoff_notifications WHERE conversation_id=$1 AND logical_key=$2',[conversation.id,'ai-handoff:'+decisionId])).rowCount;
+      if(!handoff||contact.opted_out_at||conversation.automation_mode!=='paused'||conversation.business_status!==decision.business_status||BigInt(conversation.automation_epoch)!==BigInt(decision.automation_epoch)+1n)throw new AiStateError('qualification_notice_forbidden');
+      const fingerprint=createHash('sha256').update(JSON.stringify(['qualification_notice',QUALIFICATION_NOTICE_TEXT])).digest('hex');
+      return(await client.query(`INSERT INTO ai_outbox(contact_id,conversation_id,logical_key,kind,text,fingerprint,automation_epoch) VALUES($1,$2,$3,'qualification_notice',$4,$5,$6) RETURNING *`,[contact.id,conversation.id,logicalKey,QUALIFICATION_NOTICE_TEXT,fingerprint,conversation.automation_epoch])).rows[0];
+    });
+  }
+
   private async actionContext(client: PoolClient, actionId: string) {
     const found = (await client.query("SELECT conversation_id FROM ai_outbox WHERE id=$1", [uuid.parse(actionId)])).rows[0];
     if (!found) throw new AiStateError("action_not_found");
@@ -174,10 +191,15 @@ export class AiManagerStore {
   private async gate(client: PoolClient, contact: ContactGuard, conversation: ConversationGuard, action: ActionGuard, reserve = false) {
     // Account lock is shared: disabling auth/account waits until the send initiation boundary.
     const account = (await client.query("SELECT enabled,auth_error FROM integrations WHERE id=$1 FOR SHARE", [conversation.account_id])).rows[0];
-    if (contact.opted_out_at || (action.kind === "manual_reply" ? conversation.automation_mode !== "manual" : conversation.automation_mode !== "auto") || ["closed", "refused"].includes(conversation.business_status)
+    if (contact.opted_out_at || (action.kind === "qualification_notice" ? conversation.automation_mode !== "paused" || !["qualified","unqualified"].includes(conversation.business_status) : action.kind === "manual_reply" ? conversation.automation_mode !== "manual" : conversation.automation_mode !== "auto") || ["closed", "refused"].includes(conversation.business_status)
       || conversation.automation_epoch !== action.automation_epoch || action.cancellation_requested) return "cancel";
     if (!account) return "cancel";
     if (!account.enabled || account.auth_error) return "wait";
+    if(action.kind==='qualification_notice'){
+      const proof=await client.query(`SELECT 1 FROM ai_outbox a JOIN ai_engine_decisions d ON a.logical_key='qualification-notice:'||d.id::text AND a.conversation_id=d.conversation_id JOIN ai_handoff_notifications n ON n.conversation_id=d.conversation_id AND n.logical_key='ai-handoff:'||d.id::text WHERE a.id=$1 AND d.disposition='handoff' AND d.business_status=$2 AND d.business_status IN ('qualified','unqualified') AND d.automation_epoch+1=$3 AND a.text=$4`,[action.id,conversation.business_status,conversation.automation_epoch,QUALIFICATION_NOTICE_TEXT]);
+      if(!proof.rowCount)return 'cancel';
+      if((await client.query("SELECT 1 FROM ai_outbox WHERE conversation_id=$1 AND id<>$2 AND state IN ('unknown','dispatching')",[conversation.id,action.id])).rowCount)return 'wait';
+    }
     const workflow = await workflowActionGate(client, action.id);
     if(workflow!=="ready")return workflow;
     return outreachGuard(client, action, conversation, reserve);

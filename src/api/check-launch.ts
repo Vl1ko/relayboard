@@ -8,7 +8,7 @@ try {
   const result = await pool.query(
     "SELECT version FROM ai_schema_migrations ORDER BY version",
   );
-  for (let version = 1; version <= 10; version++)
+  for (let version = 1; version <= 11; version++)
     if (!result.rows.some((r) => r.version === version))
       blockers.push("Missing AI migration " + version);
   if (!config.CONTACT_IMPORT_ENABLED)

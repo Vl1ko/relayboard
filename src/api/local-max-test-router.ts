@@ -50,6 +50,19 @@ export function createLocalMaxTestRouter(options:{pool:Pool;authorize:RequestHan
  router.use((_req,res,next)=>{if(!options.enabled)return res.status(404).json({error:'Локальная проверка выключена'});next();});
  router.get('/qualification',async(_req,res)=>res.json(qualification?await qualification.status():{active:false,reason:'not_started'}));
  router.post('/qualification/stop',async(_req,res)=>{await qualification?.stop();res.json({stopped:true});});
+ router.post('/qualification/acknowledge',async(req,res)=>{
+  const data=z.object({accountId:z.string().uuid(),actionId:z.string().uuid()}).strict().parse(req.body);
+  if(busy||qualification?.active)return res.status(409).json({error:'Дождитесь завершения квалификации'});
+  prune();const b=bindings.get(data.actionId);if(!b||b.accountId!==data.accountId)throw new TestError('Сначала загрузите исходное сообщение и подготовьте предпросмотр');
+  const s=source(b.sourceId,data.accountId);busy=true;
+  try{
+   const decision=(await options.pool.query("SELECT id FROM ai_engine_decisions WHERE conversation_id=$1 AND disposition='handoff' AND business_status IN ('qualified','unqualified') ORDER BY created_at DESC LIMIT 1",[b.conversationId])).rows[0];
+   if(!decision)throw new TestError('Квалификация ещё не завершена');
+   const notice=await store.enqueueQualificationNotice(decision.id);
+   if(notice.state==='pending')await withMax(data.accountId,async(client,socket)=>{await verifySource(client,socket,s);const dialog=await privateDialog(client,socket,s);if(dialog!==b.dialogId)throw new TestError('Личка автора изменилась');await store.dispatch(notice.id,prepareMaxAiText({socket,accountId:data.accountId,chatId:dialog,allowedChatId:b.dialogId}));});
+   res.json((await options.pool.query('SELECT state,external_message_id,outcome_code FROM ai_outbox WHERE id=$1',[notice.id])).rows[0]);
+  }finally{busy=false;}
+ });
  router.post('/qualification/start',async(req,res)=>{
   const data=z.object({accountId:z.string().uuid(),actionId:z.string().uuid(),useCurrentSettings:z.literal(true)}).strict().parse(req.body);
   if(!options.provider)return res.status(503).json({error:'GigaChat не подключён'});
@@ -87,7 +100,7 @@ export function createLocalMaxTestRouter(options:{pool:Pool;authorize:RequestHan
    if(conversation.opted_out_at||['closed','refused'].includes(conversation.business_status))return res.status(409).json({error:'Диалог закрыт или получен отказ. Продолжение запрещено.'});
    if(conversation.automation_mode!=='auto'){
     const confirmed=(await options.pool.query("SELECT id,text,state FROM ai_outbox WHERE conversation_id=$1 AND state='confirmed' AND kind='reply' ORDER BY dispatch_started_at LIMIT 1",[conversation.id])).rows[0];
-    if(confirmed){bindings.set(confirmed.id,{accountId:data.accountId,sourceId:s.id,dialogId,conversationId:conversation.id});return res.json({accountId:data.accountId,authorId:s.authorId,sourceId:s.id,dialogId,action:confirmed,decision:'reply',reason:'explicit_restart_required',paused:true});}
+    if(confirmed){bindings.set(confirmed.id,{accountId:data.accountId,sourceId:s.id,dialogId,conversationId:conversation.id});return res.json({accountId:data.accountId,authorId:s.authorId,sourceId:s.id,dialogId,action:confirmed,decision:'reply',reason:'explicit_restart_required',paused:true,qualificationCompleted:['qualified','unqualified'].includes(conversation.business_status)});}
     return res.status(409).json({canResume:true,error:'Диалог на паузе. Нажмите «Продолжить тест».'});
    }
    const event=await orchestrator.ingest({version:1,platform:'max',accountId:data.accountId,conversationId:dialogId,messageId:'group-source:'+options.chatId+':'+s.messageId,occurredAt:s.occurredAt,direction:'inbound',origin:'customer',text:s.text,sourceChatId:options.chatId,sourceMessageId:s.messageId,sourceAuthorId:s.authorId});

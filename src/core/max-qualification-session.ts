@@ -56,7 +56,12 @@ export class MaxQualificationSession{
        await this.store.dispatch(action.id,{target:prepared.target,start:a=>this.active?prepared.start(a):{acknowledgement:Promise.resolve({operationId:a.operationId,outcome:'rejected',dispatchState:'not_started',code:'local_session_stopped',retryCondition:'never'})}});
       }finally{this.sending=false;}
      }
-     if(result.decision.disposition==='handoff'){if(['ungrounded_extraction','invalid_model_output','provider_failure'].includes(result.decision.reason))this.lastError='ИИ не смог подтвердить параметры по сообщению клиента. Требуется проверка менеджера или явное продолжение теста.';await this.stop(result.decision.reason,false);break;}
+     if(result.decision.disposition==='handoff'){
+      if(['qualified','unqualified'].includes(result.decision.business_status)){
+       const notice=await this.store.enqueueQualificationNotice(result.decision.id);this.sending=true;
+       try{const prepared=prepareMaxAiText({socket:this.o.socket,accountId:this.o.accountId,chatId:this.o.dialogId,allowedChatId:this.o.dialogId});await this.store.dispatch(notice.id,{target:prepared.target,start:a=>this.active?prepared.start(a):{acknowledgement:Promise.resolve({operationId:a.operationId,outcome:'rejected',dispatchState:'not_started',code:'local_session_stopped',retryCondition:'never'})}});}finally{this.sending=false;}
+      }
+      if(['ungrounded_extraction','invalid_model_output','provider_failure'].includes(result.decision.reason))this.lastError='ИИ не смог подтвердить параметры по сообщению клиента. Требуется проверка менеджера или явное продолжение теста.';await this.stop(result.decision.reason,false);break;}
     }catch{
      // A newer inbound event or takeover may invalidate a model result. Re-read guards next poll.
      this.lastError='Ответ не отправлен: состояние диалога изменилось или ИИ недоступен.';break;

@@ -26,7 +26,8 @@ async function until(check:()=>boolean|Promise<boolean>){for(let i=0;i<200;i++){
 test('MAX private session asks missing field, deduplicates polls, then qualifies from grounded reply',{skip:!url},async()=>{
  const provider:AiProvider={kind:'fixture',async complete(input){const last=input.data.messages.filter(m=>m.origin==='customer').at(-1)!;return last.text==='12'?{replyDraft:'',extracted:[{field:'volume',value:12,evidenceMessageId:last.messageId,evidenceQuote:'12'}],replyKind:'none',askFields:[],knowledgeKeys:[],proposedStatus:'qualified',handoffReason:null}:ask.complete(input);}};
  const f=await fixture(provider);f.set([m('one','Здравствуйте')]);await f.session.poll();await until(()=>f.sent()===1);await f.session.poll();assert.equal(f.sent(),1);
- f.set([m('one','Здравствуйте'),m('two','12')]);await f.session.poll();await until(()=>!f.session.active);const status=await f.session.status();assert.equal(status.businessStatus,'qualified');assert.equal(status.fields.volume,12);assert.equal(f.sent(),1);
+ f.set([m('one','Здравствуйте'),m('two','12')]);await f.session.poll();await until(()=>!f.session.active);const status=await f.session.status();assert.equal(status.businessStatus,'qualified');assert.equal(status.fields.volume,12);assert.equal(f.sent(),2);
+ const decision=(await pool.query("SELECT id FROM ai_engine_decisions WHERE conversation_id=$1 AND reason='qualified'",[f.conversation.id])).rows[0];const notice=await f.store.enqueueQualificationNotice(decision.id);assert.equal(notice.state,'confirmed');await f.store.dispatch(notice.id,{target:{accountId:f.account,externalConversationId:'303',platform:'max'},start(){throw Error('Must not repeat completion');}});assert.equal(f.sent(),2);
 });
 test('native manager message while model is pending cancels late reply',{skip:!url},async()=>{
  let release!:(value:any)=>void,started=false;const deferred:AiProvider={kind:'fixture',complete(){started=true;return new Promise(r=>release=r);}};const f=await fixture(deferred);f.set([m('one','Здравствуйте')]);await f.session.poll();await until(()=>started);
@@ -51,3 +52,13 @@ test('explicit new qualification adopts current rules without rewriting historic
 });
 
 test('explicit restart ignores historical manager messages but processes a new customer answer',{skip:!url},async()=>{const f=await fixture(ask,['previous-manager']);f.set([m('previous-manager','Историческое сообщение',101),m('fresh-customer','Здравствуйте')]);await f.session.poll();await until(()=>f.sent()===1);assert.equal(f.session.active,true);await f.session.stop();});
+
+test('completion notice is cancelled if manager takes over before its dispatch',{skip:!url},async()=>{
+ const {AiOrchestrator}=await import('./ai-orchestrator.js');
+ const provider:AiProvider={kind:'fixture',async complete(input){const m=input.data.messages.at(-1)!;return{replyDraft:'',extracted:[{field:'volume',value:12,evidenceMessageId:m.messageId,evidenceQuote:'12'}],replyKind:'none',askFields:[],knowledgeKeys:[],proposedStatus:'qualified',handoffReason:null};}};
+ const f=await fixture(provider),o=new AiOrchestrator(pool);const event=await o.ingest({version:1,platform:'max',accountId:f.account,conversationId:'303',messageId:'done',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'12'});const result=await o.process(f.conversation.id,event.event.event_key,provider);
+ const notice=await f.store.enqueueQualificationNotice(result.decision.id);
+ await f.store.ingest({version:1,platform:'max',accountId:f.account,conversationId:'303',messageId:'manager-after',occurredAt:new Date().toISOString(),direction:'outbound',origin:'human',text:'Дальше я'});
+ await f.store.dispatch(notice.id,{target:{accountId:f.account,externalConversationId:'303',platform:'max'},start(){throw Error('Must not send after takeover');}});
+ assert.equal((await pool.query('SELECT state FROM ai_outbox WHERE id=$1',[notice.id])).rows[0].state,'cancelled');
+});
