@@ -4,6 +4,7 @@ import { z } from "zod";
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().default(3001),
+  AI_SEND_MODE: z.enum(["disabled", "synthetic"]).default("disabled"),
   CONTACT_IMPORT_ENABLED: z.enum(["true", "false"]).default("false").transform(value => value === "true"),
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),

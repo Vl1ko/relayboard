@@ -12,6 +12,7 @@ type RequestRow = {
   name: string;
   phone: string | null;
 };
+type RunRow = {id:string;state:string;total:number;confirmed:number;review:number};
 type Preview = {
   template: string;
   intervalSeconds: number;
@@ -66,13 +67,16 @@ export default function OutreachPanel() {
     [preview, setPreview] = useState<Preview | null>(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
-    [dirty, setDirty] = useState(false);
+    [dirty, setDirty] = useState(false),
+    [caps,setCaps] = useState({canStartSynthetic:false}),
+    [runs,setRuns] = useState<RunRow[]>([]);
   const pendingRequest = useRef<{
       id: string;
       contactId: string;
     } | null>(null),
     mounted = useRef(true),
-    generation = useRef(0);
+    generation = useRef(0),
+    pendingRun = useRef<string|null>(null);
   useEffect(() => {
     mounted.current = true;
     void load();
@@ -86,21 +90,24 @@ export default function OutreachPanel() {
     setBusy(true);
     setError("");
     try {
-      const [s, a, c, r] = await Promise.all([
+      const [s, a, c, r, capability, runRows] = await Promise.all([
         api<Settings>("/api/ai/outreach/settings"),
         api<typeof accounts>("/api/integrations"),
         api<{
           contacts: typeof contacts;
         }>("/api/ai/contacts?limit=100"),
         api<RequestRow[]>("/api/ai/outreach/requests"),
+        api<{canStartSynthetic:boolean}>("/api/ai/outreach/capabilities"),
+        api<RunRow[]>("/api/ai/outreach/runs"),
       ]);
       if (!mounted.current || current !== generation.current) return;
+      setCaps(capability);setRuns(runRows);
       setSettings(s);
       setAccounts(a.filter((x) => ["max", "whatsapp"].includes(x.platform)));
       setContacts(c.contacts);
       setRequests(r);
       setDirty(false);
-      setPreview(null);
+      setPreview(null);pendingRun.current=null;
     } catch (e) {
       if (mounted.current && current === generation.current)
         setError(String(e instanceof Error ? e.message : e));
@@ -124,7 +131,7 @@ export default function OutreachPanel() {
     if (settings) {
       setSettings({ ...settings, ...p });
       setDirty(true);
-      setPreview(null);
+      setPreview(null);pendingRun.current=null;
     }
   }
   return (
@@ -132,7 +139,7 @@ export default function OutreachPanel() {
       <h2>Первое обращение — подготовка</h2>
       <p>
         Заявка создаётся отдельно от импорта. Здесь можно сохранить настройки и
-        проверить маршрут. Отправки и запуск пока не подключены.
+        проверить маршрут. Реальные отправки выключены; тестовый запуск использует имитацию.
       </p>
       {error && (
         <p role="alert" className="contact-import-error">
@@ -298,7 +305,7 @@ export default function OutreachPanel() {
                     requestIds: selected,
                   }),
                 });
-                if (mounted.current) setPreview(p);
+                if (mounted.current) {setPreview(p);pendingRun.current=null;}
               })
             }
           >
@@ -310,10 +317,15 @@ export default function OutreachPanel() {
       {preview && (
         <div aria-live="polite">
           <h3>Предпросмотр: готовых маршрутов {preview.eligible}</h3>
-          <p>Интервал: {preview.intervalSeconds} сек. Запуск недоступен.</p>
+          <p>Интервал: {preview.intervalSeconds} сек. Реальные сообщения не отправляются.</p>
           <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
             {preview.template}
           </pre>
+          {caps.canStartSynthetic && <button disabled={busy||dirty||preview.eligible!==selected.length} onClick={()=>void run(async()=>{
+            pendingRun.current??=crypto.randomUUID();
+            await api('/api/ai/outreach/runs',{method:'POST',body:JSON.stringify({id:pendingRun.current,revision:settings!.revision,requestIds:selected})});
+            const rows=await api<RunRow[]>('/api/ai/outreach/runs');if(mounted.current){setRuns(rows);pendingRun.current=null;setPreview(null);}
+          })}>Создать ТЕСТОВЫЙ запуск (без отправки)</button>}
           <ul>
             {preview.rows.map((r) => (
               <li key={r.requestId}>
@@ -329,6 +341,11 @@ export default function OutreachPanel() {
           </ul>
         </div>
       )}
+      <h3>Запуски первого обращения</h3>
+      <p>Подтверждения тестовых запусков относятся к имитации. Для обновления нажмите «Обновить настройки, контакты и заявки».</p>
+      {runs.map(row=><div key={row.id}><p>{row.id} · {({active:'Активен',paused:'На паузе',stopped:'Остановлен',completed:'Обработка завершена',review:'Требует проверки'} as Record<string,string>)[row.state]||row.state} · имитаций подтверждено {row.confirmed}/{row.total} · требуют проверки {row.review}</p>
+        {(['active','paused'] as string[]).includes(row.state) && <div>{(['paused','active','stopped'] as const).map(state=><button key={state} disabled={busy||row.state===state} onClick={()=>void run(async()=>{await api('/api/ai/outreach/runs/'+row.id+'/control',{method:'POST',body:JSON.stringify({state})});setRuns(await api<RunRow[]>('/api/ai/outreach/runs'));})}>{({paused:'Пауза',active:'Продолжить',stopped:'Стоп'})[state]}</button>)}</div>}
+      </div>)}
     </section>
   );
 }

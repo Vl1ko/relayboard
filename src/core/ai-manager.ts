@@ -3,6 +3,9 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { channelMessageKey, channelMessageSchema, channelSendOutcomeSchema, messageDisposition, type ChannelSendOutcome } from "./channel-contracts.js";
 
+import { workflowActionGate } from "./conversation-workflow.js";
+import { outreachGuard } from "./outreach-guards.js";
+
 const uuid = z.string().uuid();
 const opaque = z.string().min(1).max(512).refine(v => v.trim().length > 0);
 const epoch = z.string().regex(/^(0|[1-9][0-9]*)$/);
@@ -13,8 +16,8 @@ const enqueueSchema = z.object({
 });
 
 type ContactGuard = { opted_out_at: Date | null };
-type ConversationGuard = { account_id: string; automation_mode: string; business_status: string; automation_epoch: string };
-type ActionGuard = { automation_epoch: string; cancellation_requested: boolean };
+type ConversationGuard = { contact_id: string; platform: string; account_id: string; automation_mode: string; business_status: string; automation_epoch: string };
+type ActionGuard = { id: string; text: string; kind: string; automation_epoch: string; cancellation_requested: boolean };
 
 export type PreparedChannelSend = {
   target: { accountId: string; externalConversationId: string; platform: "max" | "whatsapp" };
@@ -59,6 +62,7 @@ export class AiManagerStore {
       automation_mode=$2,business_status=coalesce($3,business_status) WHERE id=$1`, [conversationId, mode, status ?? null]);
     await client.query(`UPDATE ai_outbox SET state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END,
       cancellation_requested=true,updated_at=now() WHERE conversation_id=$1 AND state IN ('pending','dispatching')`, [conversationId]);
+    await client.query("UPDATE ai_followup_jobs SET state='cancelled',cancellation_reason='conversation_guard_changed',updated_at=now() WHERE conversation_id=$1 AND state IN ('pending','enqueued')",[conversationId]);
   }
 
   async createContact(displayName = "") {
@@ -98,8 +102,16 @@ export class AiManagerStore {
         const row = (await client.query("SELECT * FROM ai_inbox WHERE event_key=$1", [channelMessageKey(event)])).rows[0];
         return { duplicate: true, event: row };
       }
-      if (event.origin === "human") await this.invalidate(client, conversation.id, "manual", "manager_working");
-      else if (event.origin === "unresolved") await this.invalidate(client, conversation.id, "paused");
+      const refusal=event.origin==='customer' && /^(?:пожалуйста[,\s]*)?(?:(?:больше\s+)?не\s+(?:пишите|звоните|связывайтесь)(?:\s+(?:мне|со\s+мной|сюда|больше))*|отпишите\s+меня|удалите\s+(?:мой\s+)?(?:номер|контакт)|стоп|stop|unsubscribe)[.!?\s]*$/iu.test(event.text.trim());
+      if(refusal){
+        await client.query("UPDATE ai_contacts SET opted_out_at=coalesce(opted_out_at,now()),opt_out_reason=coalesce(opt_out_reason,'explicit_customer_refusal') WHERE id=$1",[conversation.contact_id]);
+        const linked=await client.query('SELECT id FROM ai_conversations WHERE contact_id=$1 ORDER BY id FOR UPDATE',[conversation.contact_id]);
+        for(const row of linked.rows)await this.invalidate(client,row.id,'paused','refused');
+      }
+      else if (event.origin === "human" || event.origin === "unresolved") {
+        const linked=await client.query("SELECT id FROM ai_conversations WHERE contact_id=$1 ORDER BY id FOR UPDATE",[conversation.contact_id]);
+        for(const row of linked.rows)await this.invalidate(client,row.id,event.origin==='human'?'manual':'paused',event.origin==='human'?'manager_working':undefined);
+      }
       else if (event.origin === "customer") await this.invalidate(client, conversation.id, conversation.automation_mode);
       return { duplicate: false, event: inserted.rows[0] };
     });
@@ -146,6 +158,7 @@ export class AiManagerStore {
         (contact_id,conversation_id,logical_key,kind,text,fingerprint,automation_epoch)
         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
       [contact.id, conversation.id, data.logicalKey, data.kind, data.text, fingerprint, data.expectedEpoch])).rows[0];
+      if(data.kind==='reply' && conversation.business_status==='new')await client.query("UPDATE ai_conversations SET business_status='ai_dialog' WHERE id=$1",[conversation.id]);
       return { created: true, action };
     });
   }
@@ -158,14 +171,16 @@ export class AiManagerStore {
     return { ...context, action };
   }
 
-  private async gate(client: PoolClient, contact: ContactGuard, conversation: ConversationGuard, action: ActionGuard) {
+  private async gate(client: PoolClient, contact: ContactGuard, conversation: ConversationGuard, action: ActionGuard, reserve = false) {
     // Account lock is shared: disabling auth/account waits until the send initiation boundary.
     const account = (await client.query("SELECT enabled,auth_error FROM integrations WHERE id=$1 FOR SHARE", [conversation.account_id])).rows[0];
-    if (contact.opted_out_at || conversation.automation_mode !== "auto" || ["closed", "refused"].includes(conversation.business_status)
+    if (contact.opted_out_at || (action.kind === "manual_reply" ? conversation.automation_mode !== "manual" : conversation.automation_mode !== "auto") || ["closed", "refused"].includes(conversation.business_status)
       || conversation.automation_epoch !== action.automation_epoch || action.cancellation_requested) return "cancel";
     if (!account) return "cancel";
     if (!account.enabled || account.auth_error) return "wait";
-    return "ready";
+    const workflow = await workflowActionGate(client, action.id);
+    if(workflow!=="ready")return workflow;
+    return outreachGuard(client, action, conversation, reserve);
   }
 
   /** Prepared transport is injected; no live adapter is installed/wired in this increment.
@@ -200,7 +215,7 @@ export class AiManagerStore {
       await this.tx(async client => {
         const { contact, conversation, action } = await this.actionContext(client, actionId);
         if (action.state !== "dispatching" || action.attempt_token !== attempt) return;
-        const gate = await this.gate(client, contact, conversation, action);
+        const gate = await this.gate(client, contact, conversation, action, true);
         if (gate !== "ready") {
           await client.query("UPDATE ai_outbox SET state=$2,attempt_token=NULL,updated_at=now() WHERE id=$1",
             [actionId, gate === "cancel" ? "cancelled" : "pending"]);
@@ -214,6 +229,10 @@ export class AiManagerStore {
           response = Promise.resolve(started.acknowledgement).catch(() => null);
         }
         catch { response = Promise.resolve(null); }
+        await client.query("UPDATE ai_outbox SET dispatch_started_at=clock_timestamp() WHERE id=$1",[action.id]);
+        // Record after synchronous initiation; this timestamp conservatively bounds the next start.
+        await client.query(`UPDATE ai_outreach_clocks SET last_started_at=clock_timestamp() WHERE account_id=$1
+          AND EXISTS(SELECT 1 FROM ai_outreach_items WHERE action_id=$2)`, [conversation.account_id,action.id]);
       });
     } catch (error) {
       // If send might have started, leave the durable dispatching state for reconciliation.

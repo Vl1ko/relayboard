@@ -8,6 +8,12 @@ import { fileURLToPath } from "node:url";
 import multer from "multer";
 import { z, ZodError } from "zod";
 import { config } from "../core/config.js";
+import { createProtocolRouter } from "./protocol-router.js";
+import { createConversationRouter } from "./conversation-router.js";
+import { createLeadRouter } from "./lead-router.js";
+import { ConversationWorkflow } from "../core/conversation-workflow.js";
+import { verifyAiQualification } from "../core/ai-engine.js";
+import { createAiEngineRouter } from "./ai-engine-router.js";
 import { createOutreachRouter } from "./outreach-router.js";
 import { createContactImportRouter, startContactImportCleanup } from "./contact-import-router.js";
 import { isMaxTransportError, listMaxGroups } from "../core/adapters/max.js";
@@ -110,7 +116,11 @@ app.get("/api/health", async (_request, response) => {
   const result = await pool.query("SELECT now() AS database_time");
   response.json({ ok: true, databaseTime: result.rows[0].database_time, version: "1.0.0" });
 });
-app.use("/api/ai/outreach", createOutreachRouter({pool, authorize:requireAdmin, enabled:config.CONTACT_IMPORT_ENABLED}));
+app.use("/api/ai/protocol", createProtocolRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,syntheticEnabled:config.AI_SEND_MODE === "synthetic"}));
+app.use("/api/ai/workspace", createConversationRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,workflow:new ConversationWorkflow(pool,{verifyQualification:verifyAiQualification})}));
+app.use("/api/ai/leads", createLeadRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED}));
+app.use("/api/ai/engine", createAiEngineRouter({pool, authorize:requireAdmin, enabled:config.CONTACT_IMPORT_ENABLED}));
+app.use("/api/ai/outreach", createOutreachRouter({pool, authorize:requireAdmin, enabled:config.CONTACT_IMPORT_ENABLED, syntheticEnabled:config.AI_SEND_MODE === "synthetic"}));
 app.use("/api/ai", createContactImportRouter({ pool, authorize: requireAdmin, enabled: config.CONTACT_IMPORT_ENABLED, ownerScope: "workspace-admin" }));
 app.use("/api", requireAdmin);
 

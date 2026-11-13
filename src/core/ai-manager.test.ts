@@ -20,7 +20,7 @@ before(async () => {
   try { await admin.query("CREATE SCHEMA " + schema); } finally { await admin.end(); }
   pool = new pg.Pool({ connectionString: url, options: "-c search_path=" + schema + ",public" });
   await pool.query(await readFile(new URL("../../database/schema.sql", import.meta.url), "utf8"));
-  assert.deepEqual(await applyAiManagerMigration(pool), { version: 3, applied: true });
+  assert.deepEqual(await applyAiManagerMigration(pool), { version: 9, applied: true });
   store = new AiManagerStore(pool);
 });
 beforeEach(async () => { if (pool) await pool.query("TRUNCATE ai_contacts,integrations CASCADE"); });
@@ -58,7 +58,7 @@ function confirmation(input: { operationId: string }) {
 
 test("migration repeats without changing existing data or deleting legacy tables", { skip }, async () => {
   const old = await fixture();
-  assert.deepEqual(await applyAiManagerMigration(pool), { version: 3, applied: false });
+  assert.deepEqual(await applyAiManagerMigration(pool), { version: 9, applied: false });
   assert.equal((await pool.query("SELECT name FROM integrations WHERE id=$1", [old.account])).rows[0].name, "synthetic");
   assert.ok((await pool.query("SELECT to_regclass('posts') AS name")).rows[0].name);
 });
@@ -304,3 +304,8 @@ test("failed migration leaves no partial AI tables or history record", { skip },
     assert.equal(tables.rows[0].n, 0);
   } finally { await broken.end(); await pool.query("DROP SCHEMA " + name + " CASCADE"); }
 });
+
+ test('explicit customer refusal persists across channels and blocks resume', {skip},async()=>{const a=await fixture(),b=await fixture('whatsapp',a.contact);await enqueue(a);await enqueue(b,'second');await store.ingest({...event(a),text:'Не пишите мне больше'});assert.ok((await pool.query('SELECT opted_out_at FROM ai_contacts WHERE id=$1',[a.contact])).rows[0].opted_out_at);await assert.rejects(store.setMode(b.conversation,'auto'));assert.equal((await pool.query("SELECT count(*)::int n FROM ai_outbox WHERE state='pending'")).rows[0].n,0);});
+
+test('manual reply takes over linked automation and dispatches only once', {skip},async()=>{const {ManualReplyStore}=await import('./manual-reply.js');const f=await fixture();const automatic=await enqueue(f);const manual=new ManualReplyStore(pool),input={conversationId:f.conversation,operationId:randomUUID(),text:'Explicit operator reply'};const a=await manual.create(input);assert.equal((await action(automatic.id)).state,'cancelled');let calls=0;await dispatch(a.action.id,i=>{calls++;return confirmation(i);});await dispatch(a.action.id,i=>{calls++;return confirmation(i);});assert.equal(calls,1);await store.optOut(f.contact,'stop');assert.equal((await manual.create(input)).created,false);await assert.rejects(manual.create({...input,operationId:randomUUID()}));});
+test('processing sequence stays ordered when transaction timestamps are identical',{skip},async()=>{const f=await fixture();await store.ingest(event(f,'customer','first'));await store.ingest(event(f,'customer','second'));await pool.query("UPDATE ai_inbox SET received_at='2026-01-01T00:00:00Z'");const rows=(await pool.query('SELECT external_message_id FROM ai_inbox ORDER BY ingest_sequence DESC')).rows;assert.equal(rows[0].external_message_id,'second');});

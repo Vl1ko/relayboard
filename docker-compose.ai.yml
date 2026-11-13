@@ -1,0 +1,17 @@
+# Opt-in local synthetic worker. This profile never sends to real platforms.
+services:
+  ai-worker:
+    image: relayboard:local
+    pull_policy: never
+    profiles: [synthetic-ai]
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://relayboard:relayboard@postgres:5432/relayboard
+      REDIS_URL: redis://redis:6379
+      AI_SEND_MODE: synthetic
+    command: [node, dist-node/ai-worker/index.js]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped

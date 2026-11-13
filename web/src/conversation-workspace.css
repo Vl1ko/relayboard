@@ -1,0 +1,307 @@
+.conversation-workspace {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+.conversation-workspace label {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.conversation-workspace input,
+.conversation-workspace select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #d6dfec;
+  border-radius: 9px;
+  color: #24324b;
+  background: white;
+  font: inherit;
+}
+.conversation-workspace button {
+  padding: 10px 12px;
+  border: 1px solid #d6dfec;
+  border-radius: 9px;
+  color: #263a59;
+  background: white;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.conversation-workspace button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.conversation-workspace :is(button, input, select):focus-visible {
+  outline: 3px solid #9fc1ff;
+  outline-offset: 2px;
+}
+.conversation-filters {
+  display: grid;
+  grid-template-columns: 2fr repeat(3, minmax(100px, 1fr));
+  gap: 12px;
+  padding: 20px;
+}
+.conversation-counters {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+.conversation-counters div {
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid #e1e7ef;
+  background: white;
+  display: grid;
+  gap: 7px;
+}
+.conversation-counters span {
+  font-size: 12px;
+  color: #66758b;
+}
+.conversation-counters strong {
+  font-size: 23px;
+}
+.conversation-counters > p {
+  grid-column: 1/-1;
+  margin: 0;
+  color: #66758b;
+  font-size: 12px;
+}
+.conversation-columns {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.7fr);
+  gap: 18px;
+  align-items: start;
+}
+.conversation-list,
+.conversation-detail {
+  padding: 20px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.conversation-list h2,
+.conversation-detail h2 {
+  margin-top: 0;
+  font-size: 20px;
+}
+.conversation-contact {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  margin-bottom: 8px;
+}
+.conversation-contact.selected {
+  border-color: #3185e8;
+  background: #edf5ff;
+}
+.conversation-contact span {
+  font-size: 12px;
+}
+.conversation-contact small {
+  color: #68758a;
+  font-size: 11px;
+}
+.conversation-snippet {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-pagination,
+.conversation-controls,
+.conversation-status-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  margin: 16px 0;
+}
+.conversation-pagination {
+  justify-content: space-between;
+  font-size: 11px;
+  color: #68758a;
+}
+.conversation-status-editor > label {
+  flex: 1;
+}
+.conversation-facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.conversation-facts dt {
+  font-size: 11px;
+  color: #68758a;
+}
+.conversation-facts dd {
+  margin: 5px 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+.conversation-address,
+.conversation-muted {
+  color: #68758a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.conversation-messages {
+  display: grid;
+  gap: 12px;
+}
+.conversation-message {
+  border: 1px solid #dce5f0;
+  border-radius: 11px;
+  padding: 14px;
+  background: #f7faff;
+}
+.conversation-message.outbound {
+  background: #f2faf5;
+}
+.conversation-message header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+.conversation-message time,
+.conversation-message small,
+.conversation-operation small {
+  color: #68758a;
+  font-size: 11px;
+}
+.conversation-message p,
+.conversation-operation p {
+  white-space: pre-wrap;
+  margin: 10px 0;
+  line-height: 1.6;
+}
+.conversation-operation {
+  border-bottom: 1px solid #e2e8f0;
+  padding: 12px 0;
+  font-size: 13px;
+}
+.conversation-error {
+  padding: 12px;
+  border-radius: 9px;
+  background: #fff0ee;
+  color: #9d2525;
+}
+.conversation-success {
+  padding: 12px;
+  border-radius: 9px;
+  background: #edf9f1;
+  color: #247449;
+}
+@media (max-width: 1050px) {
+  .conversation-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .conversation-columns {
+    grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.5fr);
+  }
+}
+@media (max-width: 720px) {
+  .conversation-columns {
+    grid-template-columns: 1fr;
+  }
+  .conversation-counters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .conversation-filters {
+    padding: 16px;
+  }
+  .conversation-list,
+  .conversation-detail {
+    padding: 16px;
+  }
+  .conversation-facts {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 420px) {
+  .conversation-filters {
+    grid-template-columns: 1fr;
+  }
+}
+.conversation-settings {
+  padding: 20px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.conversation-settings fieldset {
+  border: 0;
+  padding: 18px 0 0;
+  min-width: 0;
+}
+.conversation-settings legend {
+  font-weight: 700;
+  margin: 12px 0;
+}
+.conversation-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.conversation-settings textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #d6dfec;
+  border-radius: 9px;
+  font: inherit;
+}
+.conversation-weekdays {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 16px 0;
+}
+.conversation-weekdays label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.conversation-weekdays input {
+  width: auto;
+}
+.conversation-followup-step {
+  padding: 14px;
+  border: 1px solid #e0e7ef;
+  border-radius: 10px;
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+@media (max-width: 560px) {
+  .conversation-settings {
+    padding: 16px;
+  }
+  .conversation-settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.conversation-manual-reply {
+  margin-top: 20px;
+  padding: 16px;
+  border: 1px solid #cbdff5;
+  border-radius: 12px;
+  background: #f6faff;
+}
+.conversation-manual-reply textarea {
+  min-width: 0;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #d6dfec;
+  border-radius: 9px;
+  font: inherit;
+}
+.conversation-manual-reply button {
+  margin-top: 12px;
+}

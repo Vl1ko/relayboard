@@ -3,7 +3,9 @@
   .app-shell .mobile-nav {
     grid-template-columns: none;
     grid-auto-flow: column;
-    grid-auto-columns: minmax(0, 1fr);
+    grid-auto-columns: minmax(62px, 1fr);
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
   }
   .app-shell .mobile-nav button { min-width: 0; padding-inline: 1px; }
   .app-shell .mobile-nav button span {

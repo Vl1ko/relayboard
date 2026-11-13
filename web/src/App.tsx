@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import AiSettingsPanel from "./AiSettingsPanel";
+import ConversationWorkspace from "./ConversationWorkspace";
+import LeadReview from "./LeadReview";
 import ContactsImport from "./ContactsImport";
 
 type Platform = "telegram" | "max" | "whatsapp";
-type View = "compose" | "contacts" | "connections" | "campaigns" | "history";
+type View = "compose" | "dialogs" | "leads" | "qualification" | "contacts" | "connections" | "campaigns" | "history";
 type Integration = { id: string; platform: Platform; name: string; enabled: boolean; destination_count: number };
 type Destination = { id: string; integration_id: string; external_id: string; title: string; kind: string; platform: Platform; integration_name: string };
 type DeliveryStatus = "queued" | "sending" | "sent" | "failed" | "paused" | "stopped" | "skipped" | "unknown";
@@ -150,6 +153,9 @@ function App() {
   async function logout() { await api("/api/auth/logout", { method: "POST" }).catch(() => undefined); setAuthenticated(false); }
   const pageMeta: Record<View, { title: string; description: string }> = {
     compose: { title: "Новая публикация", description: "Одно сообщение для нужных бесед — отправьте сейчас или запланируйте повторение." },
+    dialogs: {title:"Диалоги",description:"История и управление общением."},
+    leads: {title:"Источники заявок",description:"Проверка и создание заявок."},
+    qualification: {title:"Настройки ИИ",description:"Знания, параметры и критерии."},
     contacts: { title: "Клиенты", description: "Импорт контактов из CSV/XLSX с проверкой номеров и дубликатов." },
     connections: { title: "Подключения", description: "Личные аккаунты и беседы, доступные для рассылки." },
     campaigns: { title: "Задания", description: "Активные, запланированные и завершённые публикации." },
@@ -157,6 +163,9 @@ function App() {
   };
   const navigation: Array<{ view: View; label: string; icon: "plus" | "contacts" | "connections" | "jobs" | "history" }> = [
     { view: "compose", label: "Новая публикация", icon: "plus" },
+    {view:"dialogs",label:"Диалоги",icon:"contacts"},
+    {view:"leads",label:"Заявки",icon:"contacts"},
+    {view:"qualification",label:"Настройки ИИ",icon:"contacts"},
     { view: "contacts", label: "Клиенты", icon: "contacts" },
     { view: "connections", label: "Подключения", icon: "connections" },
     { view: "campaigns", label: "Задания", icon: "jobs" },
@@ -176,6 +185,9 @@ function App() {
       {notice && <div className="alert success">{notice}</div>}{loading && <div className="loading-line"/>}
       <div className="content-shell"><div className="page-heading"><div><h1>{pageMeta[view].title}</h1><p>{pageMeta[view].description}</p></div>{view === "compose" && <span className="ready-chip"><i/>{integrations.filter((item) => item.enabled).length} канала готовы</span>}</div>
         {view === "compose" && <Composer destinations={destinations} onDone={() => { showNotice("Публикация поставлена в очередь"); void refresh(); setView("campaigns"); }}/>} 
+        {view === "dialogs" && <ConversationWorkspace/>}
+        {view === "leads" && <LeadReview/>}
+        {view === "qualification" && <AiSettingsPanel/>}
         {view === "contacts" && <ContactsImport/>}
         {view === "connections" && <AccountConnections integrations={integrations} destinations={destinations} onDone={() => void refresh()} notify={showNotice}/>} 
         {view === "campaigns" && <Campaigns campaigns={campaigns} destinations={destinations} onDone={() => void refresh()} notify={showNotice}/>} 
