@@ -1,0 +1,17 @@
+
+> relayboard@1.0.0 build
+> npm run clean && tsc -p tsconfig.node.json && vite build
+
+
+> relayboard@1.0.0 clean
+> node scripts/clean.mjs
+
+vite v6.4.6 building for production...
+transforming...
+✓ 41 modules transformed.
+rendering chunks...
+computing gzip size...
+../dist-web/index.html                   0.47 kB │ gzip:  0.33 kB
+../dist-web/assets/index-DZ3U3n1x.css   45.70 kB │ gzip:  9.86 kB
+../dist-web/assets/index-B5Rik0VF.js   321.50 kB │ gzip: 93.78 kB
+✓ built in 1.34s
