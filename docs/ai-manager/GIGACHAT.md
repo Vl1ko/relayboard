@@ -1,0 +1,28 @@
+# GigaChat: подключение и проверка
+
+13 ноября 2026 пользователь выбрал GigaChat вместо Яндекса. Есть Authorization Key; ключ из указанного пользователем файла перенесён в /opt/relayboard/secrets/gigachat.env (0600), Scope GIGACHAT_API_PERS. Авторизация, список моделей и остатки проверены успешно; баланс365 млн. Ключи в репозиторий, UI или логи не помещать.
+
+Серверная конфигурация:
+
+```dotenv
+AI_PROVIDER_MODE=gigachat
+GIGACHAT_AUTH_KEY=<Authorization Key из кабинета>
+GIGACHAT_SCOPE=GIGACHAT_API_PERS
+AI_ALLOW_EXTERNAL_REQUESTS=false
+AI_SEND_MODE=synthetic
+```
+
+В интерфейсе выбрать GigaChat и модель GigaChat-2 (либо другую модель, доступную в проекте). Настройки версионируются: новые настройки применяются к новым диалогам. Для проверки старого диалога с Yandex snapshot нужен новый синтетический диалог.
+
+Внешний доступ включать явно после подключения ключа и проверки пакета. Read-only проверка готовности: `node dist-node/api/check-launch.js gigachat-test`; сама она запросов модели не выполняет. Freemium доступен физлицам, фактический остаток и срок проверить в кабинете. Автоматической покупки токенов нет. Не обещать бесплатность коммерческого использования по тарифу физлица.
+
+Адаптер использует OAuth https://ngw.devices.sberbank.ru:9443/api/v2/oauth и актуальный https://api.giga.chat/v1/chat/completions. Ключ передаётся только OAuth, токен хранится в памяти и обновляется до истечения срока. Перенаправления запрещены, HTTP-ошибки не раскрывают тело, ответы ограничены по байтам, запрос имеет таймаут60 секунд; сетевых повторов нет. Один запрос одновременно на экземпляр; для Freemium запускать один AI worker на проект API. Сгенерированное решение проходит существующую проверку доказательств и бизнес-правил.
+
+Проверку TLS не отключать. Если требуется дополнительная цепочка доверия, использовать проверенный официальный CA bundle через NODE_EXTRA_CA_CERTS только в процессе приложения. Не устанавливать NODE_TLS_REJECT_UNAUTHORIZED=0.
+
+Проверено: 6 тестов GigaChat/Yandex/флагов и 27 тестов AI engine/orchestrator/GigaChat на PostgreSQL16 PASS, typecheck и production build PASS. Один живой запрос через адаптер в одноразовом серверном контейнере PASS: GigaChat-2, синтетический запрос менеджера, 235 входных +58 выходных =293 токена, структурированное решение handoff проверено. Авторизация и чтение баланса с сервера успешны; сертификат получен с официального gu-st.ru по HTTPS и подключён только к проверочному процессу. Реальные MAX/WhatsApp AI send/receive по-прежнему отсутствуют; synthetic_confirmation не доказывает доставку в мессенджер.
+
+Источники:
+- https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/gigachat-api
+- https://developers.sber.ru/docs/ru/gigachat/tariffs/individual-tariffs
+- https://developers.sber.ru/docs/ru/gigachat/quickstart/ind-create-project

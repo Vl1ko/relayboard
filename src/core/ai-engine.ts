@@ -24,8 +24,8 @@ const ruleSchema = z
   .strict();
 export const aiSettingsSchema = z
   .object({
-    provider: z.enum(["unselected","yandex"]),
-    model: z.string().regex(/^gpt:\/\/[^\s]+$/).max(512).nullable(),
+    provider: z.enum(["unselected","yandex","gigachat"]),
+    model: z.string().trim().min(1).max(512).nullable(),
     knowledge: z
       .array(
         z
@@ -50,6 +50,8 @@ export const aiSettingsSchema = z
   })
   .strict()
   .superRefine((s, c) => {
+    if (s.model !== null && ((s.provider === "yandex" && !/^gpt:\/\/[^\s]+$/.test(s.model)) || (s.provider === "gigachat" && !/^GigaChat(?:-[A-Za-z0-9]+)*$/.test(s.model))))
+      c.addIssue({code:"custom",message:"Invalid model for provider"});
     const keys = s.fields.map((f) => f.key),
       known = new Set(keys);
     if (
@@ -131,7 +133,7 @@ export type AiDecision = {
   fields: GroundedFields;
 };
 export type AiProvider = {
-  kind: "fixture" | "yandex";
+  kind: "fixture" | "yandex" | "gigachat";
   complete(input: {
     system: string;
     data: {
@@ -402,7 +404,7 @@ export class AiEngineStore {
   ) {
     z.string().uuid().parse(conversationId);
     z.string().min(1).max(512).parse(eventKey);
-    if (!["fixture","yandex"].includes(provider.kind))
+    if (!["fixture","yandex","gigachat"].includes(provider.kind))
       throw new AiEngineError("provider_not_selected");
     await this.pinConversation(conversationId);
     const previous = (

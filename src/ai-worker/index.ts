@@ -1,3 +1,4 @@
+import {createGigaChatProvider} from '../core/gigachat-provider.js';
 import {createYandexProvider} from '../core/yandex-provider.js';
 import {AiManagerStore} from '../core/ai-manager.js';
 import {AiOrchestrator,conservativeFixtureProvider} from '../core/ai-orchestrator.js';
@@ -12,7 +13,8 @@ async function main(){
  if(config.AI_SEND_MODE!=='synthetic'){console.log('AI worker disabled; no transport enabled');await pool.end();return;}
  console.log('AI worker: SYNTHETIC transport only; no platform delivery');
  if(config.AI_PROVIDER_MODE==='yandex'&&(!config.AI_ALLOW_EXTERNAL_REQUESTS||!config.YANDEX_API_KEY||!config.YANDEX_FOLDER_ID)){console.error('Yandex requires explicit external-request flag and server credentials');await pool.end();return;}
- const provider=config.AI_PROVIDER_MODE==='yandex'?createYandexProvider({apiKey:config.YANDEX_API_KEY!,folderId:config.YANDEX_FOLDER_ID!}):conservativeFixtureProvider;
+ if(config.AI_PROVIDER_MODE==='gigachat'&&(!config.AI_ALLOW_EXTERNAL_REQUESTS||!config.GIGACHAT_AUTH_KEY)){console.error('GigaChat requires explicit external-request flag and server credentials');await pool.end();return;}
+ const provider=config.AI_PROVIDER_MODE==='yandex'?createYandexProvider({apiKey:config.YANDEX_API_KEY!,folderId:config.YANDEX_FOLDER_ID!}):config.AI_PROVIDER_MODE==='gigachat'?createGigaChatProvider({authKey:config.GIGACHAT_AUTH_KEY!,scope:config.GIGACHAT_SCOPE}):conservativeFixtureProvider;
  const runner=new OutreachRunner(pool),workflow=new ConversationWorkflow(pool,{verifyQualification:verifyAiQualification}),orchestrator=new AiOrchestrator(pool),messages=new AiManagerStore(pool);
  process.on('SIGTERM',()=>{stopped=true;});process.on('SIGINT',()=>{stopped=true;});
  while(!stopped){try{

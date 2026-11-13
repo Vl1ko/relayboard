@@ -5,8 +5,10 @@ import { environmentBoolean } from "./environment-flags.js";
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().default(3001),
-  AI_PROVIDER_MODE: z.enum(["fixture","yandex"]).default("fixture"),
+  AI_PROVIDER_MODE: z.enum(["fixture","yandex","gigachat"]).default("fixture"),
   AI_ALLOW_EXTERNAL_REQUESTS: z.enum(["true","false"]).default("false").transform(v=>v==="true"),
+  GIGACHAT_AUTH_KEY: z.string().optional(),
+  GIGACHAT_SCOPE: z.enum(["GIGACHAT_API_PERS","GIGACHAT_API_B2B","GIGACHAT_API_CORP"]).default("GIGACHAT_API_PERS"),
   YANDEX_API_KEY: z.string().optional(),
   YANDEX_FOLDER_ID: z.string().optional(),
   AI_SEND_MODE: z.enum(["disabled", "synthetic"]).default("disabled"),

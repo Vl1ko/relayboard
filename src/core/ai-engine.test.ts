@@ -195,13 +195,13 @@ test("human request and response budget force handoff", () => {
     "reply_limit",
   );
 });
-test("settings reject missing qualification criteria, invalid rules, duplicate keys and live provider choice", () => {
+test("settings reject missing qualification criteria, invalid rules, duplicate keys and unsupported provider choice", () => {
   for (const s of [
     { ...settings, rules: [] },
     { ...settings, fields: [] },
     { ...settings, rules: [{ field: "unknown", op: "eq", value: 1 }] },
     { ...settings, fields: [settings.fields[0], settings.fields[0]] },
-    { ...settings, provider: "gigachat" },
+    { ...settings, provider: "unsupported_provider" },
   ])
     assert.equal(aiSettingsSchema.safeParse(s).success, false);
 });

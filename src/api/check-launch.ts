@@ -3,8 +3,8 @@ import { pool } from "../core/db.js";
 const mode = process.argv[2] ?? "review";
 const blockers: string[] = [];
 try {
-  if (!["review", "yandex-test", "live"].includes(mode))
-    throw Error("Use review, yandex-test or live");
+  if (!["review", "yandex-test", "gigachat-test", "live"].includes(mode))
+    throw Error("Use review, yandex-test, gigachat-test or live");
   const result = await pool.query(
     "SELECT version FROM ai_schema_migrations ORDER BY version",
   );
@@ -14,20 +14,23 @@ try {
   if (!config.CONTACT_IMPORT_ENABLED)
     blockers.push("CONTACT_IMPORT_ENABLED must be true for new workspace");
   if (mode !== "review") {
-    if (config.AI_PROVIDER_MODE !== "yandex")
-      blockers.push("Select Yandex provider mode");
+    const expected = mode === "yandex-test" ? "yandex" : mode === "gigachat-test" ? "gigachat" : config.AI_PROVIDER_MODE;
+    if (expected === "fixture" || config.AI_PROVIDER_MODE !== expected)
+      blockers.push("Select the requested external provider mode");
     if (!config.AI_ALLOW_EXTERNAL_REQUESTS)
-      blockers.push("External Yandex requests are disabled");
-    if (!config.YANDEX_API_KEY?.trim() || !config.YANDEX_FOLDER_ID?.trim())
+      blockers.push("External model requests are disabled");
+    if (expected === "gigachat" && !config.GIGACHAT_AUTH_KEY?.trim())
+      blockers.push("GigaChat server credentials are missing");
+    if (expected === "yandex" && (!config.YANDEX_API_KEY?.trim() || !config.YANDEX_FOLDER_ID?.trim()))
       blockers.push("Yandex server credentials are missing");
     const s = await pool.query(
       "SELECT settings FROM ai_engine_settings ORDER BY version DESC LIMIT 1",
     );
     if (
-      s.rows[0]?.settings?.provider !== "yandex" ||
+      s.rows[0]?.settings?.provider !== expected ||
       !s.rows[0]?.settings?.model
     )
-      blockers.push("Save Yandex model URI in AI settings");
+      blockers.push("Save matching provider and model in AI settings");
   }
   if (mode === "live")
     blockers.push(
