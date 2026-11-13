@@ -1,3 +1,6 @@
+import type {Pool} from 'pg';
+import {withExecutionSlot} from './execution-slot.js';
+import {setTimeout as delay} from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 import type {AiProvider} from './ai-engine.js';
 
@@ -42,12 +45,12 @@ async function boundedJson(response: Response, limit: number): Promise<any> {
   } finally { await reader.cancel(); }
 }
 /** Official endpoints only; normal TLS validation, no retries, credentials never in model input/logs. */
-export function createGigaChatProvider(options: { authKey: string; scope?: GigaChatScope; fetch?: typeof fetch; now?: () => number }): AiProvider {
+export function createGigaChatProvider(options: { pool?: Pool; authKey: string; scope?: GigaChatScope; fetch?: typeof fetch; now?: () => number }): AiProvider {
   const request = options.fetch ?? fetch, now = options.now ?? Date.now;
   const scope = options.scope ?? 'GIGACHAT_API_PERS';
   if (!['GIGACHAT_API_PERS','GIGACHAT_API_B2B','GIGACHAT_API_CORP'].includes(scope)) throw Error('gigachat_invalid_scope');
   let token: { value: string; expires: number } | undefined, busy = false;
-  return { kind: 'gigachat', async complete({ system, data, signal }) {
+  const provider:AiProvider = { kind: 'gigachat', async complete({ system, data, signal }) {
     if (data.settings.provider !== 'gigachat' || !/^GigaChat(?:-[A-Za-z0-9]+)*$/.test(data.settings.model ?? '') || !options.authKey.trim()) throw Error('gigachat_not_configured');
     if (busy) throw Error('gigachat_single_stream_busy');
     busy = true;
@@ -86,4 +89,9 @@ export function createGigaChatProvider(options: { authKey: string; scope?: GigaC
     } catch { throw Error('gigachat_completion_failed'); }
     finally { busy = false; }
   } };
+  if(options.pool)provider.runExclusive=work=>withExecutionSlot(options.pool!,'model:gigachat:'+options.authKey.trim(),async signal=>{
+    try{return await work(signal);}
+    finally{while(busy)await delay(10);} // Retain ownership until an aborted HTTP call actually settles.
+  });
+  return provider;
 }

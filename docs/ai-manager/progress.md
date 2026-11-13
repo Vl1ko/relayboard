@@ -6,7 +6,7 @@
 |---|---|---|
 | RES00 | DONE | Чистый снимок Git index: 209 PASS / 0 FAIL / 0 SKIP на PG16.16, typecheck и production build PASS. Доказательства: outputs/res00-baseline-2026-11-13; отсутствующие receipts не подтверждаются |
 | RES01 | DONE | Миграция 13, source→request→phase, архив полей/счётчика, граница истории, привязка inbox/outbox/решений/уведомлений/follow-up. 218 PASS / 0 FAIL / 0 SKIP, включая 20 разных источников и upgrade v12; build/typecheck PASS. Live transport — RES03–04 |
-| RES02 | IN_PROGRESS | Начата общая очередь модели и владение процессами; постоянные live workers ещё предстоят |
+| RES02 | IN_PROGRESS | Общая очередь GigaChat по credential (между процессами), отмена при утрате владения; exclusive publishing worker. 224 PASS / 0 FAIL / 0 SKIP, build/typecheck PASS; настоящий двухпроцессный recovery smoke PASS. Ещё нужны постоянные AI/session workers и live recovery |
 | RES03 | TODO | Полный постоянный MAX transport |
 | RES04 | TODO | Полный WhatsApp AI transport; аккаунт пользователь подключит при приёмке |
 | RES05 | TODO | Мониторинг, scoring, автоматический первый контакт |
@@ -117,3 +117,13 @@ PG16: официальный исходный архив16.16 и checksum заг
 Новый источник после закрытия создаёт новую заявку; прежний источник остаётся привязан к старой фазе, включая старый формат group-source в inbox. Двадцать разных конкурентных источников одного автора создают одну открытую заявку. Два подтверждённо связанных канала входят в одну заявку; закрытие архивирует обе фазы. Opt-out, manager hold и unknown блокируют новое действие. Очередь первого обращения ждёт закрытия другой активной заявки контакта. Модель и greeting читают только текущую фазу. Локальный MAX preview подключён к этой границе, production пока не изменён.
 
 Доказательства: outputs/res01-request-phases-2026-11-13. Ключевые тесты: request-lifecycle.test.ts, outreach-runner.test.ts. Коммерческая активация, реальная WhatsApp-приёмка и ресурсные проверки остаются в следующих RES.
+
+## RES02 — очередь модели и владение публикациями
+
+`execution-slot.ts` использует PostgreSQL advisory ownership; ожидающие освобождают DB connection. Ключ credential хэшируется, секрет в БД/лог не передаётся. Ожидание вынесено за тайм-аут модели; при потере владения решение не сохраняется как ошибочная квалификация. Слот удерживается до фактического завершения отменённого HTTP-запроса. Незавершённая работа остаётся во входящем inbox для возобновления worker.
+
+Publishing worker берёт exclusive slot до recovery. Двухпроцессный тест: второй worker ждёт, не меняет `sending` первого; после остановки первого следующий владелец переводит прерванный исход в `unknown`, не отправляет повтор. Мягкая остановка освобождает владение. Перед обновлением production прежний worker без протокола ownership должен быть остановлен по release runbook.
+
+Доказательства: outputs/res02-execution-2026-11-13. Общий результат 224 PASS / 0 FAIL / 0 SKIP. RES02 целиком остаётся IN_PROGRESS: постоянный live AI worker, владение аккаунтными сессиями и transport recovery ещё не завершены.
+
+Дополнение EV00: отдельный `npm ci --ignore-scripts --no-audit --no-fund` из lockfile установил 548 пакетов; затем typecheck/build на собственных зависимостях PASS. Установочные скрипты не запускались; Chromium берётся из Dockerfile. Лог: outputs/res00-baseline-2026-11-13/npm-ci.log.

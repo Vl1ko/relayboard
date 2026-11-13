@@ -122,7 +122,7 @@ app.get("/api/health", async (_request, response) => {
 const localMaxTestRouter=createLocalMaxTestRouter({pool,authorize:requireAdmin,
   enabled:config.HOST==='127.0.0.1' && new URL(config.DATABASE_URL).pathname==='/relayboard_local_max' && !!config.LOCAL_MAX_TEST_CHAT_ID,
   chatId:config.LOCAL_MAX_TEST_CHAT_ID??'',
-  provider:config.AI_ALLOW_EXTERNAL_REQUESTS&&config.GIGACHAT_AUTH_KEY?createGigaChatProvider({authKey:config.GIGACHAT_AUTH_KEY,scope:config.GIGACHAT_SCOPE}):undefined});
+  provider:config.AI_ALLOW_EXTERNAL_REQUESTS&&config.GIGACHAT_AUTH_KEY?createGigaChatProvider({pool,authKey:config.GIGACHAT_AUTH_KEY,scope:config.GIGACHAT_SCOPE}):undefined});
 app.use("/api/local-max-test",localMaxTestRouter);
 app.use("/api/ai/protocol", createProtocolRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,syntheticEnabled:config.AI_SEND_MODE === "synthetic"}));
 app.use("/api/ai/workspace", createConversationRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,workflow:new ConversationWorkflow(pool,{verifyQualification:verifyAiQualification})}));

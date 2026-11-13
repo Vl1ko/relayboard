@@ -1,3 +1,4 @@
+import {withExecutionSlot} from "../core/execution-slot.js";
 import { Worker, type Job } from "bullmq";
 import { createAdapter } from "../core/adapters/index.js";
 import { config } from "../core/config.js";
@@ -189,6 +190,12 @@ async function retryDelivery(job: Job<DeliveryJob>) {
   return outcome;
 }
 
+const shutdownSignal=new AbortController();
+process.once('SIGTERM',()=>shutdownSignal.abort());
+process.once('SIGINT',()=>shutdownSignal.abort());
+
+async function runOwnedWorker(signal:AbortSignal){
+ signal.throwIfAborted();
 // Repair jobs left active by older workers after their final delivery.
 await pool.query(
   `UPDATE posts p SET status='completed', updated_at=now()
@@ -206,6 +213,7 @@ async function reconcileReceipts() {
     FROM whatsapp_send_receipts r WHERE r.delivery_id=d.id AND r.status='sent'
       AND d.status IN ('unknown','sending')`);
 }
+// This recovery runs only under the exclusive publishing-worker slot.
 // A process exit after claiming a delivery does not prove it was never sent.
 await pool.query("UPDATE deliveries SET status='unknown',last_error='Отправка прервана перезапуском; результат требует проверки',last_error_kind='ambiguous' WHERE status='sending'");
 await reconcileReceipts();
@@ -227,12 +235,22 @@ worker.on("failed", (job, error) => console.error(`Failed ${job?.name} ${job?.id
 worker.on("error", (error) => console.error("Worker error", error));
 console.log("Relayboard publishing worker started");
 
-async function shutdown() {
-  clearInterval(receiptTimer);
-  await worker.close();
-  await publishingQueue.close();
-  await pool.end();
-  process.exit(0);
+await new Promise<void>((resolve,reject)=>{
+ let closing=false;
+ const shutdown=()=>{if(closing)return;closing=true;clearInterval(receiptTimer);void worker.close().then(()=>resolve(),reject);};
+ signal.addEventListener('abort',shutdown,{once:true});
+ if(signal.aborted)shutdown();
+});
 }
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
+async function main(){
+try{
+ await withExecutionSlot(pool,'worker:publishing',runOwnedWorker,shutdownSignal.signal);
+}catch(error){
+ if(!shutdownSignal.signal.aborted){console.error('Publishing ownership lost; worker stopped');process.exitCode=1;}
+}finally{
+ await publishingQueue.close();
+ await pool.end();
+}
+
+}
+void main();

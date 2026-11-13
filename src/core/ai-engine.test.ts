@@ -518,3 +518,26 @@ test("numeric proof cannot hide a negative sign immediately outside the citation
   );
   assert.equal(d.reason, "ungrounded_extraction");
 });
+
+test('shared-slot waiting is outside the model response timeout', {skip}, async()=>{
+ const {withExecutionSlot}=await import('./execution-slot.js');
+ const {setTimeout:wait}=await import('node:timers/promises');
+ await engine.saveSettings({expectedVersion:1,settings});
+ const f=await fixture(),key=randomUUID();let entered!:()=>void,release!:()=>void;
+ const ready=new Promise<void>(r=>entered=r),gate=new Promise<void>(r=>release=r);
+ const owner=withExecutionSlot(pool,key,async()=>{entered();await gate;});await ready;
+ const provider:AiProvider={...fixtureProvider(),runExclusive:work=>withExecutionSlot(pool,key,work)};
+ const pending=new AiEngineStore(pool,10).evaluate(f.conv.id,f.event.event_key,provider);
+ await wait(30);release();await owner;
+ assert.equal((await pending).disposition,'reply');
+});
+
+test('lost model ownership cannot persist a provider_failure handoff', {skip}, async()=>{
+ const {setTimeout:wait}=await import('node:timers/promises');
+ const f=await fixture(),owner=new AbortController();let enter!:()=>void;
+ const ready=new Promise<void>(r=>enter=r);
+ const provider:AiProvider={kind:'fixture',runExclusive:work=>work(owner.signal),async complete(input){enter();await wait(10000,undefined,{signal:input.signal});return proposal;}};
+ const pending=engine.evaluate(f.conv.id,f.event.event_key,provider);
+ const rejected=assert.rejects(pending,/abort/i);await ready;owner.abort();await rejected;
+ assert.equal((await pool.query('SELECT count(*)::int AS n FROM ai_engine_decisions WHERE conversation_id=$1',[f.conv.id])).rows[0].n,0);
+});

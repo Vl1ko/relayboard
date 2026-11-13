@@ -137,6 +137,7 @@ export type AiDecision = {
 };
 export type AiProvider = {
   kind: "fixture" | "yandex" | "gigachat";
+  runExclusive?<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T>;
   complete(input: {
     system: string;
     data: {
@@ -406,6 +407,11 @@ export class AiEngineStore {
     eventKey: string,
     provider: AiProvider,
   ) {
+    if(provider.runExclusive)return provider.runExclusive(signal=>this.evaluateInSlot(conversationId,eventKey,provider,signal));
+    return this.evaluateInSlot(conversationId,eventKey,provider);
+  }
+  private async evaluateInSlot(conversationId:string,eventKey:string,provider:AiProvider,ownerSignal?:AbortSignal) {
+    ownerSignal?.throwIfAborted();
     z.string().uuid().parse(conversationId);
     z.string().min(1).max(512).parse(eventKey);
     if (!["fixture","yandex","gigachat"].includes(provider.kind))
@@ -460,7 +466,7 @@ export class AiEngineStore {
           provider.complete({
             system: AI_SYSTEM_PROMPT,
             data: { messages, settings, fields: found.fields },
-            signal: controller.signal,
+            signal: ownerSignal?AbortSignal.any([controller.signal,ownerSignal]):controller.signal,
           }),
           new Promise((_, reject) => {
             timer = setTimeout(() => {
@@ -485,6 +491,7 @@ export class AiEngineStore {
           replyCount: found.reply_count,
           proposal,
         });
+    ownerSignal?.throwIfAborted();
     const c = await this.pool.connect();
     try {
       await c.query("BEGIN");
@@ -525,6 +532,7 @@ export class AiEngineStore {
         ["closed", "refused"].includes(current.business_status)
       )
         throw new AiEngineError("stale_generation");
+      ownerSignal?.throwIfAborted();
       const accepted =
         state.reply_count >= settings.replyLimit
           ? handoff("reply_limit", state.fields)

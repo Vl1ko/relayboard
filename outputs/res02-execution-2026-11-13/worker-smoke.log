@@ -1,0 +1,1 @@
+PASS: second worker waits; only the next exclusive owner recovers interrupted sends as unknown; graceful shutdown releases ownership
