@@ -11,7 +11,7 @@ export class MaxQualificationSession{
  private timer:ReturnType<typeof setInterval>|undefined;
  private seen=new Set<string>();
  private store:AiManagerStore;private orchestrator:AiOrchestrator;
- constructor(private o:{pool:Pool;provider:AiProvider;socket:ConnectedMaxTextSocket;close:()=>void;accountId:string;conversationId:string;dialogId:string;authorId:string;selfId:number;since:number}){this.store=new AiManagerStore(o.pool);this.orchestrator=new AiOrchestrator(o.pool);}
+ constructor(private o:{pool:Pool;provider:AiProvider;socket:ConnectedMaxTextSocket;close:()=>void;accountId:string;conversationId:string;dialogId:string;authorId:string;selfId:number;since:number;ignoreIds?:string[]}){this.seen=new Set(o.ignoreIds??[]);this.store=new AiManagerStore(o.pool);this.orchestrator=new AiOrchestrator(o.pool);}
  start(){if(this.timer)throw Error('session_already_started');this.timer=setInterval(()=>void this.poll(),1500);void this.poll();}
  async stop(reason='stopped_by_user',pause=true){if(!this.active)return;this.active=false;this.reason=reason;if(this.timer)clearInterval(this.timer);try{if(pause)await this.store.setMode(this.o.conversationId,'paused');}finally{this.o.close();}}
  async status(){const r=(await this.o.pool.query(`SELECT c.business_status,c.automation_mode,s.settings_version,s.fields,k.settings FROM ai_conversations c JOIN ai_engine_state s ON s.conversation_id=c.id JOIN ai_engine_settings k ON k.version=s.settings_version WHERE c.id=$1`,[this.o.conversationId])).rows[0];return{active:this.active,reason:this.reason,lastError:this.lastError,accountId:this.o.accountId,authorId:this.o.authorId,conversationId:this.o.conversationId,businessStatus:r?.business_status,mode:r?.automation_mode,settingsVersion:r?.settings_version,fieldLabels:Object.fromEntries((r?.settings?.fields??[]).map((f:any)=>[f.key,f.question])),fields:Object.fromEntries(Object.entries(r?.fields??{}).map(([key,value])=>[key,(value as any).value]))};}
@@ -56,7 +56,7 @@ export class MaxQualificationSession{
        await this.store.dispatch(action.id,{target:prepared.target,start:a=>this.active?prepared.start(a):{acknowledgement:Promise.resolve({operationId:a.operationId,outcome:'rejected',dispatchState:'not_started',code:'local_session_stopped',retryCondition:'never'})}});
       }finally{this.sending=false;}
      }
-     if(result.decision.disposition==='handoff'){await this.stop(result.decision.reason,false);break;}
+     if(result.decision.disposition==='handoff'){if(['ungrounded_extraction','invalid_model_output','provider_failure'].includes(result.decision.reason))this.lastError='ИИ не смог подтвердить параметры по сообщению клиента. Требуется проверка менеджера или явное продолжение теста.';await this.stop(result.decision.reason,false);break;}
     }catch{
      // A newer inbound event or takeover may invalidate a model result. Re-read guards next poll.
      this.lastError='Ответ не отправлен: состояние диалога изменилось или ИИ недоступен.';break;

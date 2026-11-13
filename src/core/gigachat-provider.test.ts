@@ -42,3 +42,5 @@ test('settings accept provider-specific models and reject cross-provider model f
   assert.equal(aiSettingsSchema.safeParse({...settings,model:'https://attacker.example'}).success,false);
   assert.equal(aiSettingsSchema.safeParse({...settings,provider:'yandex'}).success,false);
 });
+
+ test('numeric extraction schema uses only literal customer evidence, never thresholds or units',async()=>{const {numericEvidenceValues}=await import('./gigachat-provider.js');assert.deepEqual(numericEvidenceValues([{origin:'customer',text:'Нужно 12345 м3'},{origin:'service',text:'Критерий 10'}]),[12345]);assert.deepEqual(numericEvidenceValues([{origin:'customer',text:'Пока не знаю'}]),[]);assert.deepEqual(numericEvidenceValues([{origin:'customer',text:'Нужно -12.5'}]),[-12.5]);});

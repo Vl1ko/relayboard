@@ -12,12 +12,12 @@ const url=process.env.AI_MANAGER_TEST_DATABASE_URL;let pool:pg.Pool,schema:strin
 before(async()=>{if(!url)return;if(new URL(url).pathname!='/relayboard_ai_manager_test')throw Error('Dedicated test DB required');schema='max_session_'+randomUUID().replaceAll('-','');const c=new pg.Client({connectionString:url});await c.connect();await c.query('CREATE SCHEMA '+schema);await c.end();pool=new pg.Pool({connectionString:url,options:'-c search_path='+schema+',public'});await pool.query(await readFile(new URL('../../database/schema.sql',import.meta.url),'utf8'));await applyAiManagerMigration(pool);});
 beforeEach(async()=>{if(pool)await pool.query('TRUNCATE ai_contacts,integrations CASCADE');});
 after(async()=>{if(pool){await pool.query('DROP SCHEMA '+schema+' CASCADE');await pool.end();}});
-async function fixture(provider:AiProvider){
+async function fixture(provider:AiProvider,ignoreIds:string[]=[]){
  const engine=new AiEngineStore(pool),settings=await engine.settings();await engine.saveSettings({expectedVersion:settings.version,settings:{...settings.settings,qualificationEnabled:true,fields:[{key:'volume',question:'Какой объём?',required:true}],rules:[{field:'volume',op:'gte',value:10}]}});
  const account=(await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext)VALUES('max','synthetic','fake')RETURNING id")).rows[0].id;
  const store=new AiManagerStore(pool),contact=await store.createContact('synthetic'),conversation=await store.createConversation({contactId:contact.id,accountId:account,externalId:'303'});await beginConfiguredQualification(pool,conversation.id);
  let items:any[]=[],sent=0;const socket={connected:true,async send(op:number,body:any){if(op===49)return{messages:items};assert.equal(op,64);assert.equal(body.chatId,303);sent++;return{message:{id:'service-'+sent}};}};
- const session=new MaxQualificationSession({pool,provider,socket,close:()=>{},accountId:account,conversationId:conversation.id,dialogId:'303',authorId:'202',selfId:101,since:Date.now()-1000});
+ const session=new MaxQualificationSession({pool,provider,socket,close:()=>{},accountId:account,conversationId:conversation.id,dialogId:'303',authorId:'202',selfId:101,since:Date.now()-1000,ignoreIds});
  return{session,store,conversation,account,socket,set:(m:any[])=>items=m,sent:()=>sent};
 }
 const ask:AiProvider={kind:'fixture',async complete(){return{replyDraft:'never send',extracted:[],replyKind:'ask_fields',askFields:['volume'],knowledgeKeys:[],proposedStatus:'insufficient_data',handoffReason:null};}};
@@ -49,3 +49,5 @@ test('explicit new qualification adopts current rules without rewriting historic
  assert.equal(historical.rules[0].value,10);
  await f.store.optOut(f.conversation.contact_id,'test refusal');await assert.rejects(beginConfiguredQualification(pool,f.conversation.id),/forbidden/);
 });
+
+test('explicit restart ignores historical manager messages but processes a new customer answer',{skip:!url},async()=>{const f=await fixture(ask,['previous-manager']);f.set([m('previous-manager','Историческое сообщение',101),m('fresh-customer','Здравствуйте')]);await f.session.poll();await until(()=>f.sent()===1);assert.equal(f.session.active,true);await f.session.stop();});

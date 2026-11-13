@@ -61,7 +61,10 @@ export function createLocalMaxTestRouter(options:{pool:Pool;authorize:RequestHan
    if(action?.state!=='confirmed'||!action.dispatch_started_at)return res.status(409).json({error:'Сначала отправьте первый ответ и дождитесь подтверждения MAX'});
    await withMax(data.accountId,async(client,socket)=>{await verifySource(client,socket,s);const dialog=await privateDialog(client,socket,s);if(dialog!==b.dialogId)throw new TestError('Личка автора изменилась');
     try{await beginConfiguredQualification(options.pool,b.conversationId);}catch{throw new TestError('Включите квалификацию и задайте критерии в «ИИ-квалификация». При отказе клиента или неизвестной отправке запуск запрещён.');}
-    qualification=new MaxQualificationSession({pool:options.pool,provider:options.provider!,socket,close:()=>client.close(),accountId:data.accountId,conversationId:b.conversationId,dialogId:dialog,authorId:s.authorId,selfId:client.account!.id,since:new Date(action.dispatch_started_at).getTime()});qualification.start();
+    const recorded=(await options.pool.query('SELECT external_message_id FROM ai_inbox WHERE conversation_id=$1 ORDER BY ingest_sequence DESC LIMIT 2000',[b.conversationId])).rows.map(r=>String(r.external_message_id));
+    const history=await socket.send(49,{chatId:Number(dialog),from:Date.now(),backward:50,forward:0,getMessages:true},10000)as any;
+    const ownHistory=(history?.messages??[]).filter((m:any)=>Number(m.sender)===client.account!.id).map((m:any)=>String(m.id));
+    qualification=new MaxQualificationSession({pool:options.pool,provider:options.provider!,socket,close:()=>client.close(),accountId:data.accountId,conversationId:b.conversationId,dialogId:dialog,authorId:s.authorId,selfId:client.account!.id,since:new Date(action.dispatch_started_at).getTime(),ignoreIds:[...recorded,...ownHistory]});qualification.start();
    },true);
    res.json(await qualification!.status());
   }finally{busy=false;}
@@ -82,7 +85,11 @@ export function createLocalMaxTestRouter(options:{pool:Pool;authorize:RequestHan
    let conversation=(await options.pool.query('SELECT v.*,c.opted_out_at FROM ai_conversations v JOIN ai_contacts c ON c.id=v.contact_id WHERE v.account_id=$1 AND v.external_id=$2',[data.accountId,dialogId])).rows[0];
    if(!conversation){const contact=await store.createContact('Тестовый автор MAX');conversation=await store.createConversation({contactId:contact.id,accountId:data.accountId,externalId:dialogId});conversation=await store.setMode(conversation.id,'auto');}
    if(conversation.opted_out_at||['closed','refused'].includes(conversation.business_status))return res.status(409).json({error:'Диалог закрыт или получен отказ. Продолжение запрещено.'});
-   if(conversation.automation_mode!=='auto')return res.status(409).json({canResume:true,error:'Диалог на паузе. Нажмите «Продолжить тест».'});
+   if(conversation.automation_mode!=='auto'){
+    const confirmed=(await options.pool.query("SELECT id,text,state FROM ai_outbox WHERE conversation_id=$1 AND state='confirmed' AND kind='reply' ORDER BY dispatch_started_at LIMIT 1",[conversation.id])).rows[0];
+    if(confirmed){bindings.set(confirmed.id,{accountId:data.accountId,sourceId:s.id,dialogId,conversationId:conversation.id});return res.json({accountId:data.accountId,authorId:s.authorId,sourceId:s.id,dialogId,action:confirmed,decision:'reply',reason:'explicit_restart_required',paused:true});}
+    return res.status(409).json({canResume:true,error:'Диалог на паузе. Нажмите «Продолжить тест».'});
+   }
    const event=await orchestrator.ingest({version:1,platform:'max',accountId:data.accountId,conversationId:dialogId,messageId:'group-source:'+options.chatId+':'+s.messageId,occurredAt:s.occurredAt,direction:'inbound',origin:'customer',text:s.text,sourceChatId:options.chatId,sourceMessageId:s.messageId,sourceAuthorId:s.authorId});
    if(event.event.text!==s.text)throw new TestError('Исходный текст изменился. Нужна новая проверка.');
    const result=await orchestrator.process(conversation.id,event.event.event_key,options.provider);

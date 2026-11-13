@@ -16,6 +16,16 @@ When asking for missing required volume, a valid result is {"replyDraft":"","ext
 For fields used by gte/lte rules, extracted.value MUST be a JSON number, never a quoted string.
 Use the supplied knowledge and evidence; if a commercial fact is unknown, hand off rather than invent it.`;
 
+/** Literal numeric evidence only: no rounding, unit conversion or values from business rules. */
+export function numericEvidenceValues(messages:{origin:string;text:string}[]){
+ const values=new Set<number>();
+ for(const m of messages.filter(m=>m.origin==='customer'))for(const match of m.text.matchAll(/(?<![\p{L}\d.,+\-])[+-]?\d+(?:\.\d+)?(?![\d.,])/gu)){
+  const n=Number(match[0]);if(!Number.isFinite(n)||(Number.isInteger(n)&&!Number.isSafeInteger(n)))continue;
+  const literal=String(n).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  if(new RegExp('(^|[^0-9.,+-])'+literal+'($|[^0-9.,])').test(m.text))values.add(n);
+ }
+ return [...values];
+}
 async function boundedJson(response: Response, limit: number): Promise<any> {
   if (!response.ok) { await response.body?.cancel(); throw Error('gigachat_request_failed'); }
   const reader = response.body?.getReader();
@@ -54,11 +64,16 @@ export function createGigaChatProvider(options: { authKey: string; scope?: GigaC
         if (typeof auth.access_token !== 'string' || !auth.access_token || auth.access_token.length > 12000 || !Number.isFinite(expires) || expires <= now() + 1000) throw Error('gigachat_invalid_token');
         token = { value: auth.access_token, expires };
       }
+      const evidenceMessages=data.messages.filter(m=>m.origin==='customer');
+      const evidenceIds=evidenceMessages.map(m=>m.messageId);
+      const evidenceQuotes=[...new Set(evidenceMessages.flatMap(m=>m.text.length<=2000?[m.text]:[m.text.slice(0,2000),m.text.slice(-2000)]).filter(Boolean))];
       const numeric=data.settings.fields.every(f=>data.settings.rules.some(r=>r.field===f.key&&['gte','lte'].includes(r.op)));
+      const numericValues=numericEvidenceValues(data.messages);
       const schema={type:'object',additionalProperties:false,required:['replyDraft','extracted','replyKind','askFields','knowledgeKeys','proposedStatus','handoffReason'],properties:{
-        replyDraft:{type:'string'},extracted:{type:'array',items:{type:'object',additionalProperties:false,required:['field','value','evidenceMessageId','evidenceQuote'],properties:{field:{type:'string'},value:{type:numeric?'number':['string','number','boolean']},evidenceMessageId:{type:'string'},evidenceQuote:{type:'string'}}}},
+        replyDraft:{type:'string'},extracted:{type:'array',items:{type:'object',additionalProperties:false,required:['field','value','evidenceMessageId','evidenceQuote'],properties:{field:{type:'string'},value:numeric?{type:'number',...(numericValues.length?{enum:numericValues}:{})}:{type:['string','number','boolean']},evidenceMessageId:{type:'string',...(evidenceIds.length?{enum:evidenceIds}:{})},evidenceQuote:{type:'string',...(evidenceQuotes.length?{enum:evidenceQuotes}:{})}}}},
         replyKind:{type:'string',enum:['ask_fields','knowledge','handoff','none']},askFields:{type:'array',items:{type:'string'}},knowledgeKeys:{type:'array',items:{type:'string'}},proposedStatus:{type:'string',enum:['ai_dialog','qualified','unqualified','insufficient_data','manager_required']},handoffReason:{type:['string','null'],enum:['unknown_question','requested_human','insufficient_data',null]}
       }};
+      if(numeric&&!numericValues.length)(schema.properties.extracted as any).maxItems=0;
       const response = await request('https://api.giga.chat/v1/chat/completions', {
         method: 'POST', redirect: 'error', signal: deadline,
         headers: { Authorization: 'Bearer ' + token.value, 'Content-Type': 'application/json', Accept: 'application/json' },
