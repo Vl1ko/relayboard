@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import type { Pool } from "pg";
 
 export async function applyAiManagerMigration(pool: Pool) {
-  const migrations = await Promise.all(["ai-manager.sql", "ai-manager-import.sql", "ai-manager-outreach.sql", "ai-manager-outreach-runs.sql", "ai-manager-ai-engine.sql", "ai-manager-workflows.sql", "ai-manager-leads.sql", "ai-manager-manual.sql", "ai-manager-ingest-order.sql", "ai-manager-search-sources.sql", "ai-manager-qualification-notice.sql", "ai-manager-manager-hold.sql", "ai-manager-request-phases.sql", "ai-manager-max-cursors.sql", "ai-manager-identities.sql", "ai-manager-whatsapp-intents.sql", "ai-manager-source-monitor.sql", "ai-manager-automatic-followups.sql", "ai-manager-text-retention.sql", "ai-manager-contact-priority.sql"].map(async (name, index) => {
+  const migrations = await Promise.all(["ai-manager.sql", "ai-manager-import.sql", "ai-manager-outreach.sql", "ai-manager-outreach-runs.sql", "ai-manager-ai-engine.sql", "ai-manager-workflows.sql", "ai-manager-leads.sql", "ai-manager-manual.sql", "ai-manager-ingest-order.sql", "ai-manager-search-sources.sql", "ai-manager-qualification-notice.sql", "ai-manager-manager-hold.sql", "ai-manager-request-phases.sql", "ai-manager-max-cursors.sql", "ai-manager-identities.sql", "ai-manager-whatsapp-intents.sql", "ai-manager-source-monitor.sql", "ai-manager-automatic-followups.sql", "ai-manager-text-retention.sql", "ai-manager-contact-priority.sql", "ai-manager-service-echo-phases.sql"].map(async (name, index) => {
     const sql = await readFile(new URL("../../database/" + name, import.meta.url), "utf8");
     return { version: index + 1, sql, checksum: createHash("sha256").update(sql).digest("hex") };
   }));

@@ -24,6 +24,7 @@ export class AiExecutionRuntime{
  }
  async tick(){
   this.signal.throwIfAborted();
+  await this.messages.finalizeNegativeCompletions();
   await this.messages.retryReady();
   const provider:AiProvider={...this.provider,runExclusive:work=>this.provider.runExclusive
    ?this.provider.runExclusive(slot=>work(AbortSignal.any([slot,this.signal])))

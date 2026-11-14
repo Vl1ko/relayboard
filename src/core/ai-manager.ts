@@ -1,3 +1,4 @@
+import {finalizeNegativeCompletion} from './negative-completion.js';
 import {latestRequestCustomerSequence} from './customer-sequence.js';
 import {requestHasOutgoing} from './request-greeting.js';
 import {completionTemplate,DEFAULT_GREETING} from './conversation-templates.js';
@@ -334,8 +335,15 @@ export class AiManagerStore {
       if(initiatedAt&&outcome.outcome!=='rejected')await client.query(`INSERT INTO ai_outreach_clocks(account_id,last_started_at)
         SELECT v.account_id,clock_timestamp() FROM ai_outbox a JOIN ai_conversations v ON v.id=a.conversation_id WHERE a.id=$1 AND ${firstOutreachSql}
         ON CONFLICT(account_id) DO UPDATE SET last_started_at=greatest(ai_outreach_clocks.last_started_at,excluded.last_started_at)`,[actionId]);
+      if(state==='confirmed'&&action.kind==='qualification_notice')await finalizeNegativeCompletion(client,actionId);
     });
     return { initiated: true };
+  }
+
+  /** Repair a committed late receipt or a crash before request finalization without sending again. */
+  async finalizeNegativeCompletions(limit=100){
+    const actions=(await this.pool.query(`SELECT a.id FROM ai_outbox a JOIN ai_conversations v ON v.id=a.conversation_id JOIN ai_engine_decisions d ON a.logical_key='qualification-notice:'||d.id::text WHERE a.kind='qualification_notice' AND a.state='confirmed' AND d.business_status='unqualified' AND v.business_status='unqualified' AND v.active_phase_id=a.request_phase_id ORDER BY a.updated_at,a.id LIMIT $1`,[limit])).rows;
+    let closed=0;for(const a of actions)await this.tx(async client=>{await this.actionContext(client,a.id);if(await finalizeNegativeCompletion(client,a.id))closed++;});return closed;
   }
 
   /** Reprepare only with persisted proof that no platform command began. */
