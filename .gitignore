@@ -5,3 +5,7 @@ dist-web
 data/whatsapp-session/*
 !data/whatsapp-session/.gitkeep
 npm-debug.log*
+
+.tools/
+.secrets/
+data/backups/

@@ -7,3 +7,7 @@ outputs
 work
 data/whatsapp-session
 npm-debug.log*
+
+.tools/
+.secrets/
+data/backups/

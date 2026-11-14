@@ -1,0 +1,13 @@
+{
+  "source": "root@93.89.223.118",
+  "kind": "database-only",
+  "destination": "/Users/macbook/Projects/relayboard/data/backups",
+  "encrypted": true,
+  "sourceDatabaseModified": false,
+  "extraRecoveryItems": [
+    "application encryption key/config",
+    "messenger session profiles",
+    "unexpired uploads"
+  ],
+  "executesNow": false
+}

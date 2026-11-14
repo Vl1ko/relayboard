@@ -1,0 +1,9 @@
+{
+  "version": "1.3.2",
+  "url": "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-darwin-amd64.tar.gz",
+  "archiveSha256": "1d1e4bc66e1427edad7739ae7616157de0e79db8b6d2a1497d7d9925fb06a539",
+  "files": {
+    "age": "0c2fbcffab91d0af398162a8ed792e096916c8c47c3c400e303904431103f492",
+    "age-keygen": "33c25cc60fdfbb27438f885e0e9f6e2e2c29c0a64449738bff57b6aebe42f67f"
+  }
+}

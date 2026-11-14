@@ -1,4 +1,4 @@
-# Выполнение утверждённого плана, 14 ноября 2026
+# Выполнение утверждённого плана, 15 ноября 2026
 
 Пользователь утвердил [RELEASE_PLAN.md](RELEASE_PLAN.md) и поручил завершить проект. Полный релиз пока не готов. Аудит: [RELEASE_AUDIT_2026-11-13.md](RELEASE_AUDIT_2026-11-13.md).
 
@@ -220,3 +220,7 @@ RES05, итог проверенного инкремента:313 PASS/0FAIL/0SK
 ## Продолжение: отрицательная квалификация, 14 ноября 2026
 
 Пользователь подтвердил автозакрытие после подтверждённого прощания. [negative-completion.md](negative-completion.md): закрытие/архив/TTL, repair поздних receipts, защита takeover/hold/другой фазы; миграция21 исправляет фазу позднего service echo и предотвращает восстановление текста после TTL.344 PASS /0 FAIL /0 SKIP, build/typecheck PASS. Production и настоящая локальная MAX-БД не мигрировали.
+
+## Продолжение: эксплуатация, 15 ноября 2026
+
+Выбор пользователя: копии пока на Mac. [operations-and-backups.md](operations-and-backups.md): bounded Docker logs/Redis history, явный live Compose overlay, age и локальный ключ вне Git/Docker, потоковая зашифрованная DB-копия; реальное синтетическое восстановление PG16.16 с сохранением unknown/hold/opt-out/cursor/dedup.344 PASS /0 FAIL /0 SKIP, build/typecheck PASS; Compose/queue/restore checks PASS. Полный production recovery bundle и24ч5+5 capacity остаются открытыми. Свежий read-only VPS замер: RAM2GB/available84MiB, swap почти заполнен; диск77%. Сервер и реальные переписки не менялись.

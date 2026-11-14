@@ -1,5 +1,12 @@
+x-bounded-logs: &bounded-logs
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   uploads-init:
+    logging: *bounded-logs
     image: busybox:1.37
     user: root
     command: ["sh", "-c", "chown -R 1000:1000 /uploads"]
@@ -7,6 +14,7 @@ services:
       - uploads:/uploads
 
   postgres:
+    logging: *bounded-logs
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: relayboard
@@ -22,6 +30,7 @@ services:
     restart: unless-stopped
 
   redis:
+    logging: *bounded-logs
     image: redis:7-alpine
     command: redis-server --appendonly yes
     volumes:
@@ -34,6 +43,7 @@ services:
     restart: unless-stopped
 
   api:
+    logging: *bounded-logs
     build: .
     image: relayboard:local
     env_file: .env
@@ -63,6 +73,7 @@ services:
     restart: unless-stopped
 
   worker:
+    logging: *bounded-logs
     image: relayboard:local
     pull_policy: never
     env_file: .env
@@ -83,6 +94,7 @@ services:
     restart: unless-stopped
 
   whatsapp:
+    logging: *bounded-logs
     image: relayboard:local
     pull_policy: never
     env_file: .env
@@ -102,6 +114,7 @@ services:
     restart: unless-stopped
 
   telegram:
+    logging: *bounded-logs
     image: relayboard:local
     pull_policy: never
     env_file: .env

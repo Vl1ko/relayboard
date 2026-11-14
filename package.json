@@ -24,7 +24,10 @@
     "load:control": "node work/control-plane-load.mjs",
     "start:max-worker": "node dist-node/messenger-worker/index.js",
     "start:ai-worker": "node dist-node/ai-worker/index.js",
-    "db:migrate:ai": "tsx src/api/migrate-ai-manager.ts"
+    "db:migrate:ai": "tsx src/api/migrate-ai-manager.ts",
+    "backup:plan": "node scripts/local-backup.mjs plan",
+    "backup:init": "node scripts/local-backup.mjs init",
+    "backup:database": "node scripts/local-backup.mjs backup-db --execute"
   },
   "dependencies": {
     "@ounezz/umax": "^1.0.8",

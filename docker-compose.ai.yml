@@ -1,6 +1,11 @@
 # Opt-in local synthetic worker. This profile never sends to real platforms.
 services:
   ai-worker:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     image: relayboard:local
     pull_policy: never
     profiles: [synthetic-ai]
