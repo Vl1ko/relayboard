@@ -1,3 +1,4 @@
+import MonitorControls from './MonitorControls';
 import { useEffect, useState } from "react";
 type Source = { accountId: string; chatId: string; platform: string };
 type State = {
@@ -37,8 +38,7 @@ export default function SearchSourcesPanel() {
     <section className="card contact-import-card">
       <h2>Чаты для поиска заявок</h2>
       <p>
-        Выберите чаты из подключённых аккаунтов. Сохранение списка не включает
-        мониторинг: подключение получения сообщений ещё готовится.
+        Выберите до пяти чатов MAX и пяти WhatsApp. Для одного чата используйте один аккаунт чтения. Ответ отправляется автору заявки в личку.
       </p>
       <button disabled={busy} onClick={() => void load()}>
         Обновить список чатов
@@ -51,7 +51,9 @@ export default function SearchSourcesPanel() {
               Подключите аккаунт и загрузите беседы в разделе «Подключения».
             </p>
           )}
-          {state.choices.map((c) => {
+          <p>MAX: {state.sources.filter(s=>s.platform==='max').length} из 5 · WhatsApp: {state.sources.filter(s=>s.platform==='whatsapp').length} из 5</p>
+          {state.sources.filter(s=>!state.choices.some(c=>c.accountId===s.accountId&&c.chatId===s.chatId)).map(s=><p key={s.accountId+':'+s.chatId}>Недоступный источник · {s.platform} <button onClick={()=>set({...state,sources:state.sources.filter(v=>v!==s)})}>Убрать из поиска</button></p>)}
+          <div className="search-source-options">{state.choices.map((c) => {
             const selected = state.sources.some(
               (s) => s.accountId === c.accountId && s.chatId === c.chatId,
             );
@@ -60,12 +62,13 @@ export default function SearchSourcesPanel() {
                 <input
                   type="checkbox"
                   checked={selected}
+                  disabled={!selected&&!state.sources.some(s=>s.platform===c.platform&&s.chatId===c.chatId)&&state.sources.filter(s=>s.platform===c.platform).length>=5}
                   onChange={(e) =>
                     set({
                       ...state,
                       sources: e.target.checked
                         ? [
-                            ...state.sources,
+                            ...state.sources.filter(s=>!(s.platform===c.platform&&s.chatId===c.chatId)),
                             {
                               accountId: c.accountId,
                               chatId: c.chatId,
@@ -85,7 +88,7 @@ export default function SearchSourcesPanel() {
                 {c.title} · {c.accountName} · {c.platform}
               </label>
             );
-          })}
+          })}</div>
           <button
             onClick={() =>
               void (async () => {
@@ -100,7 +103,7 @@ export default function SearchSourcesPanel() {
                   });
                   set({ ...state, ...saved });
                   setMessage(
-                    "Выбранные чаты сохранены. Мониторинг пока выключен.",
+                    "Выбранные чаты сохранены.",
                   );
                 } catch (e) {
                   setMessage(String(e));
@@ -114,6 +117,7 @@ export default function SearchSourcesPanel() {
           </button>
         </fieldset>
       )}
+      <MonitorControls/>
     </section>
   );
 }

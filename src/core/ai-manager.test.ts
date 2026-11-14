@@ -20,7 +20,7 @@ before(async () => {
   try { await admin.query("CREATE SCHEMA " + schema); } finally { await admin.end(); }
   pool = new pg.Pool({ connectionString: url, options: "-c search_path=" + schema + ",public" });
   await pool.query(await readFile(new URL("../../database/schema.sql", import.meta.url), "utf8"));
-  assert.deepEqual(await applyAiManagerMigration(pool), { version: 16, applied: true });
+  assert.deepEqual(await applyAiManagerMigration(pool), { version: 17, applied: true });
   store = new AiManagerStore(pool);
 });
 beforeEach(async () => { if (pool) await pool.query("TRUNCATE ai_contacts,integrations CASCADE"); });
@@ -58,7 +58,7 @@ function confirmation(input: { operationId: string }) {
 
 test("migration repeats without changing existing data or deleting legacy tables", { skip }, async () => {
   const old = await fixture();
-  assert.deepEqual(await applyAiManagerMigration(pool), { version: 16, applied: false });
+  assert.deepEqual(await applyAiManagerMigration(pool), { version: 17, applied: false });
   assert.equal((await pool.query("SELECT name FROM integrations WHERE id=$1", [old.account])).rows[0].name, "synthetic");
   assert.ok((await pool.query("SELECT to_regclass('posts') AS name")).rows[0].name);
 });
@@ -172,13 +172,12 @@ test("account auth loss waits without destroying an unsent action", { skip }, as
 });
 
 test("sender failure or an invalid acknowledgement becomes unknown without automatic replay", { skip }, async () => {
-  const f = await fixture();
   for (const [key, sender] of [
     ["throw", async () => { throw new Error("lost response"); }],
     ["invalid", async () => ({ operationId: randomUUID(), outcome: "confirmed" })],
     ["unknown", async (input: { operationId: string }) => ({ ...input, outcome: "unknown", code: "timeout", retryCondition: "reconcile_or_manual_review" })],
   ] as const) {
-    const out = await enqueue(f, key); let calls = 0;
+    const f=await fixture(),out = await enqueue(f, key); let calls = 0;
     await dispatch(out.id, input => { calls++; return sender(input); });
     assert.equal((await action(out.id)).state, "unknown");
     await new AiManagerStore(pool).dispatch(out.id, await preparedFor(out.id, input => { calls++; return confirmation(input); }));
@@ -332,4 +331,10 @@ test('only durable not_started rejection can reprepare after delay; unknown neve
 });
 test('safe retry rechecks manager takeover and cancels instead of resuming automation',{skip},async()=>{
  const f=await fixture(),out=await enqueue(f,'safe-retry','reply');await dispatch(out.id,async input=>({operationId:input.operationId,outcome:'rejected',dispatchState:'not_started',code:'disconnected',retryCondition:'after_delay'}));await store.setMode(f.conversation,'manual');await pool.query("UPDATE ai_outbox SET retry_after=now()-interval '1 second' WHERE id=$1",[out.id]);assert.equal(await store.retryReady(),0);assert.equal((await action(out.id)).state,'cancelled');
+});
+
+
+test('a prior unknown action blocks another automatic reply across channels without replay',{skip},async()=>{
+ const first=await fixture(),second=await fixture('whatsapp',first.contact),a=await enqueue(first,'unknown','reply'),b=await enqueue(second,'next','reply');
+ await dispatch(a.id,async input=>({operationId:input.operationId,outcome:'unknown',code:'timeout',retryCondition:'reconcile_or_manual_review'}));let starts=0;await dispatch(b.id,input=>{starts++;return confirmation(input);});assert.equal(starts,0);assert.equal((await action(b.id)).state,'pending');
 });

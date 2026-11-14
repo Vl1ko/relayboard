@@ -9,25 +9,26 @@ export const searchSourcesSchema = z
           .object({
             accountId: z.string().uuid(),
             chatId: z.string().min(1).max(512),
-            platform: z.enum(["max", "whatsapp", "telegram"]),
+            platform: z.enum(["max", "whatsapp"]),
           })
           .strict(),
       )
-      .max(100),
+      .max(10),
   })
   .superRefine((v, c) => {
     if (
-      new Set(v.sources.map((s) => JSON.stringify([s.accountId, s.chatId])))
+      new Set(v.sources.map((s) => JSON.stringify([s.platform, s.chatId])))
         .size !== v.sources.length
     )
       c.addIssue({ code: "custom", message: "Duplicate source" });
+    for(const platform of ["max","whatsapp"])if(v.sources.filter(s=>s.platform===platform).length>5)c.addIssue({code:"custom",message:"Five sources per messenger maximum"});
   });
 export class SearchSourceError extends Error {
   constructor(public code: string) {
     super(code);
   }
 }
-const choicesSql = `SELECT DISTINCT i.id AS "accountId",d.external_id AS "chatId",i.platform::text AS platform,i.name AS "accountName",d.title FROM destinations d JOIN integrations i ON i.id=d.integration_id WHERE i.enabled AND i.platform::text IN ('max','whatsapp','telegram') ORDER BY i.name,d.title`;
+const choicesSql = `SELECT DISTINCT i.id AS "accountId",d.external_id AS "chatId",i.platform::text AS platform,i.name AS "accountName",d.title FROM destinations d JOIN integrations i ON i.id=d.integration_id WHERE i.enabled AND i.platform::text IN ('max','whatsapp') AND d.kind IN ('group','channel') ORDER BY i.name,d.title`;
 export class SearchSourcesStore {
   constructor(private pool: Pool) {}
   async get() {

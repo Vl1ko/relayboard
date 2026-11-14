@@ -1,3 +1,4 @@
+import {startSourceHeartbeat} from '../core/source-runtime-health.js';
 import { sentMessageId } from "../core/whatsapp-receipt.js";
 import express, { type RequestHandler } from "express";
 import { createRequire } from "node:module";
@@ -21,6 +22,8 @@ import {prepareWhatsAppAiText} from '../core/adapters/whatsapp-ai-text.js';
 import {runtimeAllowsConversation} from '../core/runtime-scope.js';
 import {z} from 'zod';
 import {resolveWhatsAppContactRoute} from '../core/whatsapp-contact-route.js';
+import {resolveWhatsAppSourceRoute,type WhatsAppSourceProof} from '../core/whatsapp-source-route.js';
+import {WhatsAppSourcePoller,type WhatsAppGroupHistory} from '../core/whatsapp-source-poller.js';
 function createSession(sessionKey: string, accountId:string, ownerSignal:AbortSignal) {
 const sessionPath = sessionKey === "legacy" ? config.WHATSAPP_SESSION_PATH : join(config.WHATSAPP_SESSION_PATH, sessionKey);
 const app = express();
@@ -44,19 +47,20 @@ let closing = false;
 const scope={testOnly:config.AI_TEST_ONLY,accountIds:config.AI_TEST_ACCOUNT_IDS,authorIds:config.AI_TEST_AUTHOR_IDS};
 const receipts=new WhatsAppAiReceipts(pool);
 const privatePoller=new WhatsAppPrivatePoller(pool,readPrivateHistory,ownerSignal,scope);
+const groupPoller=new WhatsAppSourcePoller(pool,readGroupHistory,ownerSignal,scope);
 let pinnedSelf:string|null=null;
 async function selfAliases(){
  const page=client.pupPage;if(!page)throw Error('wa_session_not_ready');
  const ids=await page.evaluate(`(()=>{const p=window.require('WAWebUserPrefsMeUser');return [p.getMaybeMePnUser()?._serialized,p.getMaybeMeLidUser()?._serialized].filter(Boolean);})()`) as string[];
  if(!Array.isArray(ids)||!ids.length||ids.some(id=>!/^[1-9][0-9]{0,30}@(c\.us|lid)$/.test(id)))throw Error('wa_self_unverified');
- const row=(await pool.query("UPDATE integrations SET whatsapp_self_id=coalesce(whatsapp_self_id,$2) WHERE id=$1 AND platform='whatsapp' AND enabled AND (whatsapp_self_id IS NULL OR whatsapp_self_id=ANY($3::text[])) RETURNING whatsapp_self_id",[accountId,ids[0],ids])).rows[0];
+ const row=(await pool.query("UPDATE integrations SET whatsapp_self_id=coalesce(whatsapp_self_id,$2),whatsapp_self_aliases=$4::jsonb WHERE id=$1 AND platform='whatsapp' AND enabled AND (whatsapp_self_id IS NULL OR whatsapp_self_id=ANY($3::text[])) RETURNING whatsapp_self_id",[accountId,ids[0],ids,JSON.stringify(ids)])).rows[0];
  if(!row)throw Error('wa_account_identity_changed');pinnedSelf=row.whatsapp_self_id;return ids;
 }
 async function recipientAliases(recipient:string){
  if(!/^[1-9][0-9]{0,30}@(c\.us|lid)$/.test(recipient))throw Error('wa_private_target_unverified');
  const result=await client.getContactLidAndPhone([recipient]);
  const match=result.find(v=>v.pn===recipient||v.lid===recipient);
- if(!match)throw Error('wa_private_target_unverified');
+ if(!match){if(recipient.endsWith('@lid'))return[recipient];throw Error('wa_private_target_unverified');}
  return [...new Set([match.pn,match.lid].filter((v):v is string=>!!v))];
 }
 async function readPrivateHistory(requestAccount:string,recipient:string,externalId:string):Promise<WhatsAppPrivateHistory>{
@@ -67,6 +71,35 @@ async function readPrivateHistory(requestAccount:string,recipient:string,externa
  if(chat.isGroup||!aliases.includes(chat.id._serialized))throw Error('wa_private_target_unverified');
  const messages=await chat.fetchMessages({limit:500});
  return{targetId:chat.id._serialized,recipientAliases:aliases,selfAliases:self,exhausted:messages.length<500,messages:messages.map(m=>({id:m.id._serialized,from:m.from,to:m.to,fromMe:m.fromMe,timestamp:m.timestamp,body:m.body,ack:m.ack,type:String(m.type)}))};
+}
+
+async function readGroupHistory(requestAccount:string,chatId:string):Promise<WhatsAppGroupHistory>{
+ if(requestAccount!==accountId||!(await probeClientReady()))throw Error('wa_session_not_ready');
+ const self=await selfAliases(),chat=await client.getChatById(chatId);
+ if(!chat.isGroup||chat.id._serialized!==chatId||!chatId.endsWith('@g.us'))throw Error('wa_source_unverified');
+ const messages=await chat.fetchMessages({limit:500});
+ return{chatId,isGroup:chat.isGroup,selfAliases:self,exhausted:messages.length<500,messages:messages.map(m=>({id:m.id._serialized,chatId:m.fromMe?m.to:m.from,authorId:m.author??'',fromMe:m.fromMe,timestamp:m.timestamp,text:m.body,type:String(m.type)}))};
+}
+async function phoneProof(phone:string){
+ if(!(await probeClientReady()))throw Error('wa_session_not_ready');
+ const number=await client.getNumberId(phone.slice(1)),expected=phone.slice(1)+'@c.us';if(!number||number._serialized!==expected)throw Error('wa_phone_unverified');
+ const aliases=await recipientAliases(expected),self=await selfAliases(),chat=await client.getChatById(expected);
+ if(chat.isGroup||!aliases.includes(chat.id._serialized))throw Error('wa_private_target_unverified');
+ return{phone,pn:expected,aliases,selfAliases:self,privateId:chat.id._serialized};
+}
+async function sourceProof(lead:{chat_id:string;message_id:string}):Promise<WhatsAppSourceProof>{
+ if(!(await probeClientReady()))throw Error('wa_session_not_ready');
+ const chat=await client.getChatById(lead.chat_id),message=await client.getMessageById(lead.message_id);
+ if(!chat.isGroup||chat.id._serialized!==lead.chat_id||!message||message.id._serialized!==lead.message_id||message.from!==lead.chat_id||message.fromMe||!message.author||typeof message.body!=='string'||!message.body.trim())throw Error('wa_source_unverified');
+ const aliases=await recipientAliases(message.author),self=await selfAliases();
+ return{messageId:message.id._serialized,authorId:message.author,chatId:message.from,text:message.body,occurredAt:new Date(message.timestamp*1000).toISOString(),pn:aliases.find(a=>a.endsWith('@c.us')),aliases,selfAliases:self};
+}
+async function privateProof(source:WhatsAppSourceProof){
+ if(source.pn){const proof=await phoneProof('+'+source.pn.split('@')[0]);return{...proof,recipientId:proof.aliases.includes(source.authorId)?source.authorId:source.pn};}
+ if(!(await probeClientReady()))throw Error('wa_session_not_ready');
+ const aliases=await recipientAliases(source.authorId),self=await selfAliases(),chat=await client.getChatById(source.authorId);
+ if(chat.isGroup||!aliases.includes(chat.id._serialized))throw Error('wa_private_target_unverified');
+ return{privateId:chat.id._serialized,recipientId:source.authorId,pn:aliases.find(a=>a.endsWith('@c.us')),aliases,selfAliases:self};
 }
 
 const puppeteer: Record<string, unknown> = {
@@ -285,14 +318,7 @@ app.get("/groups", async (_request, response) => {
 app.post('/ai/contacts/:id/resolve',async(request,response)=>{
  if(config.AI_SEND_MODE!=='live')return response.status(409).json({error:'Live WhatsApp is disabled'});
  const contactId=z.string().uuid().parse(request.params.id);
- response.json(await resolveWhatsAppContactRoute(pool,scope,{accountId,contactId},async phone=>{
-  if(!(await probeClientReady()))throw Error('wa_session_not_ready');
-  const number=await client.getNumberId(phone.slice(1));
-  const expected=phone.slice(1)+'@c.us';if(!number||number._serialized!==expected)throw Error('wa_phone_unverified');
-  const aliases=await recipientAliases(expected),self=await selfAliases(),chat=await client.getChatById(expected);
-  if(chat.isGroup||!aliases.includes(chat.id._serialized))throw Error('wa_private_target_unverified');
-  return{phone,pn:expected,aliases,selfAliases:self,privateId:chat.id._serialized};
- }));
+ response.json(await resolveWhatsAppContactRoute(pool,scope,{accountId,contactId},phoneProof));
 });
 
 app.post('/ai/actions/:id/dispatch',async(request,response)=>{
@@ -419,13 +445,19 @@ const watchdog=setInterval(()=>{
   })().catch(error=>console.error("WhatsApp recovery failed",errorMessage(error)));
 },15_000);
 watchdog.unref();
-return { app, poll:(id:string)=>privatePoller.poll(id), initialized: Promise.resolve(), close: async () => { closing=true;generation+=1;clearInterval(watchdog);if (readyProbeTimer) clearInterval(readyProbeTimer);await client.destroy().catch(() => undefined); } };
+return { app, accountId, sourceProof, privateProof, pollSource:(chatId:string)=>groupPoller.poll(accountId,chatId), poll:(id:string)=>privatePoller.poll(id), initialized: Promise.resolve(), close: async () => { closing=true;generation+=1;clearInterval(watchdog);if (readyProbeTimer) clearInterval(readyProbeTimer);await client.destroy().catch(() => undefined); } };
 }
 const stop=new AbortController();
 process.once('SIGTERM',()=>stop.abort());process.once('SIGINT',()=>stop.abort());
 async function owned(signal:AbortSignal){
  signal.throwIfAborted();
+ const heartbeat=await startSourceHeartbeat(pool,'whatsapp-reader',config.SOURCE_MONITOR_ENABLED&&config.AI_SEND_MODE==='live',signal);
  const app=express();
+ app.use((request,response,next)=>{
+  if(request.header('authorization')!==`Bearer ${config.WHATSAPP_BRIDGE_SECRET}`)return response.status(401).json({error:'Unauthorized'});
+  if(signal.aborted)return response.status(503).json({error:'Owner stopped'});next();
+ });
+ app.use('/ai/leads',express.json({limit:'16kb'}));
  const sessions=new WhatsAppSessions(async()=>{
   const result=await pool.query("SELECT id,session_key FROM integrations WHERE platform='whatsapp' AND enabled ORDER BY created_at,id");
   return result.rows;
@@ -437,6 +469,15 @@ async function owned(signal:AbortSignal){
  app.use(async(request,response,next)=>{
   if(request.header('authorization')!==`Bearer ${config.WHATSAPP_BRIDGE_SECRET}`)return response.status(401).json({error:'Unauthorized'});
   if(signal.aborted)return response.status(503).json({error:'Owner stopped'});
+  if(request.method==='POST'&&/^\/ai\/leads\/[^/]+\/resolve$/.test(request.path)){
+   try{
+    if(config.AI_SEND_MODE!=='live')return response.status(409).json({error:'Live WhatsApp is disabled'});
+    const leadId=z.string().uuid().parse(request.path.split('/')[3]),selectedAccount=z.string().uuid().optional().parse(request.body?.accountId);
+    const scope={testOnly:config.AI_TEST_ONLY,accountIds:config.AI_TEST_ACCOUNT_IDS,authorIds:config.AI_TEST_AUTHOR_IDS};
+    const getSession=async(id:string)=>{const row=(await pool.query("SELECT session_key FROM integrations WHERE id=$1 AND platform='whatsapp' AND enabled",[id])).rows[0];if(!row)throw Error('wa_account_unavailable');return sessions.get(row.session_key);};
+    return response.json(await resolveWhatsAppSourceRoute(pool,{readSource:async(id,lead)=>(await getSession(id)).sourceProof(lead),resolveRecipient:async(id,source)=>(await getSession(id)).privateProof(source)},scope,{leadId,accountId:selectedAccount}));
+   }catch{return response.status(503).json({error:'WhatsApp route awaits verification'});}
+  }
   if(request.path==='/health')return response.json({ready:!signal.aborted,platform:'whatsapp'});
   const key=request.header('x-account-session');
   if(!key||!/^(legacy|[0-9a-f-]{36})$/.test(key))return response.status(400).json({error:'Нужен аккаунт'});
@@ -456,6 +497,14 @@ async function owned(signal:AbortSignal){
    for(const row of (await pool.query("SELECT DISTINCT a.id FROM ai_outbox a JOIN ai_whatsapp_send_intents i ON i.action_id=a.id WHERE a.state='unknown' AND i.server_ack>=1 LIMIT 100")).rows)await new WhatsAppAiReceipts(pool).reconcile(row.id);
   })().catch(()=>console.error('WhatsApp inbox iteration deferred')).finally(()=>{polling=undefined;});
  },5000);inboxTimer.unref();
+ let groupWork:Promise<void>|undefined;
+ const groupTimer=setInterval(()=>{
+  if(!config.SOURCE_MONITOR_ENABLED||config.AI_SEND_MODE!=='live'||signal.aborted||groupWork)return;
+  groupWork=(async()=>{
+   const sources=(await pool.query("SELECT s.account_id,s.chat_id,i.session_key FROM ai_search_sources s JOIN integrations i ON i.id=s.account_id AND i.enabled JOIN ai_monitor_settings m ON m.id=1 AND m.mode<>'stopped' WHERE s.platform='whatsapp' ORDER BY s.account_id,s.chat_id LIMIT 5")).rows;
+   await Promise.all([...new Set(sources.map(s=>s.account_id))].map(async account=>{for(const source of sources.filter(s=>s.account_id===account))try{await (await sessions.get(source.session_key)).pollSource(source.chat_id);}catch{if(!signal.aborted)console.error('WhatsApp source sync deferred; cursor retained');}}));
+  })().catch(()=>console.error('WhatsApp group iteration deferred')).finally(()=>{groupWork=undefined;});
+ },5000);groupTimer.unref();
  let refresh:Promise<void>|undefined;
  const cleanup=setInterval(()=>{if(!refresh&&!signal.aborted)refresh=sessions.refresh().catch(()=>console.error('WhatsApp session refresh deferred')).finally(()=>{refresh=undefined;});},5000);cleanup.unref();
  let server:ReturnType<typeof app.listen>|undefined;
@@ -467,7 +516,7 @@ async function owned(signal:AbortSignal){
    const shutdown=()=>{void sessions.close();server!.close(error=>error?reject(error):resolve());};
    signal.addEventListener('abort',shutdown,{once:true});if(signal.aborted)shutdown();
   });
- }finally{clearInterval(cleanup);clearInterval(inboxTimer);server?.close();await refresh;await sessions.close();await polling;}
+ }finally{clearInterval(cleanup);clearInterval(inboxTimer);clearInterval(groupTimer);server?.close();await refresh;await sessions.close();await polling;await groupWork;await heartbeat.close();}
 }
 async function main(){
  try{if(config.AI_SEND_MODE==='live'&&config.AI_TEST_ONLY&&(!config.AI_TEST_ACCOUNT_IDS.length||!config.AI_TEST_AUTHOR_IDS.length))throw Error('Test allowlists required');await withExecutionSlot(pool,'worker:whatsapp-sessions',owned,stop.signal);}

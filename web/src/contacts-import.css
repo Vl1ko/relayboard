@@ -53,3 +53,11 @@
   .contact-import-pagination { flex-wrap: wrap; }
   .contact-import-pagination span { width: 100%; order: -1; text-align: center; }
 }
+/* Compact choice controls share a form with full-width text fields. */
+.contact-import-card input:is([type=checkbox],[type=radio]) { width: 18px; height: 18px; min-height: 18px; padding: 0; margin: 0; flex: 0 0 18px; accent-color: #2464eb; }
+.contact-import-card label:has(> input:is([type=checkbox],[type=radio])) { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 0; overflow-wrap: anywhere; }
+.contact-import-card textarea { width: 100%; min-height: 90px; border: 1px solid #d6dfec; border-radius: 9px; padding: 10px 12px; background: white; color: #24324b; resize: vertical; }
+.contact-import-card textarea:focus-visible { outline: 3px solid #9fc1ff; outline-offset: 2px; }
+.search-source-options { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(280px,100%),1fr)); gap: 6px 18px; margin-bottom: 16px; }
+.monitor-controls fieldset { display: grid; gap: 16px; }
+.monitor-actions { display: flex; gap: 8px; flex-wrap: wrap; }

@@ -44,29 +44,42 @@ async function boundedJson(response: Response, limit: number): Promise<any> {
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   } finally { await reader.cancel(); }
 }
-/** Official endpoints only; normal TLS validation, no retries, credentials never in model input/logs. */
-export function createGigaChatProvider(options: { pool?: Pool; authKey: string; scope?: GigaChatScope; fetch?: typeof fetch; now?: () => number }): AiProvider {
-  const request = options.fetch ?? fetch, now = options.now ?? Date.now;
-  const scope = options.scope ?? 'GIGACHAT_API_PERS';
-  if (!['GIGACHAT_API_PERS','GIGACHAT_API_B2B','GIGACHAT_API_CORP'].includes(scope)) throw Error('gigachat_invalid_scope');
-  let token: { value: string; expires: number } | undefined, busy = false;
-  const provider:AiProvider = { kind: 'gigachat', async complete({ system, data, signal }) {
-    if (data.settings.provider !== 'gigachat' || !/^GigaChat(?:-[A-Za-z0-9]+)*$/.test(data.settings.model ?? '') || !options.authKey.trim()) throw Error('gigachat_not_configured');
-    if (busy) throw Error('gigachat_single_stream_busy');
-    busy = true;
-    const deadline = AbortSignal.any([signal, AbortSignal.timeout(60_000)]);
-    try {
-      if (!token || token.expires <= now() + 60_000) {
-        const auth = await boundedJson(await request('https://ngw.devices.sberbank.ru:9443/api/v2/oauth', {
-          method: 'POST', redirect: 'error', signal: deadline,
-          headers: { Authorization: 'Basic ' + options.authKey.trim(), RqUID: randomUUID(), 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
-          body: new URLSearchParams({ scope }).toString(),
-        }), 16384);
-        let expires = Number(auth.expires_at);
-        if (expires < 1e12) expires *= 1000;
-        if (typeof auth.access_token !== 'string' || !auth.access_token || auth.access_token.length > 12000 || !Number.isFinite(expires) || expires <= now() + 1000) throw Error('gigachat_invalid_token');
-        token = { value: auth.access_token, expires };
-      }
+export type GigaChatClientOptions={pool?:Pool;authKey:string;scope?:GigaChatScope;fetch?:typeof fetch;now?:()=>number};
+/** Official endpoints, bounded JSON, normal TLS and one credential-wide queue. */
+export function createGigaChatJsonClient(options:GigaChatClientOptions){
+ const request=options.fetch??fetch,now=options.now??Date.now,scope=options.scope??'GIGACHAT_API_PERS';
+ if(!['GIGACHAT_API_PERS','GIGACHAT_API_B2B','GIGACHAT_API_CORP'].includes(scope))throw Error('gigachat_invalid_scope');
+ let token:{value:string;expires:number}|undefined,busy=false;
+ const client={async complete(input:{model:string;system:string;data:unknown;schema:unknown;signal:AbortSignal}):Promise<unknown>{
+  if(!/^GigaChat(?:-[A-Za-z0-9]+)*$/.test(input.model)||!options.authKey.trim())throw Error('gigachat_not_configured');
+  if(busy)throw Error('gigachat_single_stream_busy');busy=true;
+  const deadline=AbortSignal.any([input.signal,AbortSignal.timeout(60000)]);
+  try{
+   if(!token||token.expires<=now()+60000){
+    const auth=await boundedJson(await request('https://ngw.devices.sberbank.ru:9443/api/v2/oauth',{
+     method:'POST',redirect:'error',signal:deadline,headers:{Authorization:'Basic '+options.authKey.trim(),RqUID:randomUUID(),'Content-Type':'application/x-www-form-urlencoded',Accept:'application/json'},body:new URLSearchParams({scope}).toString(),
+    }),16384);
+    let expires=Number(auth.expires_at);if(expires<1e12)expires*=1000;
+    if(typeof auth.access_token!=='string'||!auth.access_token||auth.access_token.length>12000||!Number.isFinite(expires)||expires<=now()+1000)throw Error('gigachat_invalid_token');
+    token={value:auth.access_token,expires};
+   }
+   const response=await request('https://api.giga.chat/v1/chat/completions',{
+    method:'POST',redirect:'error',signal:deadline,headers:{Authorization:'Bearer '+token.value,'Content-Type':'application/json',Accept:'application/json'},
+    body:JSON.stringify({model:input.model,response_format:{type:'json_schema',schema:input.schema,strict:true},stream:false,temperature:0.01,max_tokens:2000,messages:[{role:'system',content:input.system},{role:'user',content:JSON.stringify(input.data)}]}),
+   });
+   if(response.status===401)token=undefined;
+   const body=await boundedJson(response,131072),answer=body?.choices?.[0]?.message?.content;
+   if(body?.choices?.[0]?.finish_reason==='length'||typeof answer!=='string'||answer.length>32768)throw Error('gigachat_invalid_response');
+   return JSON.parse(answer);
+  }catch{throw Error('gigachat_completion_failed');}finally{busy=false;}
+ },runExclusive:undefined as undefined|(<T>(work:(signal:AbortSignal)=>Promise<T>)=>Promise<T>)};
+ if(options.pool)client.runExclusive=work=>withExecutionSlot(options.pool!,'model:gigachat:'+options.authKey.trim(),async signal=>{try{return await work(signal);}finally{while(busy)await delay(10);}});
+ return client;
+}
+export function createGigaChatProvider(options:GigaChatClientOptions):AiProvider{
+ const client=createGigaChatJsonClient(options);
+ const provider:AiProvider={kind:'gigachat',async complete({system,data,signal}){
+  if(data.settings.provider!=='gigachat'||!data.settings.model)throw Error('gigachat_not_configured');
       const evidenceMessages=data.messages.filter(m=>m.origin==='customer');
       const evidenceIds=evidenceMessages.map(m=>m.messageId);
       const evidenceQuotes=[...new Set(evidenceMessages.flatMap(m=>m.text.length<=2000?[m.text]:[m.text.slice(0,2000),m.text.slice(-2000)]).filter(Boolean))];
@@ -77,21 +90,8 @@ export function createGigaChatProvider(options: { pool?: Pool; authKey: string; 
         replyKind:{type:'string',enum:['ask_fields','knowledge','handoff','none']},askFields:{type:'array',items:{type:'string'}},knowledgeKeys:{type:'array',items:{type:'string'}},proposedStatus:{type:'string',enum:['ai_dialog','qualified','unqualified','insufficient_data','manager_required']},handoffReason:{type:['string','null'],enum:['unknown_question','requested_human','insufficient_data',null]}
       }};
       if(numeric&&!numericValues.length)(schema.properties.extracted as any).maxItems=0;
-      const response = await request('https://api.giga.chat/v1/chat/completions', {
-        method: 'POST', redirect: 'error', signal: deadline,
-        headers: { Authorization: 'Bearer ' + token.value, 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ model: data.settings.model, response_format:{type:'json_schema',schema,strict:true},stream: false, temperature: 0.01, max_tokens: 2000, messages: [{ role: 'system', content: system + contract }, { role: 'user', content: JSON.stringify(data) }] }),
-      });
-      if (response.status === 401) token = undefined;
-      const body = await boundedJson(response, 131072), answer = body?.choices?.[0]?.message?.content;
-      if (body?.choices?.[0]?.finish_reason === 'length' || typeof answer !== 'string' || answer.length > 32768) throw Error('gigachat_invalid_response');
-      return JSON.parse(answer);
-    } catch { throw Error('gigachat_completion_failed'); }
-    finally { busy = false; }
-  } };
-  if(options.pool)provider.runExclusive=work=>withExecutionSlot(options.pool!,'model:gigachat:'+options.authKey.trim(),async signal=>{
-    try{return await work(signal);}
-    finally{while(busy)await delay(10);} // Retain ownership until an aborted HTTP call actually settles.
-  });
-  return provider;
+  return client.complete({model:data.settings.model,system:system+contract,data,schema,signal});
+ }};
+ if(client.runExclusive)provider.runExclusive=client.runExclusive;
+ return provider;
 }

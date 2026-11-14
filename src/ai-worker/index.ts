@@ -1,3 +1,7 @@
+import {startSourceHeartbeat} from '../core/source-runtime-health.js';
+import {SourceRuntime} from '../core/source-runtime.js';
+import {createGigaChatSourceScorer} from '../core/gigachat-source-scorer.js';
+import type {VerifiedSourceRoute} from '../core/source-activation.js';
 import {setTimeout as delay} from 'node:timers/promises';
 import {createGigaChatProvider} from '../core/gigachat-provider.js';
 import {createYandexProvider} from '../core/yandex-provider.js';
@@ -10,10 +14,13 @@ import {syntheticTransport} from '../core/outreach-runner.js';
 import {AiExecutionRuntime,type RuntimeTransport} from '../core/ai-execution-runtime.js';
 import {runtimeAllowsConversation} from '../core/runtime-scope.js';
 import {maxWorkerRequest} from '../core/max-worker-client.js';
-import {dispatchWhatsAppAction} from '../core/whatsapp-worker-client.js';
+import {dispatchWhatsAppAction,whatsappWorkerRequest} from '../core/whatsapp-worker-client.js';
 import {withExecutionSlot} from '../core/execution-slot.js';
 const stop=new AbortController();process.once('SIGTERM',()=>stop.abort());process.once('SIGINT',()=>stop.abort());
 async function run(signal:AbortSignal){
+ const heartbeat=await startSourceHeartbeat(pool,'coordinator',config.SOURCE_MONITOR_ENABLED&&config.AI_SEND_MODE==='live',signal);
+ if(!config.SOURCE_MONITOR_ENABLED)await pool.query("UPDATE ai_monitor_settings SET mode='paused',revision=revision+1,updated_at=now() WHERE mode='active'");
+ try{
  const live=config.AI_SEND_MODE==='live';
  const provider=config.AI_PROVIDER_MODE==='yandex'?createYandexProvider({apiKey:config.YANDEX_API_KEY!,folderId:config.YANDEX_FOLDER_ID!}):config.AI_PROVIDER_MODE==='gigachat'?createGigaChatProvider({pool,authKey:config.GIGACHAT_AUTH_KEY!,scope:config.GIGACHAT_SCOPE}):conservativeFixtureProvider;
  const messages=new AiManagerStore(pool),workflow=new ConversationWorkflow(pool);
@@ -28,11 +35,16 @@ async function run(signal:AbortSignal){
   async dispatchNotification(id){const n=(await pool.query('SELECT * FROM ai_handoff_notifications WHERE id=$1',[id])).rows[0];if(!n)return;const target=n.target_account_id?{accountId:n.target_account_id,externalId:n.target_external_id}:await workflow.managerTarget();if(!target)return;return workflow.dispatchNotification(id,{target,start:a=>({acknowledgement:Promise.resolve({operationId:a.operationId,outcome:'confirmed',code:'synthetic_confirmation',externalMessageId:'synthetic:'+a.operationId,retryCondition:'never'})})});},
  };
  const runtime=new AiExecutionRuntime(pool,provider,transport,signal);
+ const sources=live&&config.SOURCE_MONITOR_ENABLED?new SourceRuntime(pool,scope,createGigaChatSourceScorer({pool,authKey:config.GIGACHAT_AUTH_KEY!,scope:config.GIGACHAT_SCOPE}),async(id,platform)=>{
+  if(platform==='whatsapp'){const lead=(await pool.query('SELECT account_id FROM ai_leads WHERE id=$1',[id])).rows[0];if(!lead)throw Error('source_lead_missing');return await whatsappWorkerRequest(pool,lead.account_id,`/ai/leads/${id}/resolve`) as VerifiedSourceRoute;}
+  return await maxWorkerRequest(`/leads/${id}/resolve`,'POST') as VerifiedSourceRoute;
+ },signal):undefined;
  console.log(live?'AI worker: owned live MAX/WhatsApp transport':'AI worker: synthetic transport');
  while(!signal.aborted){
-  try{await runtime.tick();}catch{if(!signal.aborted)console.error('AI iteration deferred; durable state retained');}
+  try{await runtime.tick();if(sources)await sources.tick();}catch{if(!signal.aborted)console.error('AI iteration deferred; durable state retained');}
   try{await delay(1000,undefined,{signal});}catch{break;}
  }
+ }finally{await heartbeat.close();}
 }
 async function main(){
  try{

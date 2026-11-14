@@ -178,7 +178,7 @@ function App() {
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark small">R</div><div><strong>Relayboard</strong><small>единая рассылка</small></div></div>
       <nav>{navigation.map((item) => <button key={item.view} aria-label={item.label} className={view === item.view ? "active" : ""} onClick={() => setView(item.view)}><AppIcon name={item.icon}/><span>{item.label}</span></button>)}</nav>
-      <div className="system-health"><div><i/><b>Система работает</b></div><p>{integrations.filter((item) => item.enabled).length} из 3 аккаунтов подключено</p></div>
+      <div className="system-health"><div><i/><b>Система работает</b></div><p>{integrations.filter((item) => item.enabled).length} из {integrations.length} аккаунтов включено</p></div>
       <button className="signout" onClick={logout}><span className="user-avatar">ВФ</span><span>Выйти</span></button>
     </aside>
     <main className="workspace">
@@ -187,7 +187,7 @@ function App() {
       {notice && <div className="alert success">{notice}</div>}{loading && <div className="loading-line"/>}
       <div className="content-shell"><div className="page-heading"><div><h1>{pageMeta[view].title}</h1><p>{pageMeta[view].description}</p></div>{view === "compose" && <span className="ready-chip"><i/>{integrations.filter((item) => item.enabled).length} канала готовы</span>}</div>
         {view === "compose" && <Composer destinations={destinations} onDone={() => { showNotice("Публикация поставлена в очередь"); void refresh(); setView("campaigns"); }}/>} 
-        {view === "leads" && <LeadReview/>}
+        {view === "leads" && <LeadReview accounts={integrations} destinations={destinations}/>}
         {view === "dialogs" && <ConversationWorkspace/>}
         {view === "contacts" && <ContactsImport/>}
         {view === "qualification" && <AiSettingsPanel/>}

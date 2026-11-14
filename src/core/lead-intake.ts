@@ -40,7 +40,7 @@ export const leadSourceSchema = z
       .min(1)
       .max(8000)
       .refine((v) => v.trim().length > 0),
-    sourceKind: z.enum(["manual", "fixture"]),
+    sourceKind: z.enum(["manual", "fixture", "monitor"]),
     params: leadParamsSchema,
     confidence: z.number().min(0).max(1),
   })
@@ -68,7 +68,7 @@ export class LeadIntakeError extends Error {
 function hash(v: unknown) {
   return createHash("sha256").update(JSON.stringify(v)).digest("hex");
 }
-function checkEvidence(text: string, params: z.infer<typeof leadParamsSchema>) {
+export function checkLeadEvidence(text: string, params: z.infer<typeof leadParamsSchema>) {
   for (const p of params) {
     if (!text.includes(p.evidenceQuote))
       throw new LeadIntakeError("ungrounded_parameter", 400);
@@ -93,7 +93,7 @@ export class LeadIntakeStore {
   constructor(private pool: Pool) {}
   async ingest(input: z.input<typeof leadSourceSchema>) {
     const source = leadSourceSchema.parse(input);
-    checkEvidence(source.text, source.params);
+    checkLeadEvidence(source.text, source.params);
     const sourceKey =
       "lead:v1:" +
       hash([
@@ -205,7 +205,8 @@ export class LeadIntakeStore {
       if (lead.revision !== q.expectedRevision)
         throw new LeadIntakeError("lead_changed");
       const params = q.params ?? lead.params;
-      checkEvidence(lead.original_text, params);
+      checkLeadEvidence(lead.original_text, params);
+      if(q.action==='approve'&&lead.source_message_id)throw new LeadIntakeError('verified_source_route_required');
       if (q.action === "approve") {
         const contact = (
           await c.query(

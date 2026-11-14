@@ -1,3 +1,4 @@
+import {firstOutreachSql} from './outreach-guards.js';
 import {createHash} from 'node:crypto';
 import type {Pool} from 'pg';
 const jid=/^[1-9][0-9]{0,30}@(c\.us|lid)$/;
@@ -37,7 +38,7 @@ export class WhatsAppAiReceipts{
    if(proofs.length!==1){await client.query('COMMIT');return false;}
    await client.query("UPDATE ai_outbox SET state='confirmed',external_message_id=$2,outcome_code='wa_server_ack_reconciled',updated_at=now() WHERE id=$1",[actionId,proofs[0].reserved_message_id]);
    await client.query(`INSERT INTO ai_outreach_clocks(account_id,last_started_at) SELECT account_id,clock_timestamp() FROM ai_conversations WHERE id=$1
-    AND EXISTS(SELECT 1 FROM ai_outreach_items WHERE action_id=$2) ON CONFLICT(account_id) DO UPDATE SET last_started_at=greatest(ai_outreach_clocks.last_started_at,excluded.last_started_at)`,[found.conversation_id,actionId]);
+    AND EXISTS(SELECT 1 FROM ai_outbox a WHERE a.id=$2 AND ${firstOutreachSql}) ON CONFLICT(account_id) DO UPDATE SET last_started_at=greatest(ai_outreach_clocks.last_started_at,excluded.last_started_at)`,[found.conversation_id,actionId]);
    await client.query('COMMIT');return true;
   }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
  }

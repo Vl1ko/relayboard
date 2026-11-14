@@ -1,3 +1,5 @@
+import {startSourceHeartbeat} from '../core/source-runtime-health.js';
+import {MaxSourcePoller} from '../core/max-source-poller.js';
 import {AiManagerStore} from '../core/ai-manager.js';
 import {resolveMaxSourceRoute} from '../core/max-source-route.js';
 import {resolveMaxContactRoute} from '../core/max-contact-route.js';
@@ -18,6 +20,7 @@ const stop=new AbortController();process.once('SIGTERM',()=>stop.abort());proces
 async function owned(signal:AbortSignal){
  signal.throwIfAborted();
  await recoverOwnedMax(pool);signal.throwIfAborted();
+ const heartbeat=await startSourceHeartbeat(pool,'max-reader',config.SOURCE_MONITOR_ENABLED&&config.AI_SEND_MODE==='live',signal);
  const connections=new MaxConnections(pool,signal),app=express();
  const scope={testOnly:config.AI_TEST_ONLY,accountIds:config.AI_TEST_ACCOUNT_IDS,authorIds:config.AI_TEST_AUTHOR_IDS};
  const poller=new MaxPrivatePoller(pool,connections,signal,scope);
@@ -65,6 +68,14 @@ async function owned(signal:AbortSignal){
    await Promise.all(accounts.map(async account=>{for(const v of active.filter(v=>v.account_id===account)){try{await poller.poll(v.id);}catch{console.error('MAX private sync deferred; cursor retained');}}}));
   })().catch(()=>console.error('MAX inbox iteration deferred')).finally(()=>{polling=false;});
  },config.MAX_POLL_INTERVAL_MS);inboxTimer.unref();
+ const sourcePoller=new MaxSourcePoller(pool,connections,signal,scope);let sourceWork:Promise<void>|undefined;
+ const sourceTimer=setInterval(()=>{
+  if(!config.SOURCE_MONITOR_ENABLED||config.AI_SEND_MODE!=='live'||signal.aborted||sourceWork)return;
+  sourceWork=(async()=>{
+   const sources=(await pool.query("SELECT s.account_id,s.chat_id FROM ai_search_sources s JOIN ai_monitor_settings m ON m.id=1 AND m.mode<>'stopped' WHERE s.platform='max' ORDER BY s.account_id,s.chat_id LIMIT 5")).rows;
+   await Promise.all([...new Set(sources.map(s=>s.account_id))].map(async account=>{for(const source of sources.filter(s=>s.account_id===account))try{await sourcePoller.poll(account,source.chat_id);}catch{if(!signal.aborted)console.error('MAX source sync deferred; cursor retained');}}));
+  })().catch(()=>console.error('MAX source iteration deferred')).finally(()=>{sourceWork=undefined;});
+ },config.MAX_POLL_INTERVAL_MS);sourceTimer.unref();
  const maintenance=setInterval(()=>void connections.refresh().catch(()=>console.error('MAX session refresh deferred')),5000);maintenance.unref();
  try{
   await new Promise<void>((resolve,reject)=>{
@@ -72,7 +83,7 @@ async function owned(signal:AbortSignal){
    const shutdown=()=>{connections.close();server.close(error=>error?reject(error):resolve());};
    signal.addEventListener('abort',shutdown,{once:true});if(signal.aborted)shutdown();
   });
- }finally{clearInterval(inboxTimer);clearInterval(maintenance);connections.close();await inboxWork;}
+ }finally{clearInterval(inboxTimer);clearInterval(sourceTimer);clearInterval(maintenance);connections.close();await inboxWork;await sourceWork;await heartbeat.close();}
 }
 async function main(){
  try{

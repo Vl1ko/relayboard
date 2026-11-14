@@ -1,10 +1,10 @@
 import {randomUUID} from 'node:crypto';
-import type {Pool} from 'pg';
+import type {Pool,PoolClient} from 'pg';
 import {z} from 'zod';
 import {aiSettingsSchema} from './ai-engine.js';
 const opaque=z.string().min(1).max(512).refine(v=>!!v.trim());
 const sourceSchema=z.object({
- conversationId:z.string().uuid(),accountId:z.string().uuid(),platform:z.enum(['max','whatsapp']),
+ expectedContactId:z.string().uuid().optional(),conversationId:z.string().uuid(),accountId:z.string().uuid(),platform:z.enum(['max','whatsapp']),
  chatId:opaque,messageId:opaque,authorId:opaque,
  sourceAccountId:z.string().uuid().optional(),sourcePlatform:z.enum(['max','whatsapp']).optional(),
  recipientId:opaque.optional(),requestId:z.string().uuid().optional(),
@@ -12,19 +12,18 @@ const sourceSchema=z.object({
  // Only a verified incoming personal reply may attach a second active channel.
  allowAdditionalChannel:z.boolean().optional(),
 });
-/** Only a transport-verified source/recipient may reach this boundary. Never pass model output. */
-export async function bindSourceRequest(pool:Pool,input:z.input<typeof sourceSchema>){
- const s=sourceSchema.parse(input),c=await pool.connect();
- try{
-  await c.query('BEGIN');await c.query("SET LOCAL lock_timeout='5s'");
+/** Uses the caller's transaction so source approval and first inbox commit together. */
+export async function bindSourceRequestInTransaction(c:PoolClient,input:z.input<typeof sourceSchema>){
+ const s=sourceSchema.parse(input);
   const target=(await c.query('SELECT contact_id FROM ai_conversations WHERE id=$1',[s.conversationId])).rows[0];if(!target)throw Error('conversation_missing');
   const contact=(await c.query('SELECT * FROM ai_contacts WHERE id=$1 FOR UPDATE',[target.contact_id])).rows[0];
   const v=(await c.query('SELECT * FROM ai_conversations WHERE id=$1 FOR UPDATE',[s.conversationId])).rows[0];
+  if(s.expectedContactId&&v.contact_id!==s.expectedContactId)throw Error('source_contact_changed');
   if(v.account_id!==s.accountId||v.platform!==s.platform)throw Error('source_account_mismatch');
   const reader=s.sourceAccountId??s.accountId,sourcePlatform=s.sourcePlatform??s.platform,recipient=s.recipientId??s.authorId;
   if(sourcePlatform!==s.platform&&!s.recipientId)throw Error('cross_channel_recipient_required');
   const key=[reader,sourcePlatform,s.chatId,s.messageId];
-  const finish=async(requestId:string,created=false,duplicate=false,activated=false,initialContact=false)=>{await c.query('COMMIT');return{requestId,created,duplicate,activated,initialContact};};
+  const finish=async(requestId:string,created=false,duplicate=false,activated=false,initialContact=false)=>{return{requestId,created,duplicate,activated,initialContact};};
   const persist=async(requestId:string,initialContact=false)=>c.query(`INSERT INTO ai_request_sources(reader_account_id,platform,external_chat_id,external_message_id,author_id,request_id,conversation_id,account_id,recipient_id,occurred_at,initial_contact) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,[...key,s.authorId,requestId,v.id,s.accountId,recipient,s.occurredAt??new Date().toISOString(),initialContact]);
   const existing=(await c.query('SELECT * FROM ai_request_sources WHERE reader_account_id=$1 AND platform=$2 AND external_chat_id=$3 AND external_message_id=$4',key)).rows[0];
   if(existing){
@@ -68,5 +67,11 @@ export async function bindSourceRequest(pool:Pool,input:z.input<typeof sourceSch
   await c.query("UPDATE ai_conversations SET active_phase_id=$2,automation_epoch=automation_epoch+1,business_status='ai_dialog',automation_mode='auto',manager_hold=false WHERE id=$1",[v.id,phase.id]);
   const initialContact=created||!!s.requestId&&!open.length;await persist(requestId,initialContact);
   return finish(requestId,created,false,true,initialContact);
- }catch(error){await c.query('ROLLBACK');throw error;}finally{c.release();}
+
+}
+/** Only a transport-verified source/recipient may reach this boundary. */
+export async function bindSourceRequest(pool:Pool,input:z.input<typeof sourceSchema>){
+ const c=await pool.connect();
+ try{await c.query('BEGIN');await c.query("SET LOCAL lock_timeout='5s'");const result=await bindSourceRequestInTransaction(c,input);await c.query('COMMIT');return result;}
+ catch(error){await c.query('ROLLBACK');throw error;}finally{c.release();}
 }

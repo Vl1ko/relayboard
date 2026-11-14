@@ -1,0 +1,26 @@
+import {useEffect,useRef,useState} from 'react';
+type Settings={instructions:string;includeTerms:string[];excludeTerms:string[];confidenceThreshold:number;autoContact:boolean};
+type State={revision:number;mode:'active'|'paused'|'stopped';settings:Settings;runtimeEnabled:boolean;lastReadAt?:string|null;sourceErrorCount?:number};
+async function request(path='',init:RequestInit={}){const r=await fetch('/api/ai/leads/monitor'+path,{...init,credentials:'include',headers:{'content-type':'application/json'}});const b=await r.json();if(!r.ok)throw Error(b.error||'Не удалось обновить поиск');return b;}
+const terms=(v:string)=>[...new Set(v.split(/[,\n]/).map(s=>s.trim()).filter(Boolean))];
+export default function MonitorControls(){
+ const[state,setState]=useState<State|null>(null),[draft,setDraft]=useState<Settings|null>(null),[busy,setBusy]=useState(false),[dirty,setDirty]=useState(false),[includeText,setIncludeText]=useState(''),[excludeText,setExcludeText]=useState(''),[message,setMessage]=useState(''),[error,setError]=useState(''),generation=useRef(0);
+ async function load(){const version=++generation.current;setBusy(true);setError('');try{const value=await request();if(generation.current===version){setState(value);setDraft(value.settings);setIncludeText(value.settings.includeTerms.join('\n'));setExcludeText(value.settings.excludeTerms.join('\n'));setDirty(false);}}catch(e){if(generation.current===version)setError(String(e));}finally{if(generation.current===version)setBusy(false);}}
+ useEffect(()=>{void load();return()=>{generation.current++;};},[]);
+ function change(patch:Partial<Settings>){if(draft){setDraft({...draft,...patch});setDirty(true);setMessage('');}}
+ async function save(){if(!state||!draft)return;setBusy(true);setError('');try{const value=await request('',{method:'PUT',body:JSON.stringify({expectedRevision:state.revision,settings:draft})});setState({...state,...value});setDraft(value.settings);setIncludeText(value.settings.includeTerms.join('\n'));setExcludeText(value.settings.excludeTerms.join('\n'));setDirty(false);setMessage('Настройки поиска сохранены.');}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
+ async function control(action:'start'|'pause'|'stop'){if(!state)return;setBusy(true);setError('');try{const value=await request('/control',{method:'POST',body:JSON.stringify({expectedRevision:state.revision,action})});setState({...state,...value});setMessage(action==='start'?'Поиск включён.':action==='pause'?'Поиск на паузе. Новые обращения ожидают продолжения.':'Поиск остановлен. Ожидавшие первые обращения не возобновятся автоматически.');}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
+ return <section className="settings-form monitor-controls"><h3>Поиск и первое обращение</h3>{error&&<p role="alert">{error}</p>}{message&&<p role="status">{message}</p>}{state&&draft&&<>
+ <p>Состояние: {state.mode==='active'&&state.runtimeEnabled?'включён':state.mode==='paused'?'пауза':'остановлен'}{state.lastReadAt?' · последняя успешная проверка '+new Date(state.lastReadAt).toLocaleString('ru-RU'):''}</p>
+ {!!state.sourceErrorCount&&<p role="alert">Не удалось проверить некоторые источники. Проверьте подключение аккаунтов и обновите статус.</p>}
+ <fieldset disabled={busy}>
+ <label>Какие заявки искать<textarea rows={4} maxLength={4000} value={draft.instructions} onChange={e=>change({instructions:e.target.value})} placeholder="Опишите товар или услугу, признаки покупателя и неподходящие сообщения"/></label>
+ <label>Искать сообщения с этими словами, необязательно<textarea value={includeText} onChange={e=>{setIncludeText(e.target.value);change({includeTerms:terms(e.target.value)});}}/></label>
+ <label>Исключать сообщения с этими словами<textarea value={excludeText} onChange={e=>{setExcludeText(e.target.value);change({excludeTerms:terms(e.target.value)});}}/></label><p>Каждое слово или фраза — с новой строки. Пустой список поиска означает проверку всех новых сообщений выбранных чатов.</p>
+ <label>Порог уверенности для автоматического обращения, %<input type="number" min={50} max={99} step={1} value={Math.round(draft.confidenceThreshold*100)} onChange={e=>change({confidenceThreshold:Number(e.target.value)/100})}/></label>
+ <label><input type="checkbox" checked={draft.autoContact} onChange={e=>change({autoContact:e.target.checked})}/>Автоматически писать автору подходящей заявки в личку</label><p>Неоднозначные заявки остаются на проверку. Отправители и интервал между первыми сообщениями выбираются в настройках первого обращения.</p>
+ <div className="monitor-actions"><button disabled={!dirty} onClick={()=>void save()}>Сохранить настройки поиска</button><button onClick={()=>void load()}>Загрузить сохранённые</button>
+ <button disabled={!state.runtimeEnabled||dirty||state.mode==='active'} onClick={()=>void control('start')}>{state.mode==='paused'?'Продолжить поиск':'Запустить поиск'}</button><button disabled={state.mode!=='active'} onClick={()=>void control('pause')}>Пауза</button><button disabled={state.mode==='stopped'} onClick={()=>void control('stop')}>Остановить поиск</button></div>
+ </fieldset>{!state.runtimeEnabled&&<p>Автоматический поиск пока недоступен.</p>}
+ </>}</section>;
+}

@@ -1,0 +1,1 @@
+NODE_ENV=production npm run build: exit 0. Node TypeScript + Vite production. 42 modules transformed. Final observed assets: index-Cv78vwrz.css (59.82kB), index-DN0Cb-2t.js (334.99kB). Validation ran after SOURCE_MONITOR and SESSION_COOKIE_NAME changes. This is a command-result summary, not a copied stdout log.

@@ -6,7 +6,7 @@ import { z } from "zod";
 import { channelMessageKey, channelMessageSchema, channelSendOutcomeSchema, messageDisposition, type ChannelSendOutcome } from "./channel-contracts.js";
 
 import { workflowActionGate } from "./conversation-workflow.js";
-import { outreachGuard } from "./outreach-guards.js";
+import { outreachGuard,firstOutreachSql } from "./outreach-guards.js";
 
 const uuid = z.string().uuid();
 const opaque = z.string().min(1).max(512).refine(v => v.trim().length > 0);
@@ -200,6 +200,7 @@ export class AiManagerStore {
     const account = (await client.query("SELECT enabled,auth_error FROM integrations WHERE id=$1 FOR SHARE", [conversation.account_id])).rows[0];
     if (contact.opted_out_at || (action.kind === "qualification_notice" ? conversation.automation_mode !== "paused" || !["qualified","unqualified"].includes(conversation.business_status) : action.kind === "manual_reply" ? conversation.automation_mode !== "manual" : conversation.automation_mode !== "auto") || ["closed", "refused"].includes(conversation.business_status)
       || conversation.automation_epoch !== action.automation_epoch || action.cancellation_requested) return "cancel";
+    if(action.kind!=='manual_reply'&&(await client.query("SELECT 1 FROM ai_outbox WHERE contact_id=$1 AND id<>$2 AND state IN ('dispatching','unknown')",[conversation.contact_id,action.id])).rowCount)return 'wait';
     if(!['manual_reply','qualification_notice'].includes(action.kind)&&(await client.query('SELECT 1 FROM ai_conversations WHERE contact_id=$1 AND manager_hold',[conversation.contact_id])).rowCount)return 'cancel';
     if (!account) return "cancel";
     if (!account.enabled || account.auth_error) return "wait";
@@ -277,7 +278,7 @@ export class AiManagerStore {
         await client.query("UPDATE ai_outbox SET dispatch_started_at=clock_timestamp() WHERE id=$1",[action.id]);
         // Record after synchronous initiation; this timestamp conservatively bounds the next start.
         await client.query(`UPDATE ai_outreach_clocks SET last_started_at=clock_timestamp() WHERE account_id=$1
-          AND EXISTS(SELECT 1 FROM ai_outreach_items WHERE action_id=$2)`, [conversation.account_id,action.id]);
+          AND EXISTS(SELECT 1 FROM ai_outbox a WHERE a.id=$2 AND ${firstOutreachSql})`, [conversation.account_id,action.id]);
       });
     } catch (error) {
       // A failed COMMIT after initiation does not invalidate an actual server receipt.
@@ -300,7 +301,7 @@ export class AiManagerStore {
         updated_at=now() WHERE id=$1`,
         [actionId,state,outcome.code,outcome.outcome==='confirmed'?outcome.externalMessageId:null,initiatedText??null,initiatedText===undefined||initiatedText===action.text?null:createHash('sha256').update(JSON.stringify([action.kind,initiatedText])).digest('hex'),initiatedAt??null,state==='rejected'&&outcome.outcome==='rejected'?outcome.dispatchState:null,outcome.retryCondition]);
       if(initiatedAt&&outcome.outcome!=='rejected')await client.query(`INSERT INTO ai_outreach_clocks(account_id,last_started_at)
-        SELECT v.account_id,clock_timestamp() FROM ai_outbox a JOIN ai_conversations v ON v.id=a.conversation_id WHERE a.id=$1 AND EXISTS(SELECT 1 FROM ai_outreach_items WHERE action_id=a.id)
+        SELECT v.account_id,clock_timestamp() FROM ai_outbox a JOIN ai_conversations v ON v.id=a.conversation_id WHERE a.id=$1 AND ${firstOutreachSql}
         ON CONFLICT(account_id) DO UPDATE SET last_started_at=greatest(ai_outreach_clocks.last_started_at,excluded.last_started_at)`,[actionId]);
     });
     return { initiated: true };

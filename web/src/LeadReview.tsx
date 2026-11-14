@@ -16,6 +16,8 @@ type Lead = {
   status: "pending" | "approved" | "rejected";
   revision: number;
   request_id: string | null;
+  source_message_id?:string|null;
+  activation_error?:string|null;
 };
 type Contact = { id: string; displayName: string; phone: string | null };
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -25,10 +27,10 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers: { "content-type": "application/json", ...init.headers },
   });
   const b = await r.json();
-  if (!r.ok) throw new Error(b.error || "Ошибка запроса");
+  if (!r.ok) throw Object.assign(new Error(b.error || "Ошибка запроса"),{status:r.status});
   return b;
 }
-export default function LeadReview() {
+export default function LeadReview({accounts,destinations}:{accounts:{id:string;name:string;platform:string;enabled:boolean}[];destinations:{integration_id:string;external_id:string;title:string}[]}) {
   const [leads, setLeads] = useState<Lead[]>([]),
     [total, setTotal] = useState(0),
     [offset, setOffset] = useState(0),
@@ -39,6 +41,7 @@ export default function LeadReview() {
     [selected, setSelected] = useState(""),
     [contact, setContact] = useState(""),
     [params, setParams] = useState("[]"),
+    [canActivate,setCanActivate]=useState(false),[sender,setSender]=useState(''),[allowedSenders,setAllowedSenders]=useState<string[]>([]),[fields,setFields]=useState<{key:string;question:string;numeric?:boolean}[]>([]),
     [reason, setReason] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -62,18 +65,19 @@ export default function LeadReview() {
     setBusy(true);
     setError("");
     try {
-      const [l, c, r] = await Promise.all([
+      const [l, c, r, outgoing, engine, monitor] = await Promise.all([
         api<{ leads: Lead[]; total: number }>(
           `/api/ai/leads?limit=25&offset=${offset}&status=${filter}`,
         ),
         api<{ contacts: Contact[] }>("/api/ai/contacts?limit=100"),
         api<{ id: string; contactId: string }[]>("/api/ai/outreach/requests"),
+        api<{accountIds:string[]}>('/api/ai/outreach/settings'),api<{settings:{fields:{key:string;question:string}[];rules?:{field:string;op:string}[]}}>('/api/ai/engine/settings'),api<{runtimeEnabled:boolean}>('/api/ai/leads/monitor'),
       ]);
       if (!mounted.current || g !== generation.current) return;
       setLeads(l.leads);
       setTotal(l.total);
       setContacts(c.contacts);
-      setRequests(r);
+      setRequests(r);setAllowedSenders(outgoing.accountIds);setCanActivate(monitor.runtimeEnabled);setFields(engine.settings.fields.map(f=>({...f,numeric:engine.settings.rules?.some(r=>r.field===f.key&&['gte','lte'].includes(r.op))})));
       setSelected("");
       setParams("[]");
     } catch (e) {
@@ -91,7 +95,7 @@ export default function LeadReview() {
     try {
       if (!pending.current) {
         const parsed = JSON.parse(params);
-        pending.current = {
+        pending.current = action==='approve'&&current.source_message_id?{path:`/api/ai/leads/${encodeURIComponent(current.id)}/activate`,body:{expectedRevision:current.revision,...(sender?{accountId:sender}:{})}}:{
           path: `/api/ai/leads/${encodeURIComponent(current.id)}/review`,
           body: {
             operationId: crypto.randomUUID(),
@@ -108,19 +112,21 @@ export default function LeadReview() {
           },
         };
       }
+      const activation=pending.current.path.endsWith('/activate');
       await api(pending.current.path, {
         method: "POST",
         body: JSON.stringify(pending.current.body),
       });
       pending.current = null;
       if (!mounted.current) return;
-      setAck("Проверка сохранена. Сообщения не отправлялись.");
+      setAck(activation?"Источник подтверждён. Первое обращение поставлено в очередь по настройкам поиска.":"Проверка сохранена.");
       await load();
     } catch (e) {
+      const status=(e as {status?:number})?.status;if(status&&status>=400&&status<500&&![408,429].includes(status))pending.current=null;
       if (mounted.current)
         setError(
           (e instanceof Error ? e.message : String(e)) +
-            " При потерянном ответе повторите ту же операцию.",
+            (pending.current?" При потерянном ответе повторите ту же операцию.":""),
         );
     } finally {
       if (mounted.current) setBusy(false);
@@ -130,7 +136,7 @@ export default function LeadReview() {
     if (pending.current) return;
     setSelected(lead.id);
     setParams(JSON.stringify(lead.params, null, 2));
-    setContact("");
+    setContact("");setSender('');
     setRequestId("");
     setReason("");
     setError("");
@@ -146,7 +152,7 @@ export default function LeadReview() {
         body: JSON.stringify(pending.current.body),
       });
       pending.current = null;
-      setAck("Результат операции получен. Отправок нет.");
+      setAck("Результат операции получен. Проверьте состояние заявки и диалога.");
       await load();
     } catch (e) {
       if (mounted.current) setError(e instanceof Error ? e.message : String(e));
@@ -162,9 +168,7 @@ export default function LeadReview() {
       <SearchSourcesPanel />
       <h2>Источники заявок — проверка</h2>
       <p>
-        Подключённого поиска сейчас нет. Здесь отображаются вручную внесённые
-        или тестовые сообщения. Высокая оценка уверенности не запускает
-        обращение автоматически.
+        Здесь можно проверить неоднозначные заявки. Подтверждение источника запускает личное обращение к его автору с выбранного аккаунта. Отклонённые источники не запускают обращение.
       </p>
       {error && (
         <p role="alert" className="contact-import-error">
@@ -219,7 +223,7 @@ export default function LeadReview() {
                 {l.platform} · {l.original_text.slice(0, 100)} ·{" "}
                 {l.source_kind === "fixture"
                   ? "Тестовый источник"
-                  : "Внесено вручную"}
+                  : l.source_kind==='monitor'?'Найдено в чате':"Внесено вручную"}
               </button>
             </li>
           ))}
@@ -244,17 +248,16 @@ export default function LeadReview() {
             </pre>
             <dl>
               <dt>Аккаунт</dt>
-              <dd>{current.account_id}</dd>
+              <dd>{accounts.find(a=>a.id===current.account_id)?.name||'Архивный аккаунт'}</dd>
               <dt>Беседа / автор</dt>
               <dd>
-                {current.chat_id} / {current.author_id}
+                {destinations.find(d=>d.integration_id===current.account_id&&d.external_id===current.chat_id)?.title||'Исходная беседа'} · автор исходного сообщения
               </dd>
               <dt>Дата сообщения</dt>
               <dd>{new Date(current.occurred_at).toLocaleString("ru-RU")}</dd>
-              <dt>ID сообщения</dt>
-              <dd>{current.message_id}</dd>
+
               <dt>Заявленная уверенность, требует проверки</dt>
-              <dd>{current.confidence}</dd>
+              <dd>{Math.round(current.confidence*100)}%</dd>
             </dl>
             {current.source_link && (
               <a
@@ -267,7 +270,7 @@ export default function LeadReview() {
             )}
             {current.status === "pending" ? (
               <>
-                <label>
+                {current.source_message_id?<div><h4>Извлечённые параметры</h4>{(JSON.parse(params) as Lead['params']).length===0&&<p>Параметры ещё не указаны. Их уточнит ИИ в личном диалоге.</p>}{(JSON.parse(params) as Lead['params']).map((p,i)=>{const numeric=fields.find(f=>f.key===p.key)?.numeric||typeof p.value==='number';const update=(patch:Partial<Lead['params'][number]>)=>setParams(JSON.stringify((JSON.parse(params) as Lead['params']).map((v,j)=>j===i?{...v,...patch}:v)));return <div key={i}><label>Параметр<select value={p.key} onChange={e=>update({key:e.target.value,value:fields.find(f=>f.key===e.target.value)?.numeric?0:''})}>{!fields.some(f=>f.key===p.key)&&<option value={p.key}>Из прежних настроек</option>}{fields.map(f=><option key={f.key} value={f.key} disabled={(JSON.parse(params) as Lead['params']).some((v,j)=>j!==i&&v.key===f.key)}>{f.question}</option>)}</select></label><label>Значение<input type={numeric?'number':'text'} value={p.value} onChange={e=>update({value:numeric?Number(e.target.value):e.target.value})}/></label><label>Цитата из источника<input value={p.evidenceQuote} maxLength={1000} onChange={e=>update({evidenceQuote:e.target.value})}/></label><button onClick={()=>setParams(JSON.stringify((JSON.parse(params) as Lead['params']).filter((_,j)=>j!==i)))}>Убрать параметр</button></div>;})}<button disabled={!fields.some(f=>!(JSON.parse(params) as Lead['params']).some(p=>p.key===f.key))} onClick={()=>{const field=fields.find(f=>!(JSON.parse(params) as Lead['params']).some(p=>p.key===f.key));if(field)setParams(JSON.stringify([...JSON.parse(params),{key:field.key,value:field.numeric?0:'',evidenceQuote:''}]));}}>Добавить параметр</button></div>:<><label>
                   Параметры с точными цитатами, JSON
                   <textarea
                     rows={7}
@@ -278,11 +281,11 @@ export default function LeadReview() {
                 <small>
                   Каждый параметр: key, value, evidenceQuote. Цитата должна
                   находиться в исходном сообщении.
-                </small>
+                </small></>}
                 <button onClick={() => void send("edit")}>
                   Сохранить параметры
                 </button>
-                <label>
+                {current.source_message_id?<><label>Аккаунт отправителя<select value={sender} onChange={e=>setSender(e.target.value)}><option value="">По порядку из настроек первого обращения</option>{accounts.filter(a=>a.enabled&&a.platform===current.platform&&allowedSenders.includes(a.id)).map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label><p>Получатель определяется по автору исходного сообщения. Групповой чат не является получателем.</p>{current.activation_error&&<p>Источник ожидает проверки маршрута или подключения аккаунта.</p>}{JSON.stringify(JSON.parse(params))!==JSON.stringify(current.params)&&<p>Сохраните изменённые параметры перед подтверждением.</p>}<button disabled={!canActivate||JSON.stringify(JSON.parse(params))!==JSON.stringify(current.params)} onClick={()=>void send('approve')}>Подтвердить источник и начать обращение</button></>:<><label>
                   Явно подтверждённый контакт
                   <select
                     value={contact}
@@ -321,7 +324,7 @@ export default function LeadReview() {
                   onClick={() => void send("approve")}
                 >
                   Одобрить и привязать заявку
-                </button>
+                </button></>}
                 <label>
                   Причина / заметка
                   <input
@@ -341,7 +344,7 @@ export default function LeadReview() {
               <p>
                 Результат:{" "}
                 {current.status === "approved" ? "Одобрено" : "Отклонено"}
-                {current.request_id ? " · заявка " + current.request_id : ""}
+                {current.request_id ? " · заявка сохранена" : ""}
               </p>
             )}
           </div>

@@ -84,3 +84,12 @@ test(
     );
   },
 );
+
+
+test('AI source list permits five chats per messenger and one reader per chat',()=>{
+ const source={accountId:randomUUID(),chatId:'chat',platform:'max' as const};
+ assert.throws(()=>searchSourcesSchema.parse({revision:0,sources:[source,{...source,accountId:randomUUID()}]}));
+ assert.throws(()=>searchSourcesSchema.parse({revision:0,sources:Array.from({length:6},(_,i)=>({...source,chatId:String(i)}))}));
+ assert.throws(()=>searchSourcesSchema.parse({revision:0,sources:[{...source,platform:'telegram'}]}));
+ assert.equal(searchSourcesSchema.safeParse({revision:0,sources:['max','whatsapp'].flatMap(platform=>Array.from({length:5},(_,i)=>({...source,platform,chatId:String(i)})))}).success,true);
+});

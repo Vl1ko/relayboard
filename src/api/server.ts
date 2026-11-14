@@ -40,7 +40,7 @@ const upload = multer({
   limits: { files: 10, fileSize: config.MAX_UPLOAD_BYTES },
 });
 
-const SESSION_COOKIE = "relayboard_session";
+const SESSION_COOKIE = config.SESSION_COOKIE_NAME;
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 
@@ -127,7 +127,7 @@ const localMaxTestRouter=createLocalMaxTestRouter({pool,authorize:requireAdmin,
 app.use("/api/local-max-test",localMaxTestRouter);
 app.use("/api/ai/protocol", createProtocolRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,syntheticEnabled:config.AI_SEND_MODE === "synthetic"}));
 app.use("/api/ai/workspace", createConversationRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,workflow:new ConversationWorkflow(pool,{verifyQualification:verifyAiQualification})}));
-app.use("/api/ai/leads", createLeadRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED}));
+app.use("/api/ai/leads", createLeadRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,runtimeEnabled:config.SOURCE_MONITOR_ENABLED&&config.AI_SEND_MODE==='live'&&!!config.MAX_WORKER_URL,scope:{testOnly:config.AI_TEST_ONLY,accountIds:config.AI_TEST_ACCOUNT_IDS,authorIds:config.AI_TEST_AUTHOR_IDS}}));
 app.use("/api/ai/engine", createAiEngineRouter({pool, authorize:requireAdmin, enabled:config.CONTACT_IMPORT_ENABLED}));
 app.use("/api/ai/outreach", createOutreachRouter({pool, authorize:requireAdmin, enabled:config.CONTACT_IMPORT_ENABLED, syntheticEnabled:config.AI_SEND_MODE === "synthetic",liveEnabled:config.AI_SEND_MODE==='live'&&!!config.MAX_WORKER_URL}));
 app.use("/api/ai", createContactImportRouter({ pool, authorize: requireAdmin, enabled: config.CONTACT_IMPORT_ENABLED, ownerScope: "workspace-admin" }));
