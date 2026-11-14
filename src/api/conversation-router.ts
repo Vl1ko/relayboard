@@ -1,3 +1,4 @@
+import {BusinessEvents,businessEventSchema} from '../core/business-events.js';
 import { Router, type RequestHandler, type ErrorRequestHandler } from "express";
 import type { Pool, PoolClient } from "pg";
 import { z, ZodError } from "zod";
@@ -101,6 +102,7 @@ export function createConversationRouter(options: {
   workflow?: WorkspaceWorkflow;
 }) {
   const router = Router();
+  const business=new BusinessEvents(options.pool);
   router.use(options.authorize);
   router.use((_req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
@@ -273,11 +275,18 @@ export function createConversationRouter(options: {
         notifications,
         followups,
         statusHistory,
+        business: await business.detail(id,client),
+        stageLabels: (await client.query("SELECT scenario,label FROM ai_followup_rules")).rows,
         limits: { notifications: 20, followups: 50, statusHistory: 100 },
       };
     });
     if (!data) return res.status(404).json({ error: "Диалог не найден" });
     res.json(data);
+  });
+  router.post("/conversations/:id/business-events", async (req,res)=>{
+    const conversationId=z.string().uuid().parse(req.params.id);
+    const input=businessEventSchema.parse({...req.body,conversationId});
+    res.json(await business.record(input));
   });
   router.get("/settings", async (_req, res) => {
     if (!options.workflow?.managerTarget || !options.workflow.followupRules)
@@ -317,6 +326,9 @@ export function createConversationRouter(options: {
           "requested_later",
         ]),
         enabled: z.boolean(),
+        label: z.string().trim().min(1).max(120).optional(),
+        channel: z.enum(['current','max','whatsapp']).optional(),
+        acknowledgementMessage: z.string().trim().min(1).max(2000).optional(),
         timezone: z.string().min(1).max(100),
         weekdays: z.array(z.number().int().min(1).max(7)).min(1).max(7),
         startMinute: z.number().int().min(0).max(1439),
@@ -472,6 +484,7 @@ export function createConversationRouter(options: {
         error:
           "Проверьте фильтры или действие. Статус «Подходит» назначается только после проверки критериев",
       });
+    if(error instanceof Error && error.message.startsWith('business_'))return res.status(409).json({code:error.message,error:'Состояние заявки изменилось или отметка недоступна. Обновите карточку.'});
     const code =
       error && typeof error === "object" && "code" in error
         ? String(error.code)

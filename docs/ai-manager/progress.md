@@ -11,7 +11,7 @@
 | RES04 | IN_PROGRESS | Prepared CDP text, durable intents/late ack, private cursor, self pin и 5-session owner реализованы; 289 PASS. Остаток: source integration, media prepared boundary и реальная приёмка |
 | RES05 | IN_PROGRESS | Миграция17, bounded MAX/WhatsApp collectors, grounded scoring, атомарная активация и общий first-contact gate реализованы. 313 PASS, typecheck/build и compiled owner smokes PASS; UI сохранение/лимит/evidence проверены. Live corpus и приёмка остаются открытыми |
 | RES06 | IN_PROGRESS | Все четыре dispatcher reasons, completion repair, manager hold и старые фазы проверены; live-корпус и полная бизнес-приёмка впереди |
-| RES07 | TODO | Автоматические follow-up |
+| RES07 | IN_PROGRESS | Миграция18: четыре автоматических триггера, универсальные этапы/отметки, буквальное подтверждение «позже», отмена между каналами, устойчивость к replay и выключению. Синтетическая проверка и UI завершены; live-интервалы остаются частью приёмки |
 | RES08 | TODO | Полное рабочее место |
 | RES09 | TODO | Retention, зависимости, ресурсы, restore |
 | RES10 | TODO | Приёмка 12/12 и согласованный выпуск |
@@ -196,3 +196,9 @@ RES05, итог проверенного инкремента:313 PASS/0FAIL/0SK
 Обнаружена ошибка изоляции browser fixture: прежнее имя auth cookie совпадало с основным localhost-приложением на другом порту. Введён SESSION_COOKIE_NAME (прежний default для совместимости), fixture использует отдельное имя и hostname localhost. Вход в основной локальный интерфейс восстановлен обычным login; MAX/WhatsApp authentication sessions, бизнес-данные и backend-процессы не перезапускались. Проверка не отправляла сообщения. Важно: dev build обновляет общую dist-web, которую может обслуживать существующий локальный API; это не полноценное переключение/приёмка нового backend. Production не менялся. Fixture штатно остановлен, собственные API/Redis/schema очищены.
 
 Доказательства инкремента: outputs/res05-sources-2026-11-14; source-monitor.md. RES05 IN_PROGRESS до live quality/приёмки. Следующие задачи: автоматические4 follow-up triggers, полный manager workspace/уведомления, text TTL/security/resources/backup/restore, реальная MAX/WhatsApp приёмка и коммерческий GigaChat. Заявление «готов к production» пока недопустимо.
+
+## Продолжение: автоматические дожимы, 14 ноября 2026
+
+Решение пользователя: универсальные этапы с настраиваемыми названиями и отметками в карточке. Реализация и проверяемые ограничения описаны в [automatic-followups.md](automatic-followups.md). Для конкурентных ответов приветствие фиксируется один раз под блокировкой контакта; после отправки replay возвращает тот же текст. История и тексты сохраняются до отдельной реализации TTL в RES09. Production, реальные переписки и существующая локальная MAX-БД не мигрировали.
+
+Проверка миграции18: **326 PASS / 0 FAIL / 0 SKIP**, typecheck и production build PASS; compiled AI/MAX/WhatsApp owner и prepared Chrome smokes PASS. Доказательства: outputs/res07-followups-2026-11-14. Live-приёмка открыта.

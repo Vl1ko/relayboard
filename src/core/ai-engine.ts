@@ -1,3 +1,4 @@
+import {latestRequestCustomerSequence} from './customer-sequence.js';
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
@@ -440,7 +441,7 @@ export class AiEngineStore {
       throw new AiEngineError("automation_forbidden");
     const all = (
       await this.pool.query(
-        `SELECT event_key,external_message_id AS "messageId",left(text,4000) AS text,origin FROM ai_inbox WHERE conversation_id=$1 AND ingest_sequence>=coalesce((SELECT first_ingest_sequence FROM ai_request_phases WHERE id=(SELECT active_phase_id FROM ai_conversations WHERE id=$1)),0) ORDER BY ingest_sequence DESC LIMIT 20`,
+        `SELECT event_key,ingest_sequence,external_message_id AS "messageId",left(text,4000) AS text,origin FROM ai_inbox WHERE conversation_id=$1 AND ingest_sequence>=coalesce((SELECT first_ingest_sequence FROM ai_request_phases WHERE id=(SELECT active_phase_id FROM ai_conversations WHERE id=$1)),0) ORDER BY ingest_sequence DESC LIMIT 20`,
         [conversationId],
       )
     ).rows.reverse();
@@ -450,6 +451,7 @@ export class AiEngineStore {
     const latest = [...all].reverse().find((m) => m.origin === "customer");
     if (latest?.event_key !== eventKey)
       throw new AiEngineError("superseded_customer_event");
+    if(BigInt(await latestRequestCustomerSequence(this.pool,conversationId))>BigInt(target.ingest_sequence))throw new AiEngineError('superseded_customer_event');
     const settings = aiSettingsSchema.parse(found.settings),
       messages: AiMessage[] = all.map(({ messageId, text, origin }) => ({
         messageId,
@@ -532,6 +534,7 @@ export class AiEngineStore {
         ["closed", "refused"].includes(current.business_status)
       )
         throw new AiEngineError("stale_generation");
+      if(BigInt(await latestRequestCustomerSequence(c,conversationId))>BigInt(target.ingest_sequence))throw new AiEngineError('superseded_customer_event');
       ownerSignal?.throwIfAborted();
       const accepted =
         state.reply_count >= settings.replyLimit

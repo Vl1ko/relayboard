@@ -1,3 +1,4 @@
+import BusinessStageCard,{type BusinessDetail} from './BusinessStageCard';
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./conversation-workspace.css";
 
@@ -90,6 +91,8 @@ type List = {
   counterRule: string;
 };
 type Workflow = {
+  business?: BusinessDetail;
+  stageLabels?: {scenario:string;label:string}[];
   notifications?: Record<string, unknown>[];
   followups?: Record<string, unknown>[];
   statusHistory?: Record<string, unknown>[];
@@ -731,6 +734,7 @@ export default function ConversationWorkspace() {
                   )}
                   {workflow && (
                     <>
+                      {workflow.business&&<BusinessStageCard key={conversationId} conversationId={conversationId} data={workflow.business} labels={workflow.stageLabels??[]} closed={conversation?.status==='closed'} onChange={()=>setRevision(v=>v+1)}/>}
                       <h4>Последние 20 уведомлений менеджеру</h4>
                       {workflow.notifications?.length ? (
                         workflow.notifications.map((n, i) => (
@@ -769,9 +773,7 @@ export default function ConversationWorkspace() {
                       {workflow.followups?.length ? (
                         workflow.followups.map((f, i) => (
                           <p key={String(f.id || i)}>
-                            {scenarios[
-                              recordText(f, ["scenario"]) as Scenario
-                            ] || "Повторное обращение"}{" "}
+                            {workflow.stageLabels?.find(r=>r.scenario===f.scenario)?.label||scenarios[recordText(f,["scenario"]) as Scenario]||"Повторное обращение"}{" "}
                             ·{" "}
                             {{
                               pending: "Запланировано",
@@ -835,14 +837,17 @@ export default function ConversationWorkspace() {
 
 const scenarios = {
   no_reply: "Не ответил",
-  not_booked: "Не записался",
-  not_completed: "Не завершил заказ",
+  not_booked: "Этап 1",
+  not_completed: "Этап 2",
   requested_later: "Попросил позже",
 };
 type Scenario = keyof typeof scenarios;
 type Rule = {
   scenario: Scenario;
   enabled: boolean;
+  label: string;
+  channel: "current"|"max"|"whatsapp";
+  acknowledgementMessage: string;
   timezone: string;
   weekdays: number[];
   startMinute: number;
@@ -877,6 +882,9 @@ function WorkspaceSettings({
     [rules, setRules] = useState<Record<string, unknown>[]>([]),
     [scenario, setScenario] = useState<Scenario>("no_reply"),
     [enabled, setEnabled] = useState(false),
+    [label,setLabel]=useState(''),
+    [channel,setChannel]=useState<Rule['channel']>('current'),
+    [acknowledgementMessage,setAcknowledgementMessage]=useState('Хорошо, свяжемся позже.'),
     [ruleDirty, setRuleDirty] = useState(false),
     [timezone, setTimezone] = useState(""),
     [days, setDays] = useState<number[]>([]),
@@ -939,6 +947,9 @@ function WorkspaceSettings({
     scheduleKey.current = null;
     const r = source.find((r) => r.scenario === value);
     setEnabled(Boolean(r?.enabled));
+    setLabel(typeof r?.label==='string'&&r.label?r.label:scenarios[value]);
+    setChannel(r?.channel==='max'||r?.channel==='whatsapp'?r.channel:'current');
+    setAcknowledgementMessage(typeof r?.acknowledgement_message==='string'?r.acknowledgement_message:'Хорошо, свяжемся позже.');
     setTimezone(typeof r?.timezone === "string" ? r.timezone : "");
     setDays(Array.isArray(r?.weekdays) ? (r.weekdays as number[]) : []);
     setStart(
@@ -975,9 +986,9 @@ function WorkspaceSettings({
       {open && (
         <>
           <p>
-            Рабочие часы и тексты задаются явно. Сохранение правил не запускает
-            отправки; расписание создаётся отдельным действием для выбранного
-            диалога.
+            Включённые правила автоматически создают дожимы после новых подтверждённых
+            отправок и отметок этапов. Ответ клиента отменяет ожидание. После передачи
+            менеджеру автоматические сообщения заблокированы до закрытия заявки.
           </p>
           {error && (
             <p role="alert" className="conversation-error">
@@ -1117,6 +1128,12 @@ function WorkspaceSettings({
                   />
                 </label>
               </div>
+              <div className="conversation-settings-grid">
+                <label>Название этапа<input maxLength={120} value={label} onChange={e=>{setLabel(e.target.value);invalidateSchedule();}}/></label>
+                <label>Канал дожима<select value={channel} onChange={e=>{setChannel(e.target.value as Rule['channel']);invalidateSchedule();}}><option value="current">Текущий</option><option value="max">MAX</option><option value="whatsapp">WhatsApp</option></select></label>
+                {scenario==='requested_later'&&<label>Ответ на просьбу связаться позже<textarea maxLength={2000} value={acknowledgementMessage} onChange={e=>{setAcknowledgementMessage(e.target.value);invalidateSchedule();}}/></label>}
+              </div>
+              <p>Для другого канала нужен подтверждённый контакт в той же заявке. Старые ожидания после отключения правила не возобновляются.</p>
               <div className="conversation-weekdays" aria-label="Рабочие дни">
                 {["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((label, i) => (
                   <label key={label}>
@@ -1196,7 +1213,7 @@ function WorkspaceSettings({
                 </button>
                 <button
                   disabled={
-                    !timezone.trim() ||
+                    !label.trim() || !acknowledgementMessage.trim() || !timezone.trim() ||
                     !days.length ||
                     !start ||
                     !end ||
@@ -1206,7 +1223,7 @@ function WorkspaceSettings({
                     void run(async () => {
                       const rule: Rule = {
                         scenario,
-                        enabled,
+                        enabled,label:label.trim(),channel,acknowledgementMessage:acknowledgementMessage.trim(),
                         timezone: timezone.trim(),
                         weekdays: days,
                         startMinute: minuteValue(start),
@@ -1224,8 +1241,9 @@ function WorkspaceSettings({
                           saved,
                         ]);
                         setRuleDirty(false);
+                        onChange();
                         setNotice(
-                          "Правило сохранено. Отправка не запускалась.",
+                          enabled?"Правило включено для новых отправок и отметок этапов.":"Правило сохранено и выключено. Ожидания отменены.",
                         );
                       }
                     })

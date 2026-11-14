@@ -1,3 +1,4 @@
+import {applyAiManagerMigration} from './ai-manager-migration.js';
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -77,18 +78,8 @@ before(async () => {
     connectionString: url,
     options: "-c search_path=" + schema + ",public",
   });
-  for (const file of [
-    "schema.sql",
-    "ai-manager.sql",
-    "ai-manager-import.sql",
-    "ai-manager-workflows.sql",
-  ])
-    await pool.query(
-      await readFile(
-        new URL("../../database/" + file, import.meta.url),
-        "utf8",
-      ),
-    );
+  await pool.query(await readFile(new URL('../../database/schema.sql',import.meta.url),'utf8'));
+  await applyAiManagerMigration(pool);
   service = new ConversationWorkflow(pool);
 });
 beforeEach(async () => {

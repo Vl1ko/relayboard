@@ -1,3 +1,4 @@
+import {bindSourceRequest} from '../core/request-lifecycle.js';
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -321,3 +322,14 @@ test(
     );
   },
 );
+
+test('business stage API preserves configured names, revisions and exact operation replay',{skip},async()=>{
+ await pool.query('UPDATE ai_engine_settings SET settings=settings||$1::jsonb',[JSON.stringify({qualificationEnabled:true,fields:[{key:"volume",question:"Объём?",required:true}],rules:[{field:"volume",op:"gte",value:10}]})]);
+ const f=await fixture();const v=(await pool.query("SELECT * FROM ai_conversations WHERE contact_id=$1 AND platform='max'",[f.contact])).rows[0];
+ await bindSourceRequest(pool,{conversationId:v.id,accountId:f.max,platform:'max',chatId:'synthetic-group',messageId:'stage-source',authorId:'synthetic-author'});
+ const input={operationId:randomUUID(),expectedRevision:0,kind:'booking_offered',note:'Synthetic stage mark'};
+ const response=await fetch(base+'/on/conversations/'+v.id+'/business-events',{method:'POST',headers,body:JSON.stringify(input)});assert.equal(response.status,200);assert.equal((await response.json()).state.booking_state,'offered');
+ const replay=await fetch(base+'/on/conversations/'+v.id+'/business-events',{method:'POST',headers,body:JSON.stringify(input)});assert.equal(replay.status,200);assert.equal((await replay.json()).replayed,true);
+ const stale=await fetch(base+'/on/conversations/'+v.id+'/business-events',{method:'POST',headers,body:JSON.stringify({...input,operationId:randomUUID()})});assert.equal(stale.status,409);
+ const detail=await(await get('/conversations/'+v.id+'/workflow')).json();assert.equal(detail.business.state.revision,1);assert.equal(detail.business.events.length,1);
+});

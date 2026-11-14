@@ -114,11 +114,11 @@ for(const legacyVersion of [12,14])test('upgrade from version '+legacyVersion+' 
   }
   await oldStore.ingest({version:1,platform:'max',accountId:account,conversationId:'legacy',messageId:'group-source:-456:source-one',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'synthetic'});
   await legacy.query(`UPDATE ai_engine_state SET fields='{"volume":25}',reply_count=3 WHERE conversation_id=$1`,[conversation.id]);await legacy.query("UPDATE ai_conversations SET business_status='closed' WHERE id=$1",[conversation.id]);
-  assert.deepEqual(await applyAiManagerMigration(legacy),{version:17,applied:true});
+  assert.deepEqual(await applyAiManagerMigration(legacy),{version:18,applied:true});
   const phase=(await legacy.query('SELECT * FROM ai_request_phases WHERE conversation_id=$1',[conversation.id])).rows[0];assert.deepEqual(phase.fields_snapshot,{volume:25});assert.equal(phase.reply_count_snapshot,3);assert.ok(phase.closed_at);
   const replay=await bindSourceRequest(legacy,{conversationId:conversation.id,accountId:account,platform:'max',chatId:'-456',messageId:'source-one',authorId:'202'});assert.equal(replay.duplicate,true);assert.equal(replay.requestId,phase.request_id);
   const source=(await legacy.query('SELECT * FROM ai_request_sources')).rows[0];assert.equal(source.reader_account_id,account);assert.equal(source.recipient_id,'202');assert.equal(source.initial_contact,false);
-  assert.equal((await legacy.query('SELECT count(*)::int n FROM ai_requests')).rows[0].n,1);assert.deepEqual(await applyAiManagerMigration(legacy),{version:17,applied:false});
+  assert.equal((await legacy.query('SELECT count(*)::int n FROM ai_requests')).rows[0].n,1);assert.deepEqual(await applyAiManagerMigration(legacy),{version:18,applied:false});
  }finally{await legacy.end();await pool.query('DROP SCHEMA '+legacySchema+' CASCADE');}
 });
 

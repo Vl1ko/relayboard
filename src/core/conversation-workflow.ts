@@ -1,3 +1,5 @@
+import {latestRequestCustomerSequence} from './customer-sequence.js';
+import {automaticFollowupGate,type AutomaticFollowupProof} from './followup-guards.js';
 import { createHash, randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
@@ -47,6 +49,9 @@ export const followupRuleSchema = z
   .object({
     scenario: z.enum(followupScenarios),
     enabled: z.boolean(),
+    label:z.string().trim().min(1).max(120).optional(),
+    channel:z.enum(['current','max','whatsapp']).optional(),
+    acknowledgementMessage:z.string().trim().min(1).max(2000).optional(),
     timezone,
     weekdays: z
       .array(z.number().int().min(1).max(7))
@@ -517,6 +522,10 @@ export class ConversationWorkflow {
         ))
       )
         throw new WorkflowError("qualification_proof_required");
+      if(data.key.startsWith('ai-handoff:')){
+        const proof=(await client.query("SELECT i.ingest_sequence FROM ai_engine_decisions d JOIN ai_inbox i ON i.event_key=d.event_key WHERE d.id::text=$1 AND d.conversation_id=$2 AND d.disposition='handoff' AND d.automation_epoch=$3",[data.key.slice(11),data.conversationId,c.conversation.automation_epoch])).rows[0];
+        if(!proof||BigInt(await latestRequestCustomerSequence(client,data.conversationId))>BigInt(proof.ingest_sequence))throw new WorkflowError('superseded_customer_event');
+      }
       await this.invalidate(client, c.conversations, "paused", "handoff");
       if (!["closed", "refused"].includes(c.conversation.business_status))
         await this.history(
@@ -774,23 +783,16 @@ export class ConversationWorkflow {
       ).rows[0];
     });
   }
-  async saveFollowupRule(input: FollowupRule) {
-    const r = followupRuleSchema.parse(input);
-    return (
-      await this.pool.query(
-        `INSERT INTO ai_followup_rules(scenario,enabled,timezone,weekdays,start_minute,end_minute,steps,max_sends) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(scenario) DO UPDATE SET enabled=excluded.enabled,timezone=excluded.timezone,weekdays=excluded.weekdays,start_minute=excluded.start_minute,end_minute=excluded.end_minute,steps=excluded.steps,max_sends=excluded.max_sends,revision=ai_followup_rules.revision+1,updated_at=now() RETURNING *`,
-        [
-          r.scenario,
-          r.enabled,
-          r.timezone,
-          r.weekdays,
-          r.startMinute,
-          r.endMinute,
-          JSON.stringify(r.steps),
-          r.maxSends,
-        ],
-      )
-    ).rows[0];
+  async saveFollowupRule(input:FollowupRule){
+    const r=followupRuleSchema.parse(input),labels={no_reply:'Ответ клиента',not_booked:'Этап 1',not_completed:'Этап 2',requested_later:'Связаться позже'};
+    return this.tx(async client=>{
+      const row=(await client.query(`INSERT INTO ai_followup_rules(scenario,enabled,timezone,weekdays,start_minute,end_minute,steps,max_sends,label,channel,acknowledgement_message,automatic_enabled_at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $2 THEN clock_timestamp() END)
+       ON CONFLICT(scenario) DO UPDATE SET enabled=excluded.enabled,timezone=excluded.timezone,weekdays=excluded.weekdays,start_minute=excluded.start_minute,end_minute=excluded.end_minute,steps=excluded.steps,max_sends=excluded.max_sends,label=excluded.label,channel=excluded.channel,acknowledgement_message=excluded.acknowledgement_message,
+        automatic_enabled_at=CASE WHEN NOT excluded.enabled THEN NULL WHEN NOT ai_followup_rules.enabled THEN clock_timestamp() ELSE ai_followup_rules.automatic_enabled_at END,revision=ai_followup_rules.revision+1,updated_at=now() RETURNING *`,[r.scenario,r.enabled,r.timezone,r.weekdays,r.startMinute,r.endMinute,JSON.stringify(r.steps),r.maxSends,r.label??labels[r.scenario],r.channel??'current',r.acknowledgementMessage??'Хорошо, свяжемся позже.'])).rows[0];
+      if(!r.enabled)await client.query("UPDATE ai_followup_jobs SET state='cancelled',cancellation_reason='rule_disabled',updated_at=now() WHERE scenario=$1 AND state IN ('pending','enqueued')",[r.scenario]);
+      return row;
+    });
   }
   async followupRules() {
     return (
@@ -802,6 +804,7 @@ export class ConversationWorkflow {
     scenario: FollowupRule["scenario"];
     key: string;
     anchorAt: string;
+    proof?:AutomaticFollowupProof;
   }) {
     uuid.parse(input.conversationId);
     key.parse(input.key);
@@ -809,6 +812,16 @@ export class ConversationWorkflow {
     const anchor = date(input.anchorAt);
     return this.tx(async (client) => {
       const c = await this.lock(client, input.conversationId);
+      if(input.proof){
+        const p=input.proof;
+        if(c.conversation.automation_epoch!==p.expectedEpoch||c.conversation.active_phase_id!==p.expectedPhaseId)throw new WorkflowError('stale_followup_trigger');
+        const phase=(await client.query('SELECT request_id FROM ai_request_phases WHERE id=$1',[p.expectedPhaseId])).rows[0];if(!phase)throw new WorkflowError('stale_followup_trigger');
+        const pinned=(await client.query('SELECT conversation_id,request_phase_id FROM ai_automatic_followup_triggers WHERE logical_key=$1',[input.key])).rows[0];
+        if(pinned)return(await client.query('SELECT * FROM ai_followup_jobs WHERE conversation_id=$1 AND logical_key=$2 ORDER BY step',[pinned.conversation_id,input.key])).rows;
+        await client.query('INSERT INTO ai_request_business_state(request_id) VALUES($1) ON CONFLICT DO NOTHING',[phase.request_id]);
+        const simulated={conversation_id:c.conversation.id,request_phase_id:p.expectedPhaseId,scenario:input.scenario,trigger_action_id:p.actionId,business_event_id:p.eventId??null,business_revision:p.businessRevision,trigger_customer_sequence:p.customerSequence};
+        if(await automaticFollowupGate(client,simulated)!=='ready')throw new WorkflowError('stale_followup_trigger');
+      }
       const prior = (
         await client.query(
           "SELECT * FROM ai_followup_jobs WHERE conversation_id=$1 AND logical_key=$2 ORDER BY step",
@@ -837,7 +850,7 @@ export class ConversationWorkflow {
       if (!stored?.enabled) throw new WorkflowError("followup_rule_disabled");
       const rule = followupRuleSchema.parse({
         scenario: stored.scenario,
-        enabled: stored.enabled,
+        enabled: stored.enabled,label:stored.label,channel:stored.channel,acknowledgementMessage:stored.acknowledgement_message,
         timezone: stored.timezone,
         weekdays: stored.weekdays,
         startMinute: stored.start_minute,
@@ -845,17 +858,23 @@ export class ConversationWorkflow {
         steps: stored.steps,
         maxSends: stored.max_sends,
       });
+      if(input.proof){
+        const origin=(await client.query('SELECT conversation_id FROM ai_outbox WHERE id=$1',[input.proof.actionId])).rows[0];
+        if((rule.channel??'current')==='current'&&origin?.conversation_id!==c.conversation.id||(rule.channel??'current')!=='current'&&rule.channel!==c.conversation.platform)throw new WorkflowError('followup_channel_changed');
+        const phase=(await client.query('SELECT request_id FROM ai_request_phases WHERE id=$1',[input.proof.expectedPhaseId])).rows[0];
+        await client.query('INSERT INTO ai_automatic_followup_triggers(logical_key,request_id,conversation_id,request_phase_id,scenario,trigger_action_id,business_event_id) VALUES($1,$2,$3,$4,$5,$6,$7)',[input.key,phase.request_id,c.conversation.id,input.proof.expectedPhaseId,input.scenario,input.proof.actionId,input.proof.eventId??null]);
+      }
       let due = anchor;
       const jobs = [];
       for (let step = 0; step < rule.steps.length; step++) {
         due = nextFollowupWindow(
-          new Date(due.getTime() + rule.steps[step].delaySeconds * 1000),
+          new Date(Math.max(due.getTime() + rule.steps[step].delaySeconds * 1000,step===0&&input.proof?.notBefore?date(input.proof.notBefore).getTime():0)),
           rule,
         );
         jobs.push(
           (
             await client.query(
-              `INSERT INTO ai_followup_jobs(conversation_id,logical_key,scenario,step,text,due_at,automation_epoch,rule_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+              `INSERT INTO ai_followup_jobs(conversation_id,logical_key,scenario,step,text,due_at,automation_epoch,rule_snapshot,trigger_action_id,business_event_id,business_revision,trigger_customer_sequence) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
               [
                 input.conversationId,
                 input.key,
@@ -864,7 +883,7 @@ export class ConversationWorkflow {
                 rule.steps[step].text,
                 due,
                 c.conversation.automation_epoch,
-                rule,
+                rule,input.proof?.actionId??null,input.proof?.eventId??null,input.proof?.businessRevision??null,input.proof?.customerSequence??null,
               ],
             )
           ).rows[0],
@@ -909,6 +928,7 @@ export class ConversationWorkflow {
         )
       ).rows[0];
       if (j.state !== "pending") return j;
+      if(await automaticFollowupGate(client,j)!=='ready')return(await client.query("UPDATE ai_followup_jobs SET state='cancelled',cancellation_reason='automatic_trigger_changed',updated_at=now() WHERE id=$1 RETURNING *",[id])).rows[0];
       if (
         c.contact.opted_out_at ||
         c.conversation.automation_mode !== "auto" ||
@@ -1057,6 +1077,7 @@ export async function workflowActionGate(
   ).rows[0];
   if (!job) return "ready";
   if (job.state !== "enqueued") return "cancel";
+  if(await automaticFollowupGate(client,job)!=='ready')return 'cancel';
   const stored = (
     await client.query(
       "SELECT * FROM ai_followup_rules WHERE scenario=$1 FOR SHARE",
@@ -1069,6 +1090,9 @@ export async function workflowActionGate(
     job.step >= stored.steps.length
   )
     return "cancel";
+  // Re-read after the rule lock: disable/re-enable may have cancelled the job
+  // while this transaction was waiting for that lock.
+  if((await client.query('SELECT state FROM ai_followup_jobs WHERE id=$1',[job.id])).rows[0]?.state!=='enqueued')return 'cancel';
   const rule = followupRuleSchema.parse({
     scenario: stored.scenario,
     enabled: stored.enabled,

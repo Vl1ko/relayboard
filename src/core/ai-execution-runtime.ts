@@ -1,3 +1,4 @@
+import {AutomaticFollowups} from './automatic-followups.js';
 import type {Pool} from 'pg';
 import {AiOrchestrator} from './ai-orchestrator.js';
 import {AiManagerStore,type PreparedChannelSend} from './ai-manager.js';
@@ -45,6 +46,7 @@ export class AiExecutionRuntime{
   // Repair a crash between durable handoff creation and client completion receipt creation.
   const incomplete=(await this.pool.query(`SELECT d.id,d.conversation_id FROM ai_engine_decisions d JOIN ai_conversations v ON v.id=d.conversation_id JOIN ai_handoff_notifications n ON n.conversation_id=d.conversation_id AND n.logical_key='ai-handoff:'||d.id::text LEFT JOIN ai_outbox a ON a.logical_key='qualification-notice:'||d.id::text AND a.conversation_id=d.conversation_id WHERE d.disposition='handoff' AND d.business_status IN ('qualified','unqualified') AND a.id IS NULL AND v.automation_mode='paused' AND v.business_status=d.business_status AND v.automation_epoch=d.automation_epoch+1 AND d.request_phase_id IS NOT DISTINCT FROM v.active_phase_id ORDER BY d.created_at LIMIT 100`)).rows;
   for(const d of incomplete){try{if(await this.transport.allowsConversation(d.conversation_id)){const notice=await this.messages.enqueueQualificationNotice(d.id);await this.deliver(notice.id);}}catch{}}
+  await new AutomaticFollowups(this.pool).reconcile();
   for(const job of await this.workflow.dueFollowups()){this.signal.throwIfAborted();if(await this.transport.allowsConversation(job.conversation_id))await this.workflow.materializeFollowup(job.id);}
   await this.runner.tickWithDispatch(async(id,target)=>{
    const a=(await this.pool.query('SELECT conversation_id FROM ai_outbox WHERE id=$1',[id])).rows[0];
