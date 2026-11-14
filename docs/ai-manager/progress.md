@@ -12,7 +12,7 @@
 | RES05 | IN_PROGRESS | Миграция17, bounded MAX/WhatsApp collectors, grounded scoring, атомарная активация и общий first-contact gate реализованы. 313 PASS, typecheck/build и compiled owner smokes PASS; UI сохранение/лимит/evidence проверены. Live corpus и приёмка остаются открытыми |
 | RES06 | IN_PROGRESS | Все четыре dispatcher reasons, completion repair, manager hold и старые фазы проверены; live-корпус и полная бизнес-приёмка впереди |
 | RES07 | IN_PROGRESS | Миграция18: четыре автоматических триггера, универсальные этапы/отметки, буквальное подтверждение «позже», отмена между каналами, устойчивость к replay и выключению. Синтетическая проверка и UI завершены; live-интервалы остаются частью приёмки |
-| RES08 | TODO | Полное рабочее место |
+| RES08 | IN_PROGRESS | Миграция20: приоритет/фильтр/сортировка, live-путь ручной очереди с scope/route guards и сохранением hold.335 PASS; desktop/mobile карточка проверена синтетически. Полный источник/резюме/раздельные заявки и live-приёмка остаются |
 | RES09 | IN_PROGRESS | Миграция19: настраиваемый TTL текстов/цитат/снимков, сохранение dedup и защита unknown/hold/новой заявки. Ещё нужны зависимости, ресурсы, logs/cache и backup/restore |
 | RES10 | TODO | Приёмка 12/12 и согласованный выпуск |
 
@@ -212,3 +212,7 @@ RES05, итог проверенного инкремента:313 PASS/0FAIL/0SK
 ## Продолжение: зависимости, 14 ноября 2026
 
 Проверена и перенесена цепочка WhatsApp1.34.8 / Puppeteer25.17.0, scoped glob14.0.6 и ip-address10.7.6. Изолированная копия:333 PASS /0 FAIL /0 SKIP; typecheck/build, четыре compiled smoke проверки и CommonJS/archive round-trip PASS; npm audit0 известных уязвимостей. Исходники сверены побайтно перед переносом manifest/lock; основная установка воспроизведена npm ci --ignore-scripts. Live WhatsApp, проверка условий распространения buffers/LGPL, ресурсы и restore остаются открытыми. [Отчёт](dependency-review-2026-11-14.md).
+
+## Продолжение: рабочее место, 14 ноября 2026
+
+[workspace-release.md](workspace-release.md): приоритет и ручная очередь,335 PASS /0 FAIL /0 SKIP, build/typecheck и четыре compiled smokes PASS. UI нашёл и исправил потерю номера операции при обновлении и сжатый select на390px. Пользователь подтвердил: после подтверждённого прощания при отрицательной квалификации заявку закрывать автоматически; эта доработка выполняется следующим инкрементом.

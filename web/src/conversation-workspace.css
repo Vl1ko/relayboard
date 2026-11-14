@@ -127,7 +127,7 @@
   color: #68758a;
 }
 .conversation-status-editor > label {
-  flex: 1;
+  flex: 1 1 220px;
 }
 .conversation-facts {
   display: grid;

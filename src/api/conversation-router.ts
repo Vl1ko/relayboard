@@ -18,10 +18,11 @@ const statuses = [
 const querySchema = z.object({
   q: z.string().trim().max(200).default(""),
   status: z.enum(statuses).optional(),
+  priority:z.enum(["high","normal","low"]).optional(),
   mode: z.enum(["auto", "manual", "paused"]).optional(),
   platform: z.enum(["max", "whatsapp"]).optional(),
   accountId: z.string().uuid().optional(),
-  sort: z.enum(["recent", "oldest", "name"]).default("recent"),
+  sort: z.enum(["recent", "oldest", "name", "priority"]).default("recent"),
   limit: z.coerce.number().int().min(1).max(100).default(30),
   offset: z.coerce.number().int().min(0).max(1000000).default(0),
 });
@@ -72,7 +73,7 @@ const conversationObject = `jsonb_build_object('id',v.id,'platform',v.platform,'
   'status',v.business_status,'mode',v.automation_mode,'epoch',v.automation_epoch::text,
   'accountEnabled',coalesce(a.enabled,false),'accountNeedsAuth',(a.auth_error IS NOT NULL))`;
 const listBase = `SELECT c.id,c.display_name AS "displayName",c.phone_e164 AS phone,
- c.imported_stage AS "importedStage",c.comment,(c.opted_out_at IS NOT NULL) AS "optedOut",c.created_at AS "createdAt",
+ c.priority,c.priority_revision AS "priorityRevision",c.imported_stage AS "importedStage",c.comment,(c.opted_out_at IS NOT NULL) AS "optedOut",c.created_at AS "createdAt",
  coalesce((SELECT max(t.at) FROM (SELECT i.received_at AS at FROM ai_inbox i JOIN ai_conversations iv ON iv.id=i.conversation_id WHERE iv.contact_id=c.id
  UNION ALL SELECT o.updated_at AS at FROM ai_outbox o WHERE o.contact_id=c.id) t),c.created_at) AS "lastActivity",
  (SELECT i.text FROM ai_inbox i JOIN ai_conversations iv ON iv.id=i.conversation_id WHERE iv.contact_id=c.id ORDER BY i.occurred_at DESC,i.event_key DESC LIMIT 1) AS "lastMessage",
@@ -113,6 +114,11 @@ export function createConversationRouter(options: {
         .json({ error: "Рабочее место диалогов пока не включено" });
     next();
   });
+  router.post('/contacts/:id/priority',async(req,res)=>{
+    const id=z.string().uuid().parse(req.params.id),d=z.object({priority:z.enum(['high','normal','low']),expectedRevision:z.number().int().nonnegative()}).strict().parse(req.body);
+    const updated=(await options.pool.query('UPDATE ai_contacts SET priority=$2,priority_revision=priority_revision+1 WHERE id=$1 AND priority_revision=$3 RETURNING priority,priority_revision AS "priorityRevision"',[id,d.priority,d.expectedRevision])).rows[0];
+    if(!updated)return res.status(409).json({error:'Карточка изменилась или контакт отсутствует. Обновите данные.'});res.json(updated);
+  });
   router.get("/contacts", async (req, res) => {
     const q = querySchema.parse(req.query),
       values: unknown[] = [],
@@ -129,6 +135,7 @@ export function createConversationRouter(options: {
         `(c.display_name ILIKE ${p} ESCAPE '\\' OR coalesce(c.phone_e164,'') ILIKE ${p} ESCAPE '\\' OR EXISTS(SELECT 1 FROM ai_inbox i JOIN ai_conversations v ON v.id=i.conversation_id WHERE v.contact_id=c.id AND i.text ILIKE ${p} ESCAPE '\\'))`,
       );
     }
+    if(q.priority)clauses.push("c.priority="+param(q.priority));
     const convFilters = ["v.contact_id=c.id"];
     if (q.status) convFilters.push("v.business_status=" + param(q.status));
     if (q.mode) convFilters.push("v.automation_mode=" + param(q.mode));
@@ -142,7 +149,7 @@ export function createConversationRouter(options: {
       );
     const where = clauses.join(" AND "),
       order =
-        q.sort === "name"
+        q.sort === "priority" ? "CASE c.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,\"lastActivity\" DESC,id" : q.sort === "name"
           ? '"displayName" ASC,id'
           : q.sort === "oldest"
             ? '"lastActivity" ASC,id'

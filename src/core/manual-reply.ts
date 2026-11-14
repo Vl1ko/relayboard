@@ -1,5 +1,6 @@
+import {runtimeAllowsConversation,type RuntimeScope} from './runtime-scope.js';
 import { createHash } from "node:crypto";
-import type { Pool } from "pg";
+import type { Pool,PoolClient } from "pg";
 import { z } from "zod";
 const manualInput = z
   .object({
@@ -22,7 +23,7 @@ export class ManualReplyError extends Error {
 }
 /** Creates a manual intent only. The separately gated worker owns any transport invocation. */
 export class ManualReplyStore {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Pool,private readonly liveScope?:RuntimeScope) {}
   async create(input: z.input<typeof manualInput>) {
     const data = manualInput.parse(input),
       logicalKey = "manual:" + data.operationId;
@@ -78,6 +79,7 @@ export class ManualReplyStore {
         ["closed", "refused"].includes(conversation.business_status)
       )
         throw new ManualReplyError("manual_reply_forbidden");
+      if(this.liveScope&&!await manualRouteAllowed(client,this.liveScope,conversation.id))throw new ManualReplyError('manual_route_or_scope_unavailable');
       const changed = conversations.filter(
         (v) =>
           !['closed','refused'].includes(v.business_status) && (v.automation_mode !== "manual" || v.business_status !== "manager_working"),
@@ -142,4 +144,11 @@ export class ManualReplyStore {
       client.release();
     }
   }
+}
+
+/** Live manual actions require the same proven recipient and test scope as automation. */
+export async function manualRouteAllowed(db:Pool|PoolClient,scope:RuntimeScope,conversationId:string){
+ const found=(await db.query(`SELECT 1 FROM ai_conversations v JOIN ai_contacts c ON c.id=v.contact_id JOIN ai_request_phases p ON p.id=v.active_phase_id JOIN ai_requests q ON q.id=p.request_id JOIN integrations a ON a.id=v.account_id JOIN ai_verified_routes r ON r.conversation_id=v.id AND r.contact_id=v.contact_id AND r.account_id=v.account_id AND r.platform=v.platform AND r.external_id=v.external_id
+  WHERE v.id=$1 AND p.closed_at IS NULL AND q.lifecycle='open' AND c.opted_out_at IS NULL AND v.business_status NOT IN ('closed','refused') AND a.enabled AND a.auth_error IS NULL`,[conversationId])).rowCount;
+ return !!found&&await runtimeAllowsConversation(db,scope,conversationId);
 }

@@ -1,0 +1,1 @@
+PASS: live config fails closed without provider/scope/commercial access; synthetic execution survives SIGKILL and second owner replays no decision or notification

@@ -1,3 +1,4 @@
+import ContactPriority,{priorityLabels} from './ContactPriority';
 import StorageSettings from './StorageSettings';
 import BusinessStageCard,{type BusinessDetail} from './BusinessStageCard';
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -36,6 +37,8 @@ type Conversation = {
   accountNeedsAuth: boolean;
 };
 type Contact = {
+  priority:keyof typeof priorityLabels;
+  priorityRevision:number;
   id: string;
   displayName: string;
   phone: string | null;
@@ -140,6 +143,7 @@ export default function ConversationWorkspace() {
       platform: "",
       accountId: "",
       sort: "recent",
+      priority:"",
     }),
     [offset, setOffset] = useState(0),
     [list, setList] = useState<List | null>(null),
@@ -214,7 +218,9 @@ export default function ConversationWorkspace() {
       return;
     }
     const c = new AbortController();
-    setDetail(null);
+    // Keep the current card mounted during refresh so a queued manual receipt
+    // and its operation ID are not discarded by the parent's own reload.
+    setDetail(current=>current?.contact.id===selected?current:null);
     setDetailLoading(true);
     setDetailError("");
     void api<Detail>(
@@ -366,6 +372,7 @@ export default function ConversationWorkspace() {
             ))}
           </select>
         </label>
+        <label>Приоритет<select value={filters.priority} onChange={e=>filter('priority',e.target.value)}><option value="">Все приоритеты</option>{Object.entries(priorityLabels).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
         <label>
           Сортировка
           <select
@@ -375,6 +382,7 @@ export default function ConversationWorkspace() {
             <option value="recent">Недавняя активность</option>
             <option value="oldest">Давняя активность</option>
             <option value="name">По имени</option>
+            <option value="priority">Высокий приоритет сначала</option>
           </select>
         </label>
         <button
@@ -445,7 +453,7 @@ export default function ConversationWorkspace() {
               disabled={operation}
             >
               <strong>{c.displayName || c.phone || "Без имени"}</strong>
-              <span>{c.phone || "Телефон не указан"}</span>
+              <span>{c.phone || "Телефон не указан"} · Приоритет: {priorityLabels[c.priority]}</span>
               <small>
                 {c.conversations
                   ?.map((v) => `${v.platform} · ${v.accountName}`)
@@ -515,6 +523,7 @@ export default function ConversationWorkspace() {
                   ? " · Контакт исключён из сообщений"
                   : ""}
               </p>
+              <ContactPriority key={detail.contact.id} contact={detail.contact} onChange={()=>setRevision(v=>v+1)}/>
               <dl className="conversation-facts">
                 <div>
                   <dt>Комментарий</dt>
@@ -816,13 +825,8 @@ export default function ConversationWorkspace() {
                     key={conversation.id}
                     conversationId={conversation.id}
                     blocked={
-                      detail.contact.optedOut ||
-                      Boolean(
-                        detail.contact.conversations?.some(
-                          (v) =>
-                            v.status === "closed" || v.status === "refused",
-                        ),
-                      )
+                      detailLoading || detail.contact.optedOut ||
+                      conversation.status==='closed'||conversation.status==='refused'
                     }
                     onQueued={() => setRevision((v) => v + 1)}
                   />
@@ -1585,6 +1589,7 @@ function ManualReplyComposer({
   onQueued: () => void;
 }) {
   const [canStart, setCanStart] = useState(false),
+    [sendMode,setSendMode]=useState('disabled'),
     [capabilitiesLoaded, setCapabilitiesLoaded] = useState(false),
     [text, setText] = useState(""),
     [busy, setBusy] = useState(false),
@@ -1597,14 +1602,13 @@ function ManualReplyComposer({
   useEffect(() => {
     mounted.current = true;
     const c = new AbortController();
-    void fetch("/api/ai/outreach/capabilities", {
+    void fetch("/api/ai/protocol/conversations/"+conversationId+"/manual-capabilities", {
       credentials: "include",
       signal: c.signal,
     })
       .then(async (r) => {
         const data = await r.json();
-        if (!c.signal.aborted)
-          setCanStart(r.ok && data.canStartSynthetic === true);
+        if (!c.signal.aborted){setCanStart(r.ok && data.canStart===true);setSendMode(data.mode||'disabled');}
       })
       .catch(() => {})
       .finally(() => {
@@ -1671,25 +1675,23 @@ function ManualReplyComposer({
   }
   return (
     <section className="conversation-manual-reply">
-      <h3>Ручной ответ — тестовый режим</h3>
+      <h3>Ручной ответ{sendMode==='synthetic'?' — имитация':''}</h3>
       <p>
         Создаётся отдельное ручное намерение, автоматика контакта
-        останавливается. Реальный клиент это сообщение не получит.
+        останавливается. {sendMode==='synthetic'?'Отправка имитируется.':'Сообщение ставится в очередь выбранного аккаунта; подтверждение канала появится в списке операций.'}
       </p>
       {!capabilitiesLoaded && (
-        <p role="status">Проверяем доступность тестового режима…</p>
+        <p role="status">Проверяем доступность ручной отправки…</p>
       )}
       {capabilitiesLoaded && !canStart && (
         <p>
-          Ручной ответ из этого интерфейса доступен только при включённом
-          синтетическом транспорте. Для реального ответа используйте исходное
-          приложение и указанный аккаунт.
+          Ручная отправка недоступна. Проверьте подключение выбранного аккаунта,
+          подтверждённый маршрут и разрешённый список тестовых собеседников.
         </p>
       )}
       {blocked && (
         <p>
-          Ручной ответ запрещён: контакт исключён либо один из его диалогов
-          закрыт.
+          Ручной ответ запрещён: контакт исключён либо выбранный диалог закрыт.
         </p>
       )}
       {error && (
@@ -1700,7 +1702,7 @@ function ManualReplyComposer({
       {receipt ? (
         <>
           <p role="status" className="conversation-success">
-            ТЕСТ: ручное намерение записано. Реальной отправки не было. Операция{" "}
+            {sendMode==='synthetic'?'ТЕСТ: отправка имитируется.':'Ручной ответ записан в очередь.'} Операция{" "}
             {receipt}; её состояние показано в списке операций.
           </p>
           <button
@@ -1713,13 +1715,13 @@ function ManualReplyComposer({
               attempt.current = null;
             }}
           >
-            Начать новый тестовый ответ
+            Начать новый ответ
           </button>
         </>
       ) : (
         <>
           <label>
-            Текст тестового ручного ответа
+            Текст ручного ответа
             <textarea
               rows={4}
               maxLength={4000}
@@ -1737,7 +1739,7 @@ function ManualReplyComposer({
               ? "Записываем ручное намерение…"
               : locked
                 ? "Повторить подтверждение того же ответа"
-                : "Создать тестовый ручной ответ"}
+                : "Записать ручной ответ в очередь"}
           </button>
         </>
       )}

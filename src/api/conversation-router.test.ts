@@ -1,3 +1,4 @@
+import {createProtocolRouter} from './protocol-router.js';
 import {bindSourceRequest} from '../core/request-lifecycle.js';
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -12,6 +13,7 @@ import { createConversationRouter } from "./conversation-router.js";
 const url = process.env.WORKSPACE_TEST_DATABASE_URL,
   skip = !url;
 let pool: pg.Pool, schema: string, server: Server, base: string;
+const manualScope={testOnly:true,accountIds:[] as string[],authorIds:[] as string[]};
 const headers = {
   "x-synthetic-admin": "yes",
   "content-type": "application/json",
@@ -49,6 +51,8 @@ before(async () => {
       workflow: new ConversationWorkflow(pool),
     }),
   );
+  app.use('/protocol-live',createProtocolRouter({pool,authorize,enabled:true,syntheticEnabled:false,liveManualScope:manualScope}));
+  app.use('/protocol-disabled',createProtocolRouter({pool,authorize,enabled:true,syntheticEnabled:false}));
   app.use(
     "/off",
     createConversationRouter({ pool, authorize, enabled: false }),
@@ -61,6 +65,7 @@ before(async () => {
   base = "http://127.0.0.1:" + address.port;
 });
 beforeEach(async () => {
+  manualScope.accountIds=[];manualScope.authorIds=[];
   if (pool) await pool.query("TRUNCATE ai_contacts,integrations CASCADE");
 });
 after(async () => {
@@ -339,4 +344,32 @@ test('storage policy is authenticated, bounded and revision-controlled',{skip},a
  const save=await fetch(base+'/on/settings/storage',{method:'PUT',headers,body:JSON.stringify({expectedRevision:settings.revision,dialogueDays:45})});assert.equal(save.status,200);assert.equal((await save.json()).dialogueDays,45);
  assert.equal((await fetch(base+'/on/settings/storage',{method:'PUT',headers,body:JSON.stringify({expectedRevision:settings.revision,dialogueDays:1})})).status,409);
  assert.equal((await fetch(base+'/on/settings/storage',{method:'PUT',headers,body:JSON.stringify({expectedRevision:settings.revision+1,dialogueDays:0})})).status,400);
+});
+
+test('priority filtering/sorting and concurrent card revision never change automation',{skip},async()=>{
+ const f=await fixture();const path=base+'/on/contacts/'+f.contact+'/priority';
+ const responses=await Promise.all(Array.from({length:20},()=>fetch(path,{method:'POST',headers,body:JSON.stringify({priority:'high',expectedRevision:0})})));
+ assert.equal(responses.filter(r=>r.status===200).length,1);assert.equal(responses.filter(r=>r.status===409).length,19);
+ const high=await(await get('/contacts?priority=high')).json();assert.equal(high.total,1);assert.equal(high.contacts[0].id,f.contact);assert.equal(high.contacts[0].priorityRevision,1);
+ const sorted=await(await get('/contacts?sort=priority')).json();assert.equal(sorted.contacts[0].id,f.contact);
+ assert.equal((await fetch(path,{method:'POST',headers,body:JSON.stringify({priority:'urgent',expectedRevision:1})})).status,400);
+ assert.equal((await pool.query('SELECT count(*)::int n FROM ai_outbox')).rows[0].n,0);assert.equal((await pool.query('SELECT automation_mode FROM ai_conversations WHERE id=$1',[f.conv])).rows[0].automation_mode,'auto');
+});
+test('live manual API requires verified active route and test scope; concurrent replay creates one held-manager action',{skip},async()=>{
+ const f=await fixture();await pool.query('UPDATE ai_engine_settings SET settings=settings||$1::jsonb',[JSON.stringify({qualificationEnabled:true,fields:[{key:'volume',question:'Объём?',required:true}],rules:[{field:'volume',op:'gte',value:10}]})]);
+ await bindSourceRequest(pool,{conversationId:f.conv,accountId:f.max,platform:'max',chatId:'-10',messageId:'manual-source',authorId:'200'});
+ const path='/conversations/'+f.conv,body={operationId:randomUUID(),text:'Synthetic manager answer'};
+ assert.equal((await fetch(base+'/protocol-live'+path+'/manual-capabilities')).status,401);
+ assert.equal((await fetch(base+'/protocol-disabled'+path+'/manual-messages',{method:'POST',headers,body:JSON.stringify(body)})).status,503);
+ assert.equal((await fetch(base+'/protocol-live'+path+'/manual-messages',{method:'POST',headers,body:JSON.stringify(body)})).status,409);
+ manualScope.accountIds=[f.max];manualScope.authorIds=['200'];await pool.query('UPDATE integrations SET auth_error=NULL WHERE id=$1',[f.max]);
+ await pool.query("INSERT INTO ai_verified_routes(conversation_id,account_id,platform,external_id,recipient_id,contact_id) VALUES($1,$2,'max','max-dialog','200',$3)",[f.conv,f.max,f.contact]);
+ const capabilities=await(await fetch(base+'/protocol-live'+path+'/manual-capabilities',{headers})).json();assert.equal(capabilities.mode,'live');assert.equal(capabilities.canStart,true);
+ await pool.query("UPDATE ai_conversations SET manager_hold=true,automation_mode='paused',business_status='qualified' WHERE id=$1",[f.conv]);
+ const rows=await Promise.all(Array.from({length:20},async()=>{const r=await fetch(base+'/protocol-live'+path+'/manual-messages',{method:'POST',headers,body:JSON.stringify(body)});assert.equal(r.status,200);return r.json();}));assert.equal(new Set(rows.map(r=>r.action.id)).size,1);
+ const v=(await pool.query('SELECT * FROM ai_conversations WHERE id=$1',[f.conv])).rows[0];assert.equal(v.automation_mode,'manual');assert.equal(v.manager_hold,true);
+ manualScope.authorIds=[];assert.equal((await(await fetch(base+'/protocol-live'+path+'/manual-capabilities',{headers})).json()).canStart,false);
+ assert.equal((await fetch(base+'/protocol-live'+path+'/manual-messages',{method:'POST',headers,body:JSON.stringify({...body,operationId:randomUUID()})})).status,409);
+ assert.equal((await pool.query('SELECT count(*)::int n FROM ai_outbox')).rows[0].n,1);
+ assert.equal((await fetch(base+'/protocol-live/events',{method:'POST',headers,body:'{}'})).status,503);
 });
