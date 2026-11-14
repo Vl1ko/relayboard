@@ -1,3 +1,4 @@
+import {DialogueRetention} from '../core/dialogue-retention.js';
 import {BusinessEvents,businessEventSchema} from '../core/business-events.js';
 import { Router, type RequestHandler, type ErrorRequestHandler } from "express";
 import type { Pool, PoolClient } from "pg";
@@ -288,6 +289,8 @@ export function createConversationRouter(options: {
     const input=businessEventSchema.parse({...req.body,conversationId});
     res.json(await business.record(input));
   });
+  router.get('/settings/storage',async (_req,res)=>res.json(await new DialogueRetention(options.pool).preview()));
+  router.put('/settings/storage',async (req,res)=>res.json(await new DialogueRetention(options.pool).save(req.body)));
   router.get("/settings", async (_req, res) => {
     if (!options.workflow?.managerTarget || !options.workflow.followupRules)
       return res
@@ -484,6 +487,7 @@ export function createConversationRouter(options: {
         error:
           "Проверьте фильтры или действие. Статус «Подходит» назначается только после проверки критериев",
       });
+    if(error instanceof Error && error.message==='storage_settings_changed')return res.status(409).json({error:'Настройки хранения изменились. Загрузите их заново.'});
     if(error instanceof Error && error.message.startsWith('business_'))return res.status(409).json({code:error.message,error:'Состояние заявки изменилось или отметка недоступна. Обновите карточку.'});
     const code =
       error && typeof error === "object" && "code" in error

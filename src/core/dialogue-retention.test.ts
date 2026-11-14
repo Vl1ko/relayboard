@@ -1,0 +1,60 @@
+import test,{before,beforeEach,after} from 'node:test';import assert from 'node:assert/strict';import {randomUUID} from 'node:crypto';import {readFile} from 'node:fs/promises';import pg from 'pg';
+import {applyAiManagerMigration} from './ai-manager-migration.js';import {AiManagerStore} from './ai-manager.js';import {bindSourceRequest} from './request-lifecycle.js';import {ConversationWorkflow} from './conversation-workflow.js';import {BusinessEvents} from './business-events.js';import {DialogueRetention,EXPIRED_TEXT} from './dialogue-retention.js';
+const url=process.env.WORKFLOW_TEST_DATABASE_URL,skip=!url;let pool:pg.Pool,schema:string,store:AiManagerStore,workflow:ConversationWorkflow,retention:DialogueRetention;
+const RAW='Synthetic confidential text 481739';
+before(async()=>{if(!url)return;if(new URL(url).pathname!='/relayboard_workflow_test')throw Error('Dedicated workflow DB required');schema='retention_'+randomUUID().replaceAll('-','');const c=new pg.Client({connectionString:url});await c.connect();await c.query('CREATE SCHEMA '+schema);await c.end();pool=new pg.Pool({connectionString:url,options:'-c search_path='+schema+',public'});await pool.query(await readFile(new URL('../../database/schema.sql',import.meta.url),'utf8'));await applyAiManagerMigration(pool);store=new AiManagerStore(pool);workflow=new ConversationWorkflow(pool);retention=new DialogueRetention(pool);});
+beforeEach(async()=>{if(!pool)return;await pool.query('TRUNCATE ai_contacts,integrations,ai_followup_rules,ai_source_messages CASCADE');await pool.query('UPDATE ai_storage_settings SET revision=0,dialogue_days=30');await pool.query('UPDATE ai_engine_settings SET settings=settings||$1::jsonb',[JSON.stringify({qualificationEnabled:true,fields:[{key:'volume',question:'Объём?',required:true}],rules:[{field:'volume',op:'gte',value:10}]})]);});
+after(async()=>{if(pool){await pool.query('DROP SCHEMA '+schema+' CASCADE');await pool.end();}});
+async function fixture(){
+ const account=(await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext) VALUES('max','Synthetic','fake') RETURNING id")).rows[0].id,contact=await store.createContact('Synthetic CRM record'),v=await store.createConversation({contactId:contact.id,accountId:account,externalId:'303'});
+ const bound=await bindSourceRequest(pool,{conversationId:v.id,accountId:account,platform:'max',chatId:'-10',messageId:'old-source',authorId:'200'});const phase=(await pool.query('SELECT * FROM ai_request_phases WHERE conversation_id=$1',[v.id])).rows[0];
+ const input=await store.ingest({version:1,platform:'max',accountId:account,conversationId:'303',messageId:'customer-1',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:RAW});
+ const current=(await pool.query('SELECT * FROM ai_conversations WHERE id=$1',[v.id])).rows[0],action=(await store.enqueue({conversationId:v.id,kind:'reply',logicalKey:'synthetic',text:RAW,expectedEpoch:current.automation_epoch})).action;
+ await pool.query("UPDATE ai_outbox SET state='confirmed',external_message_id='synthetic-receipt',dispatch_started_at=now() WHERE id=$1",[action.id]);
+ await pool.query("INSERT INTO ai_engine_decisions(conversation_id,event_key,settings_version,automation_epoch,disposition,business_status,reply,reason,fields) VALUES($1,$2,1,$3,'reply','ai_dialog',$4,'accepted',$5)",[v.id,input.event.event_key,current.automation_epoch,RAW,{volume:{value:RAW,evidenceQuote:RAW}}]);
+ await pool.query('UPDATE ai_engine_state SET fields=$2 WHERE conversation_id=$1',[v.id,{volume:{value:RAW,evidenceQuote:RAW}}]);
+ await pool.query("INSERT INTO ai_handoff_notifications(conversation_id,logical_key,fingerprint,reason,summary,parameters,source,contact_snapshot,channel_snapshot,state,external_message_id) VALUES($1,'history','hash','insufficient_data',$2,$3,$3,$3,$3,'confirmed','synthetic-notice')",[v.id,RAW,{copy:RAW}]);
+ await workflow.saveFollowupRule({scenario:'no_reply',enabled:true,timezone:'UTC',weekdays:[1,2,3,4,5,6,7],startMinute:0,endMinute:1440,maxSends:1,steps:[{delaySeconds:60,text:RAW}]});await workflow.scheduleFollowup({conversationId:v.id,scenario:'no_reply',key:'old-wait',anchorAt:new Date().toISOString()});
+ await new BusinessEvents(pool).record({conversationId:v.id,operationId:randomUUID(),expectedRevision:0,kind:'booking_offered',note:RAW});
+ const source=(await pool.query("INSERT INTO ai_source_messages(platform,account_id,chat_id,author_id,message_id,occurred_at,fingerprint,original_text,monitor_epoch,monitor_revision,state) VALUES('max',$1,'-10','200','old-source',now(),'source-hash',$2,0,0,'classified') RETURNING id",[account,RAW])).rows[0].id;
+ const lead=(await pool.query("INSERT INTO ai_leads(source_key,source_fingerprint,platform,account_id,chat_id,author_id,message_id,occurred_at,original_text,source_kind,params,confidence,status,contact_id,request_id,source_message_id,classification) VALUES('synthetic-source','hash','max',$1,'-10','200','old-source',now(),$2,'fixture',$3,1,'approved',$4,$5,$6,$7) RETURNING id",[account,RAW,JSON.stringify([{key:'volume',value:RAW,evidenceQuote:RAW}]),contact.id,phase.request_id,source,{copy:RAW}])).rows[0].id;
+ await pool.query('INSERT INTO ai_lead_operations(id,fingerprint,lead_id,result) VALUES($1,\'op-hash\',$2,$3)',[randomUUID(),lead,{original_text:RAW,nested:{copy:RAW}}]);
+ await workflow.setStatus({conversationId:v.id,status:'closed',reason:RAW});const closed=(await pool.query('SELECT closed_at FROM ai_requests WHERE id=$1',[phase.request_id])).rows[0].closed_at;
+ await pool.query('UPDATE ai_requests SET closed_at=$2 WHERE id=$1',[phase.request_id,closed]);await pool.query('UPDATE ai_request_phases SET closed_at=$2 WHERE request_id=$1',[phase.request_id,closed]);
+ return{account,contact:contact.id,v:v.id,request:phase.request_id,phase:phase.id,action:action.id,lead,closed:new Date(closed),at:new Date(new Date(closed).getTime()+30*86400000)};
+}
+async function allPayloads(){let result='';for(const table of ['ai_inbox','ai_outbox','ai_engine_decisions','ai_engine_state','ai_request_phases','ai_handoff_notifications','ai_followup_jobs','ai_business_events','ai_workflow_status_history','ai_leads','ai_lead_operations','ai_source_messages'])result+=JSON.stringify((await pool.query('SELECT row_to_json(t) v FROM '+table+' t')).rows);return result;}
+test('TTL boundary scrubs all text/quote/snapshot copies atomically and preserves dedup and confirmed receipt',{skip},async()=>{
+ const f=await fixture();assert.equal((await retention.expire(new Date(f.at.getTime()-1))).expiredRequests,0);assert.ok((await allPayloads()).includes(RAW));assert.equal((await retention.preview(f.at)).eligibleRequests,1);
+ assert.equal((await retention.expire(f.at)).expiredRequests,1);assert.ok(!(await allPayloads()).includes(RAW));
+ const action=(await pool.query('SELECT * FROM ai_outbox WHERE id=$1',[f.action])).rows[0];assert.equal(action.state,'confirmed');assert.equal(action.external_message_id,'synthetic-receipt');assert.equal(action.text,EXPIRED_TEXT);assert.ok(action.fingerprint);
+ assert.equal((await retention.expire(f.at)).expiredRequests,0);assert.equal((await pool.query('SELECT count(*)::int n FROM ai_request_sources')).rows[0].n,1);
+ const replay=await store.ingest({version:1,platform:'max',accountId:f.account,conversationId:'303',messageId:'customer-1',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:RAW});assert.equal(replay.duplicate,true);assert.equal(replay.event.text,EXPIRED_TEXT);
+});
+test('active phase and unknown delivery or notification remain protected beyond TTL',{skip},async()=>{
+ const f=await fixture();await pool.query("UPDATE ai_outbox SET state='unknown' WHERE id=$1",[f.action]);assert.equal((await retention.expire(f.at)).expiredRequests,0);assert.equal((await retention.preview(f.at)).protectedRequests,1);
+ await pool.query("UPDATE ai_outbox SET state='confirmed' WHERE id=$1",[f.action]);await pool.query("UPDATE ai_handoff_notifications SET state='unknown'");assert.equal((await retention.expire(f.at)).expiredRequests,0);
+ await pool.query("UPDATE ai_handoff_notifications SET state='confirmed'");await pool.query('UPDATE ai_conversations SET manager_hold=true WHERE id=$1',[f.v]);assert.equal((await retention.expire(f.at)).expiredRequests,0);assert.ok((await allPayloads()).includes(RAW));
+});
+test('expiring an old request preserves new active request text and model fields on the same channel',{skip},async()=>{
+ const f=await fixture();await bindSourceRequest(pool,{conversationId:f.v,accountId:f.account,platform:'max',chatId:'-10',messageId:'new-source',authorId:'200'});
+ await store.ingest({version:1,platform:'max',accountId:f.account,conversationId:'303',messageId:'new-private',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'NEW ACTIVE TEXT'});await pool.query('UPDATE ai_engine_state SET fields=$2 WHERE conversation_id=$1',[f.v,{active:'NEW ACTIVE FIELD'}]);
+ assert.equal((await retention.expire(f.at)).expiredRequests,1);assert.ok(!(await allPayloads()).includes(RAW));assert.ok((await allPayloads()).includes('NEW ACTIVE TEXT'));assert.ok((await allPayloads()).includes('NEW ACTIVE FIELD'));
+ assert.equal((await pool.query("SELECT count(*)::int n FROM ai_requests WHERE lifecycle='open' AND content_expired_at IS NULL")).rows[0].n,1);
+});
+test('concurrent cleanup expires once and policy extension/revision applies before purge',{skip},async()=>{
+ const f=await fixture();await retention.save({expectedRevision:0,dialogueDays:60});await assert.rejects(retention.save({expectedRevision:0,dialogueDays:1}),/settings_changed/);assert.equal((await retention.expire(f.at)).expiredRequests,0);
+ await retention.save({expectedRevision:1,dialogueDays:30});const results=await Promise.all(Array.from({length:20},()=>retention.expire(f.at)));assert.equal(results.reduce((n,r)=>n+r.expiredRequests,0),1);
+});
+test('transaction rollback retains every payload and does not mark content expired',{skip},async()=>{
+ const f=await fixture();await pool.query("CREATE FUNCTION fail_retention() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'synthetic failure';END$$;CREATE TRIGGER fail_retention BEFORE UPDATE ON ai_engine_decisions FOR EACH ROW EXECUTE FUNCTION fail_retention()");
+ try{await assert.rejects(retention.expire(f.at),/synthetic failure/);assert.equal((await pool.query('SELECT text FROM ai_inbox')).rows[0].text,RAW);assert.equal((await pool.query('SELECT content_expired_at FROM ai_requests WHERE id=$1',[f.request])).rows[0].content_expired_at,null);}finally{await pool.query('DROP TRIGGER fail_retention ON ai_engine_decisions;DROP FUNCTION fail_retention()');}
+});
+test('rejected source TTL scrubs operation copies while preserving source dedup; pending lead stays intact',{skip},async()=>{
+ const f=await fixture();await pool.query("UPDATE ai_leads SET request_id=NULL,contact_id=NULL,status='rejected',reviewed_at=$2 WHERE id=$1",[f.lead,f.closed]);await pool.query("UPDATE ai_outbox SET state='unknown' WHERE id=$1",[f.action]);
+ const pending=(await pool.query("INSERT INTO ai_leads(source_key,source_fingerprint,platform,account_id,chat_id,author_id,message_id,occurred_at,original_text,source_kind,params,confidence) VALUES('pending-source','pending-hash','max',$1,'-10','201','pending-source',now(),$2,'fixture','[]',0.5) RETURNING id",[f.account,RAW])).rows[0].id;
+ const result=await retention.expire(f.at);assert.equal(result.expiredRequests,0);assert.equal(result.expiredRejectedLeads,1);
+ assert.equal((await pool.query('SELECT original_text FROM ai_leads WHERE id=$1',[pending])).rows[0].original_text,RAW);
+ const lead=(await pool.query('SELECT * FROM ai_leads WHERE id=$1',[f.lead])).rows[0];assert.equal(lead.original_text,EXPIRED_TEXT);assert.deepEqual(lead.params,[]);assert.equal(lead.source_key,'synthetic-source');
+ assert.ok(!JSON.stringify((await pool.query('SELECT result FROM ai_lead_operations')).rows).includes(RAW));assert.equal((await pool.query('SELECT original_text FROM ai_source_messages')).rows[0].original_text,null);
+});

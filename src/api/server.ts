@@ -1,3 +1,4 @@
+import {startDialogueMaintenance} from '../core/dialogue-retention.js';
 import {maxWorkerRequest} from '../core/max-worker-client.js';
 import { createLocalMaxTestRouter } from './local-max-test-router.js';
 import { createGigaChatProvider } from '../core/gigachat-provider.js';
@@ -516,7 +517,8 @@ const stopAttachmentMaintenance = startAttachmentMaintenance(
   pool, uploadRoot, config.ATTACHMENT_RETENTION_DAYS, config.STORAGE_MAINTENANCE_INTERVAL_MS,
 );
 const server = app.listen(config.PORT, config.HOST, () => console.log(`Relayboard API listening on http://localhost:${config.PORT}`));
+const stopDialogueMaintenance=startDialogueMaintenance(pool,config.CONTACT_IMPORT_ENABLED,config.STORAGE_MAINTENANCE_INTERVAL_MS);
 const stopContactImportCleanup = startContactImportCleanup(pool, config.CONTACT_IMPORT_ENABLED);
-async function shutdown() { server.close(); await localMaxTestRouter.stopQualification(); await stopAttachmentMaintenance(); await stopContactImportCleanup(); await publishingQueue.close(); await pool.end(); process.exit(0); }
+async function shutdown() { server.close(); await localMaxTestRouter.stopQualification(); await stopAttachmentMaintenance(); await stopDialogueMaintenance(); await stopContactImportCleanup(); await publishingQueue.close(); await pool.end(); process.exit(0); }
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);

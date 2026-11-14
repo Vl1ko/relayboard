@@ -333,3 +333,10 @@ test('business stage API preserves configured names, revisions and exact operati
  const stale=await fetch(base+'/on/conversations/'+v.id+'/business-events',{method:'POST',headers,body:JSON.stringify({...input,operationId:randomUUID()})});assert.equal(stale.status,409);
  const detail=await(await get('/conversations/'+v.id+'/workflow')).json();assert.equal(detail.business.state.revision,1);assert.equal(detail.business.events.length,1);
 });
+test('storage policy is authenticated, bounded and revision-controlled',{skip},async()=>{
+ assert.equal((await fetch(base+'/on/settings/storage')).status,401);
+ const settings=await(await get('/settings/storage')).json();assert.equal(settings.dialogueDays,30);
+ const save=await fetch(base+'/on/settings/storage',{method:'PUT',headers,body:JSON.stringify({expectedRevision:settings.revision,dialogueDays:45})});assert.equal(save.status,200);assert.equal((await save.json()).dialogueDays,45);
+ assert.equal((await fetch(base+'/on/settings/storage',{method:'PUT',headers,body:JSON.stringify({expectedRevision:settings.revision,dialogueDays:1})})).status,409);
+ assert.equal((await fetch(base+'/on/settings/storage',{method:'PUT',headers,body:JSON.stringify({expectedRevision:settings.revision+1,dialogueDays:0})})).status,400);
+});

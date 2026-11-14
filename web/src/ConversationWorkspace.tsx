@@ -1,3 +1,4 @@
+import StorageSettings from './StorageSettings';
 import BusinessStageCard,{type BusinessDetail} from './BusinessStageCard';
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./conversation-workspace.css";
@@ -990,6 +991,7 @@ function WorkspaceSettings({
             отправок и отметок этапов. Ответ клиента отменяет ожидание. После передачи
             менеджеру автоматические сообщения заблокированы до закрытия заявки.
           </p>
+          <StorageSettings/>
           {error && (
             <p role="alert" className="conversation-error">
               {error}
