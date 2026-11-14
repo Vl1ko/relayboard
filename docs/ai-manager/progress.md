@@ -208,3 +208,7 @@ RES05, итог проверенного инкремента:313 PASS/0FAIL/0SK
 Реализована миграция19 и настройка срока хранения30 дней в интерфейсе. [dialogue-retention.md](dialogue-retention.md) перечисляет очищаемые копии, защиты и оставшуюся работу. Production и настоящая локальная MAX-БД не мигрировали и не очищались. Проверка зависимостей повторно обнаружила17 замечаний (11 high /6 moderate); санация ещё не выполнена.
 
 Миграция19: **333 PASS /0 FAIL /0 SKIP**; typecheck/build и четыре compiled smoke проверки PASS. UI сохранение срока проверено на синтетическом стенде. Доказательства: outputs/res09-retention-2026-11-14.
+
+## Продолжение: зависимости, 14 ноября 2026
+
+Проверена и перенесена цепочка WhatsApp1.34.8 / Puppeteer25.17.0, scoped glob14.0.6 и ip-address10.7.6. Изолированная копия:333 PASS /0 FAIL /0 SKIP; typecheck/build, четыре compiled smoke проверки и CommonJS/archive round-trip PASS; npm audit0 известных уязвимостей. Исходники сверены побайтно перед переносом manifest/lock; основная установка воспроизведена npm ci --ignore-scripts. Live WhatsApp, проверка условий распространения buffers/LGPL, ресурсы и restore остаются открытыми. [Отчёт](dependency-review-2026-11-14.md).
