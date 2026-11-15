@@ -34,7 +34,7 @@ async function run(signal:AbortSignal){
   dispatchAction:async(id,target)=>messages.dispatch(id,syntheticTransport(target)),
   async dispatchNotification(id){const n=(await pool.query('SELECT * FROM ai_handoff_notifications WHERE id=$1',[id])).rows[0];if(!n)return;const target=n.target_account_id?{accountId:n.target_account_id,externalId:n.target_external_id}:await workflow.managerTarget();if(!target)return;return workflow.dispatchNotification(id,{target,start:a=>({acknowledgement:Promise.resolve({operationId:a.operationId,outcome:'confirmed',code:'synthetic_confirmation',externalMessageId:'synthetic:'+a.operationId,retryCondition:'never'})})});},
  };
- const runtime=new AiExecutionRuntime(pool,provider,transport,signal);
+ const runtime=new AiExecutionRuntime(pool,provider,transport,signal,{publicAppUrl:config.PUBLIC_APP_URL});
  const sources=live&&config.SOURCE_MONITOR_ENABLED?new SourceRuntime(pool,scope,createGigaChatSourceScorer({pool,authKey:config.GIGACHAT_AUTH_KEY!,scope:config.GIGACHAT_SCOPE}),async(id,platform)=>{
   if(platform==='whatsapp'){const lead=(await pool.query('SELECT account_id FROM ai_leads WHERE id=$1',[id])).rows[0];if(!lead)throw Error('source_lead_missing');return await whatsappWorkerRequest(pool,lead.account_id,`/ai/leads/${id}/resolve`) as VerifiedSourceRoute;}
   return await maxWorkerRequest(`/leads/${id}/resolve`,'POST') as VerifiedSourceRoute;

@@ -1,3 +1,5 @@
+import ManagerNotificationSettings from './ManagerNotificationSettings';
+import RequestHistory from './RequestHistory';
 import ContactPriority,{priorityLabels} from './ContactPriority';
 import StorageSettings from './StorageSettings';
 import BusinessStageCard,{type BusinessDetail} from './BusinessStageCard';
@@ -25,6 +27,8 @@ const actionStates: Record<string, string> = {
   cancelled: "Отменено",
 };
 type Conversation = {
+  requestId:string|null;
+  managerHold:boolean;
   id: string;
   platform: "max" | "whatsapp";
   accountId: string;
@@ -73,6 +77,7 @@ type Action = {
   updatedAt: string;
 };
 type Detail = {
+  requestId:string|null;
   contact: Contact;
   messages: Message[];
   messageTotal: number;
@@ -135,6 +140,7 @@ function recordText(record: Record<string, unknown>, keys: string[]) {
   }
   return "—";
 }
+function queryId(name:string){const value=new URLSearchParams(window.location.search).get(name)||'';return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)?value:'';}
 export default function ConversationWorkspace() {
   const [filters, setFilters] = useState({
       q: "",
@@ -153,12 +159,13 @@ export default function ConversationWorkspace() {
     [accounts, setAccounts] = useState<
       { id: string; name: string; platform: string }[]
     >([]);
-  const [selected, setSelected] = useState(""),
+  const [selected, setSelected] = useState(()=>queryId("contact")),
     [detail, setDetail] = useState<Detail | null>(null),
     [detailError, setDetailError] = useState(""),
     [detailLoading, setDetailLoading] = useState(false),
     [messageOffset, setMessageOffset] = useState(0),
-    [conversationId, setConversationId] = useState(""),
+    [conversationId, setConversationId] = useState(()=>queryId("conversation")),
+    [viewingRequest,setViewingRequest]=useState(()=>queryId("request")),
     [workflow, setWorkflow] = useState<Workflow | null>(null),
     [workflowError, setWorkflowError] = useState(""),
     [operation, setOperation] = useState(false),
@@ -228,7 +235,7 @@ export default function ConversationWorkspace() {
         selected +
         "?limit=50&offset=" +
         messageOffset +
-        (conversationId ? "&conversationId=" + conversationId : ""),
+        (conversationId ? "&conversationId=" + conversationId : "")+(viewingRequest?'&requestId='+viewingRequest:''),
       { signal: c.signal },
     )
       .then((data) => {
@@ -248,13 +255,13 @@ export default function ConversationWorkspace() {
         if (!c.signal.aborted) setDetailLoading(false);
       });
     return () => c.abort();
-  }, [selected, conversationId, messageOffset, revision]);
+  }, [selected, conversationId, viewingRequest,messageOffset, revision]);
   useEffect(() => {
     setWorkflow(null);
     setWorkflowError("");
     if (!conversationId) return;
     const c = new AbortController();
-    void api<Workflow>("/conversations/" + conversationId + "/workflow", {
+    void api<Workflow>("/conversations/" + conversationId + "/workflow"+(viewingRequest?'?requestId='+viewingRequest:''), {
       signal: c.signal,
     })
       .then((data) => {
@@ -264,11 +271,15 @@ export default function ConversationWorkspace() {
         if (!c.signal.aborted) setWorkflowError(textError(e));
       });
     return () => c.abort();
-  }, [conversationId, revision]);
+  }, [conversationId, viewingRequest,revision]);
   const conversation = useMemo(
     () => detail?.contact.conversations?.find((v) => v.id === conversationId),
     [detail, conversationId],
   );
+  const historyView=Boolean(viewingRequest&&viewingRequest!==conversation?.requestId);
+  const scopeMatches=(detail?.requestId??'')===viewingRequest;
+  useEffect(()=>{if(conversation?.requestId&&!viewingRequest)setViewingRequest(conversation.requestId);},[conversation?.requestId,viewingRequest]);
+  useEffect(()=>{const url=new URL(window.location.href);url.searchParams.set('view','dialogs');for(const [key,value]of [['contact',selected],['conversation',conversationId],['request',viewingRequest]]){if(value)url.searchParams.set(key,value);else url.searchParams.delete(key);}window.history.replaceState(null,'',url);},[selected,conversationId,viewingRequest]);
   function filter(key: keyof typeof filters, value: string) {
     setFilters((current) => ({ ...current, [key]: value }));
     setOffset(0);
@@ -280,7 +291,7 @@ export default function ConversationWorkspace() {
     setDetailError("");
     setNotice("");
     try {
-      await api(path, { method: "POST", body: JSON.stringify(body) });
+      await api(path, { method: "POST", body: JSON.stringify(path.startsWith('/conversations/')?{...(body as object),...(viewingRequest?{expectedRequestId:viewingRequest}:{}),expectedEpoch:conversation?.epoch}:body) });
       if (mounted.current) {
         setNotice("Изменение сохранено");
         setRevision((v) => v + 1);
@@ -297,12 +308,13 @@ export default function ConversationWorkspace() {
     setSelected(id);
     setMessageOffset(0);
     setConversationId("");
+    setViewingRequest('');
     setWorkflow(null);
     setNotice("");
     setReason("");
   }
   const selectedMessages =
-    detail?.messages.filter(
+    (scopeMatches?detail?.messages:[])?.filter(
       (m) => !conversationId || m.conversationId === conversationId,
     ) || [];
   return (
@@ -398,8 +410,8 @@ export default function ConversationWorkspace() {
         onChange={() => setRevision((v) => v + 1)}
       />
       <WorkspaceSettings
-        accounts={accounts}
-        selectedConversationId={conversationId}
+        selectedConversationId={historyView?'':conversationId}
+        requestId={historyView?'':viewingRequest} epoch={conversation?.epoch||''}
         onChange={() => setRevision((v) => v + 1)}
       />
       {list && (
@@ -541,6 +553,7 @@ export default function ConversationWorkspace() {
                   disabled={operation}
                   onChange={(e) => {
                     setConversationId(e.target.value);
+                    setViewingRequest('');
                     setMessageOffset(0);
                   }}
                 >
@@ -553,6 +566,8 @@ export default function ConversationWorkspace() {
               </label>
               {conversation && (
                 <>
+                  <RequestHistory contactId={detail.contact.id} requestId={viewingRequest} currentRequestId={conversation.requestId||''} revision={revision} onSelect={id=>{setMessageOffset(0);setViewingRequest(id);}}/>
+                  {historyView&&<p className="conversation-muted">Просмотр другой заявки: действия и ручной ответ недоступны. Выберите текущую заявку канала для работы.</p>}
                   <p>
                     <b>{statuses[conversation.status]}</b> ·{" "}
                     {modes[conversation.mode]}
@@ -569,6 +584,7 @@ export default function ConversationWorkspace() {
                     Аккаунт: {conversation.accountName} (
                     {conversation.accountId})
                   </p>
+                  {!historyView&&conversation.status!=='closed'&&<fieldset className="conversation-request-actions" disabled={detailLoading}>
                   <div className="conversation-controls">
                     <button
                       disabled={operation}
@@ -657,7 +673,9 @@ export default function ConversationWorkspace() {
                     «Подходит» требует проверки критериев на сервере.
                     Возобновление не снимает отказ контакта.
                   </small>
-                  <h3>История выбранного диалога</h3>
+                  </fieldset>}
+                  {(historyView||conversation.status==='closed')&&!detail.contact.optedOut&&<section className="conversation-operation"><label>Причина исключения контакта<input value={reason} maxLength={512} onChange={e=>setReason(e.target.value)}/></label><button disabled={operation||!reason.trim()} onClick={()=>void act('/contacts/'+detail.contact.id+'/opt-out',{reason:reason.trim()})}>Исключить контакт</button></section>}
+                  <h3>История выбранной заявки в канале</h3>
                   {!selectedMessages.length && (
                     <p>
                       На этой странице истории сообщений выбранного диалога нет.
@@ -717,7 +735,7 @@ export default function ConversationWorkspace() {
                     Намерение отправки не означает доставку. Ниже последние 100
                     операций контакта, отфильтрованные по выбранному диалогу.
                   </p>
-                  {detail.actions
+                  {(scopeMatches?detail.actions:[])
                     .filter((a) => a.conversationId === conversation.id)
                     .map((a) => (
                       <article key={a.id} className="conversation-operation">
@@ -744,7 +762,7 @@ export default function ConversationWorkspace() {
                   )}
                   {workflow && (
                     <>
-                      {workflow.business&&<BusinessStageCard key={conversationId} conversationId={conversationId} data={workflow.business} labels={workflow.stageLabels??[]} closed={conversation?.status==='closed'} onChange={()=>setRevision(v=>v+1)}/>}
+                      {!historyView&&workflow.business&&<BusinessStageCard key={conversationId} conversationId={conversationId} data={workflow.business} requestId={conversation.requestId||undefined} epoch={conversation.epoch} labels={workflow.stageLabels??[]} closed={conversation?.status==='closed'} onChange={()=>setRevision(v=>v+1)}/>}
                       <h4>Последние 20 уведомлений менеджеру</h4>
                       {workflow.notifications?.length ? (
                         workflow.notifications.map((n, i) => (
@@ -771,8 +789,7 @@ export default function ConversationWorkspace() {
                             {recordText(n, ["summary"])}
                             <details>
                               <summary>Параметры и источник</summary>
-                              <RecordValues value={n.parameters} />
-                              <RecordValues value={n.source} />
+                              <NotificationValues notification={n}/>
                             </details>
                           </article>
                         ))
@@ -821,15 +838,16 @@ export default function ConversationWorkspace() {
                       ))}
                     </details>
                   ) : null}
-                  <ManualReplyComposer
-                    key={conversation.id}
+                  {!historyView&&<ManualReplyComposer
+                    key={conversation.id+':'+viewingRequest}
                     conversationId={conversation.id}
+                    requestId={conversation.requestId||undefined} epoch={conversation.epoch}
                     blocked={
                       detailLoading || detail.contact.optedOut ||
                       conversation.status==='closed'||conversation.status==='refused'
                     }
                     onQueued={() => setRevision((v) => v + 1)}
-                  />
+                  />}
                 </>
               )}
             </>
@@ -872,18 +890,14 @@ function minuteValue(text: string) {
   return h * 60 + m;
 }
 function WorkspaceSettings({
-  accounts,
-  selectedConversationId,
+  selectedConversationId,requestId,epoch,
   onChange,
 }: {
-  accounts: { id: string; name: string; platform: string }[];
-  selectedConversationId: string;
+  selectedConversationId: string;requestId:string;epoch:string;
   onChange: () => void;
 }) {
   const [open, setOpen] = useState(false),
     [loaded, setLoaded] = useState(false),
-    [managerAccount, setManagerAccount] = useState(""),
-    [managerExternal, setManagerExternal] = useState(""),
     [rules, setRules] = useState<Record<string, unknown>[]>([]),
     [scenario, setScenario] = useState<Scenario>("no_reply"),
     [enabled, setEnabled] = useState(false),
@@ -907,6 +921,7 @@ function WorkspaceSettings({
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
+  const commandContext={...(requestId?{expectedRequestId:requestId}:{}),...(epoch?{expectedEpoch:epoch}:{})};
   const mounted = useRef(true),
     inflight = useRef(false),
     scheduleKey = useRef<string | null>(null),
@@ -939,8 +954,6 @@ function WorkspaceSettings({
         followupRules: Record<string, unknown>[];
       }>("/settings");
       if (!mounted.current) return;
-      setManagerAccount(data.managerTarget?.accountId || "");
-      setManagerExternal(data.managerTarget?.externalId || "");
       setRules(data.followupRules);
       setLoaded(true);
       selectRule(scenario, data.followupRules);
@@ -975,7 +988,7 @@ function WorkspaceSettings({
   useEffect(() => {
     scheduleKey.current = null;
     handoffKey.current = null;
-  }, [selectedConversationId]);
+  }, [selectedConversationId,requestId,epoch]);
   return (
     <section className="card conversation-settings">
       <button
@@ -996,6 +1009,7 @@ function WorkspaceSettings({
             менеджеру автоматические сообщения заблокированы до закрытия заявки.
           </p>
           <StorageSettings/>
+          <ManagerNotificationSettings/>
           {error && (
             <p role="alert" className="conversation-error">
               {error}
@@ -1011,54 +1025,6 @@ function WorkspaceSettings({
           </button>
           {loaded && (
             <fieldset disabled={busy}>
-              <legend>Получатель уведомлений менеджеру</legend>
-              <div className="conversation-settings-grid">
-                <label>
-                  Аккаунт MAX
-                  <select
-                    value={managerAccount}
-                    onChange={(e) => setManagerAccount(e.target.value)}
-                  >
-                    <option value="">Выберите аккаунт</option>
-                    {accounts
-                      .filter((a) => a.platform === "max")
-                      .map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {a.name}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                <label>
-                  ID беседы менеджера в MAX
-                  <input
-                    value={managerExternal}
-                    maxLength={256}
-                    onChange={(e) => setManagerExternal(e.target.value)}
-                  />
-                </label>
-              </div>
-              <button
-                disabled={!managerAccount || !managerExternal.trim()}
-                onClick={() =>
-                  void run(async () => {
-                    await api("/settings/manager", {
-                      method: "PUT",
-                      body: JSON.stringify({
-                        accountId: managerAccount,
-                        externalId: managerExternal.trim(),
-                      }),
-                    });
-                    if (mounted.current)
-                      setNotice(
-                        "Получатель менеджера сохранён. Уже записанные уведомления сохраняют прежний адрес.",
-                      );
-                  })
-                }
-              >
-                Сохранить получателя
-              </button>
-              <hr />
               <legend>Правило повторного обращения</legend>
               <div className="conversation-settings-grid">
                 <label>
@@ -1265,7 +1231,7 @@ function WorkspaceSettings({
               <legend>Действия для выбранного диалога</legend>
               <p>
                 {selectedConversationId
-                  ? "Выбран диалог " + selectedConversationId
+                  ? "Действия относятся к текущей заявке выбранного канала."
                   : "Сначала выберите контакт и его канал в карточке ниже."}
               </p>
               <label>
@@ -1294,7 +1260,7 @@ function WorkspaceSettings({
                           body: JSON.stringify({
                             scenario,
                             key: scheduleKey.current,
-                            anchorAt: new Date(anchor).toISOString(),
+                            anchorAt: new Date(anchor).toISOString(),...commandContext,
                           }),
                         },
                       );
@@ -1319,7 +1285,7 @@ function WorkspaceSettings({
                           "/cancel-followups",
                         {
                           method: "POST",
-                          body: JSON.stringify({ reason: "requested_stop" }),
+                          body: JSON.stringify({ reason: "requested_stop",...commandContext }),
                         },
                       );
                       if (mounted.current) {
@@ -1372,7 +1338,7 @@ function WorkspaceSettings({
                         body: JSON.stringify({
                           key: handoffKey.current,
                           reason: handoffReason,
-                          summary: summary.trim(),
+                          summary: summary.trim(),...commandContext,
                         }),
                       },
                     );
@@ -1553,7 +1519,11 @@ function BindConversation({
   );
 }
 
-function RecordValues({ value }: { value: unknown }) {
+function NotificationValues({notification}:{notification:Record<string,unknown>}){
+ const source=notification.source as Record<string,unknown>|null;let labels:Record<string,string>={};try{const parsed=JSON.parse(String(source?.fieldLabelsJson||'{}'));if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))labels=parsed;}catch{}
+ return <><RecordValues value={notification.parameters} labels={labels}/><RecordValues value={source} labels={{chatTitle:'Чат-источник',readerAccount:'Аккаунт-источник',platform:'Мессенджер',sourceLink:'Исходное сообщение',cardLink:'Открыть заявку'}}/></>;
+}
+function RecordValues({ value,labels={} }: { value: unknown;labels?:Record<string,string> }) {
   if (
     !value ||
     typeof value !== "object" ||
@@ -1563,9 +1533,9 @@ function RecordValues({ value }: { value: unknown }) {
     return <p>Данные не записаны.</p>;
   return (
     <dl className="conversation-facts">
-      {Object.entries(value).map(([key, v]) => (
+      {Object.entries(value).filter(([key])=>!['eventKey','fieldLabelsJson'].includes(key)).map(([key, v]) => (
         <div key={key}>
-          <dt>{key}</dt>
+          <dt>{typeof labels[key]==='string'?labels[key]:key}</dt>
           <dd>
             {typeof v === "string" ||
             typeof v === "number" ||
@@ -1580,11 +1550,11 @@ function RecordValues({ value }: { value: unknown }) {
 }
 
 function ManualReplyComposer({
-  conversationId,
+  conversationId,requestId,epoch,
   blocked,
   onQueued,
 }: {
-  conversationId: string;
+  conversationId: string;requestId?:string;epoch:string;
   blocked: boolean;
   onQueued: () => void;
 }) {
@@ -1598,7 +1568,7 @@ function ManualReplyComposer({
     [error, setError] = useState("");
   const mounted = useRef(true),
     inflight = useRef(false),
-    attempt = useRef<{ operationId: string; text: string } | null>(null);
+    attempt = useRef<{ operationId: string; text: string;expectedRequestId?:string;expectedEpoch:string } | null>(null);
   useEffect(() => {
     mounted.current = true;
     const c = new AbortController();
@@ -1625,7 +1595,7 @@ function ManualReplyComposer({
     inflight.current = true;
     setBusy(true);
     setError("");
-    attempt.current ??= { operationId: crypto.randomUUID(), text };
+    attempt.current ??= { operationId: crypto.randomUUID(), text,expectedRequestId:requestId,expectedEpoch:epoch };
     setLocked(true);
     try {
       const response = await fetch(

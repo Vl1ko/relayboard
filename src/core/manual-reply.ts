@@ -6,6 +6,7 @@ const manualInput = z
   .object({
     conversationId: z.string().uuid(),
     operationId: z.string().uuid(),
+    expectedRequestId:z.string().uuid().optional(),expectedEpoch:z.string().regex(/^(0|[1-9][0-9]*)$/).max(20).optional(),
     text: z
       .string()
       .min(1)
@@ -28,7 +29,7 @@ export class ManualReplyStore {
     const data = manualInput.parse(input),
       logicalKey = "manual:" + data.operationId;
     const fingerprint = createHash("sha256")
-      .update(JSON.stringify([data.conversationId, data.text]))
+      .update(JSON.stringify(data.expectedRequestId!==undefined||data.expectedEpoch!==undefined?['manual-v2',data.conversationId,data.text,data.expectedRequestId??null,data.expectedEpoch??null]:[data.conversationId, data.text]))
       .digest("hex");
     const client = await this.pool.connect();
     try {
@@ -79,6 +80,9 @@ export class ManualReplyStore {
         ["closed", "refused"].includes(conversation.business_status)
       )
         throw new ManualReplyError("manual_reply_forbidden");
+      const phase=(await client.query('SELECT request_id FROM ai_request_phases WHERE id=$1',[conversation.active_phase_id])).rows[0];
+      if(this.liveScope&&(!data.expectedRequestId||data.expectedEpoch===undefined))throw new ManualReplyError('manual_request_context_required');
+      if(data.expectedRequestId!==undefined&&data.expectedRequestId!==phase?.request_id||data.expectedEpoch!==undefined&&data.expectedEpoch!==conversation.automation_epoch)throw new ManualReplyError('stale_request_context');
       if(this.liveScope&&!await manualRouteAllowed(client,this.liveScope,conversation.id))throw new ManualReplyError('manual_route_or_scope_unavailable');
       const changed = conversations.filter(
         (v) =>

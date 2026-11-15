@@ -48,7 +48,7 @@ before(async () => {
       pool,
       authorize,
       enabled: true,
-      workflow: new ConversationWorkflow(pool),
+      workflow: new ConversationWorkflow(pool,{requireRequestContext:true}),
     }),
   );
   app.use('/protocol-live',createProtocolRouter({pool,authorize,enabled:true,syntheticEnabled:false,liveManualScope:manualScope}));
@@ -331,8 +331,9 @@ test(
 test('business stage API preserves configured names, revisions and exact operation replay',{skip},async()=>{
  await pool.query('UPDATE ai_engine_settings SET settings=settings||$1::jsonb',[JSON.stringify({qualificationEnabled:true,fields:[{key:"volume",question:"Объём?",required:true}],rules:[{field:"volume",op:"gte",value:10}]})]);
  const f=await fixture();const v=(await pool.query("SELECT * FROM ai_conversations WHERE contact_id=$1 AND platform='max'",[f.contact])).rows[0];
- await bindSourceRequest(pool,{conversationId:v.id,accountId:f.max,platform:'max',chatId:'synthetic-group',messageId:'stage-source',authorId:'synthetic-author'});
- const input={operationId:randomUUID(),expectedRevision:0,kind:'booking_offered',note:'Synthetic stage mark'};
+ const binding=await bindSourceRequest(pool,{conversationId:v.id,accountId:f.max,platform:'max',chatId:'synthetic-group',messageId:'stage-source',authorId:'synthetic-author'});
+ const epoch=(await pool.query('SELECT automation_epoch FROM ai_conversations WHERE id=$1',[v.id])).rows[0].automation_epoch;
+ const input={operationId:randomUUID(),expectedRevision:0,expectedRequestId:binding.requestId,expectedEpoch:epoch,kind:'booking_offered',note:'Synthetic stage mark'};
  const response=await fetch(base+'/on/conversations/'+v.id+'/business-events',{method:'POST',headers,body:JSON.stringify(input)});assert.equal(response.status,200);assert.equal((await response.json()).state.booking_state,'offered');
  const replay=await fetch(base+'/on/conversations/'+v.id+'/business-events',{method:'POST',headers,body:JSON.stringify(input)});assert.equal(replay.status,200);assert.equal((await replay.json()).replayed,true);
  const stale=await fetch(base+'/on/conversations/'+v.id+'/business-events',{method:'POST',headers,body:JSON.stringify({...input,operationId:randomUUID()})});assert.equal(stale.status,409);
@@ -358,7 +359,8 @@ test('priority filtering/sorting and concurrent card revision never change autom
 test('live manual API requires verified active route and test scope; concurrent replay creates one held-manager action',{skip},async()=>{
  const f=await fixture();await pool.query('UPDATE ai_engine_settings SET settings=settings||$1::jsonb',[JSON.stringify({qualificationEnabled:true,fields:[{key:'volume',question:'Объём?',required:true}],rules:[{field:'volume',op:'gte',value:10}]})]);
  await bindSourceRequest(pool,{conversationId:f.conv,accountId:f.max,platform:'max',chatId:'-10',messageId:'manual-source',authorId:'200'});
- const path='/conversations/'+f.conv,body={operationId:randomUUID(),text:'Synthetic manager answer'};
+ const ctx=(await pool.query('SELECT v.automation_epoch,p.request_id FROM ai_conversations v JOIN ai_request_phases p ON p.id=v.active_phase_id WHERE v.id=$1',[f.conv])).rows[0];
+ const path='/conversations/'+f.conv,body={operationId:randomUUID(),text:'Synthetic manager answer',expectedRequestId:ctx.request_id,expectedEpoch:ctx.automation_epoch};
  assert.equal((await fetch(base+'/protocol-live'+path+'/manual-capabilities')).status,401);
  assert.equal((await fetch(base+'/protocol-disabled'+path+'/manual-messages',{method:'POST',headers,body:JSON.stringify(body)})).status,503);
  assert.equal((await fetch(base+'/protocol-live'+path+'/manual-messages',{method:'POST',headers,body:JSON.stringify(body)})).status,409);
@@ -372,4 +374,42 @@ test('live manual API requires verified active route and test scope; concurrent 
  assert.equal((await fetch(base+'/protocol-live'+path+'/manual-messages',{method:'POST',headers,body:JSON.stringify({...body,operationId:randomUUID()})})).status,409);
  assert.equal((await pool.query('SELECT count(*)::int n FROM ai_outbox')).rows[0].n,1);
  assert.equal((await fetch(base+'/protocol-live/events',{method:'POST',headers,body:'{}'})).status,503);
+});
+test('request history separates archived/new phases and rejects cross-contact or unrelated-channel scopes',{skip},async()=>{
+ const f=await fixture();await pool.query('UPDATE ai_engine_settings SET settings=settings||$1::jsonb',[JSON.stringify({qualificationEnabled:true,fields:[{key:'volume',question:'Объём?',required:true}],rules:[{field:'volume',op:'gte',value:10}]})]);
+ await pool.query("INSERT INTO destinations(integration_id,external_id,title,kind) VALUES($1,'-10','Тестовая','group')",[f.max]);
+ const old=await bindSourceRequest(pool,{conversationId:f.conv,accountId:f.max,platform:'max',chatId:'-10',messageId:'request-old-source',authorId:'200'});
+ const {AiManagerStore}=await import('../core/ai-manager.js'),store=new AiManagerStore(pool);await store.ingest({version:1,platform:'max',accountId:f.max,conversationId:'max-dialog',messageId:'group-source:-10:request-old-source',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'Old request: 5 tonnes'});
+ await pool.query('UPDATE ai_engine_state SET fields=$2 WHERE conversation_id=$1',[f.conv,{volume:{value:5,evidenceQuote:'5 tonnes'}}]);const v=(await pool.query('SELECT automation_epoch FROM ai_conversations WHERE id=$1',[f.conv])).rows[0];
+ await store.enqueue({conversationId:f.conv,kind:'reply',expectedEpoch:v.automation_epoch,logicalKey:'old-request-reply',text:'Old request answer'});await new ConversationWorkflow(pool).setStatus({conversationId:f.conv,status:'closed',reason:'Synthetic manager closure'});
+ const next=await bindSourceRequest(pool,{conversationId:f.conv,accountId:f.max,platform:'max',chatId:'-10',messageId:'request-new-source',authorId:'200'});await store.ingest({version:1,platform:'max',accountId:f.max,conversationId:'max-dialog',messageId:'new-private-input',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'New request: 25 tonnes'});
+ const list=await(await get('/contacts/'+f.contact+'/requests')).json();assert.equal(list.requests.length,2);assert.equal(list.requests[0].id,next.requestId);
+ const archived=await(await get('/contacts/'+f.contact+'/requests/'+old.requestId)).json();assert.equal(archived.request.lifecycle,'closed');assert.equal(archived.sources[0].chatTitle,'Тестовая');assert.equal(archived.phases[0].fields.volume.value,5);
+ const history=await(await get('/contacts/'+f.contact+'?conversationId='+f.conv+'&requestId='+old.requestId)).json();assert.equal(history.requestId,old.requestId);assert.equal(history.messages.length,1);assert.match(history.messages[0].text,/Old request/);assert.equal(history.actions.length,1);assert.equal(history.contact.conversations.find((c:any)=>c.id===f.conv).requestId,next.requestId);
+ const foreign=randomUUID();await pool.query('INSERT INTO ai_requests(id,contact_id) VALUES($1,$2)',[foreign,f.other]);assert.equal((await get('/contacts/'+f.contact+'/requests/'+foreign)).status,404);assert.equal((await get('/contacts/'+f.contact+'?requestId='+foreign)).status,404);assert.equal((await get('/contacts/'+f.contact+'?conversationId='+f.second+'&requestId='+old.requestId)).status,404);
+ assert.equal((await fetch(base+'/on/contacts/'+f.contact+'/requests')).status,401);
+});
+
+test('stale manager tab cannot mutate or message a replacement request; accepted manual replay stays stable',{skip},async()=>{
+ const f=await fixture();await pool.query('UPDATE ai_engine_settings SET settings=settings||$1::jsonb',[JSON.stringify({qualificationEnabled:true,fields:[{key:'volume',question:'Объём?',required:true}],rules:[{field:'volume',op:'gte',value:10}]})]);
+ const old=await bindSourceRequest(pool,{conversationId:f.conv,accountId:f.max,platform:'max',chatId:'-10',messageId:'stale-old',authorId:'200'});
+ const before=(await pool.query('SELECT automation_epoch FROM ai_conversations WHERE id=$1',[f.conv])).rows[0];
+ const context={expectedRequestId:old.requestId,expectedEpoch:before.automation_epoch};
+ manualScope.accountIds=[f.max];manualScope.authorIds=['200'];await pool.query('UPDATE integrations SET auth_error=NULL WHERE id=$1',[f.max]);
+ await pool.query("INSERT INTO ai_verified_routes(conversation_id,account_id,platform,external_id,recipient_id,contact_id) VALUES($1,$2,'max','max-dialog','200',$3)",[f.conv,f.max,f.contact]);
+ const manual={...context,operationId:randomUUID(),text:'Original request manual answer'};
+ const post=async(path:string,body:unknown)=>fetch(base+path,{method:'POST',headers,body:JSON.stringify(body)});
+ const receipt=await post('/protocol-live/conversations/'+f.conv+'/manual-messages',manual);assert.equal(receipt.status,200);const action=(await receipt.json()).action;
+ await new ConversationWorkflow(pool).setStatus({conversationId:f.conv,status:'closed',reason:'Finish old test request'});
+ const next=await bindSourceRequest(pool,{conversationId:f.conv,accountId:f.max,platform:'max',chatId:'-10',messageId:'stale-new',authorId:'200'});assert.notEqual(next.requestId,old.requestId);
+ const snapshot=(await pool.query('SELECT * FROM ai_conversations WHERE id=$1',[f.conv])).rows[0];
+ const commands:[string,unknown][]=[['mode',{mode:'manual'}],['status',{status:'closed',reason:'Old card'}],['followups',{scenario:'no_reply',key:randomUUID(),anchorAt:new Date().toISOString()}],['cancel-followups',{reason:'closed'}],['handoff',{key:randomUUID(),reason:'human_requested',summary:'Old card handoff'}],['business-events',{operationId:randomUUID(),expectedRevision:0,kind:'booking_offered'}]];
+ for(const [suffix,body] of commands){const response=await post('/on/conversations/'+f.conv+'/'+suffix,{...body as object,...context});assert.equal(response.status,409,suffix+': '+await response.text());}
+ for(const ctx of [context,{}]){const response=await post('/protocol-live/conversations/'+f.conv+'/manual-messages',{...manual,...ctx,expectedRequestId:'expectedRequestId' in ctx?ctx.expectedRequestId:undefined,expectedEpoch:'expectedEpoch' in ctx?ctx.expectedEpoch:undefined,operationId:randomUUID()});assert.equal(response.status,409);}
+ const missing=await post('/on/conversations/'+f.conv+'/mode',{mode:'manual'});assert.equal(missing.status,409);
+ assert.deepEqual((await pool.query('SELECT * FROM ai_conversations WHERE id=$1',[f.conv])).rows[0],snapshot);
+ assert.equal((await pool.query('SELECT count(*)::int n FROM ai_business_events')).rows[0].n,0);assert.equal((await pool.query('SELECT count(*)::int n FROM ai_handoff_notifications')).rows[0].n,0);
+ const replay=await post('/protocol-live/conversations/'+f.conv+'/manual-messages',manual);assert.equal(replay.status,200);assert.equal((await replay.json()).action.id,action.id);
+ assert.equal((await pool.query("SELECT count(*)::int n FROM ai_outbox WHERE kind='manual_reply'")).rows[0].n,1);
+ const current={expectedRequestId:next.requestId,expectedEpoch:snapshot.automation_epoch};const valid=await post('/on/conversations/'+f.conv+'/mode',{...current,mode:'manual'});assert.equal(valid.status,200,await valid.text());
 });

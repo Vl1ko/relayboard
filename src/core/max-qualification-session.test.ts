@@ -83,7 +83,7 @@ test('qualified manager notification reaches only configured group and cannot be
  const o=new AiOrchestrator(pool),e=await o.ingest({version:1,platform:'max',accountId:f.account,conversationId:'303',messageId:'manager-notify',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'12'});
  const provider:AiProvider={kind:'fixture',async complete(){return{replyDraft:'',extracted:[{field:'volume',value:12,evidenceMessageId:'manager-notify',evidenceQuote:'12'}],replyKind:'none',askFields:[],knowledgeKeys:[],proposedStatus:'qualified',handoffReason:null};}};
  const result=await o.process(f.conversation.id,e.event.event_key,provider),id=('notification'in result?result.notification:null)!.id;let sends=0;
- const socket={connected:true,async send(op:number,body:any){if(op===48)return{chats:[{type:'CHAT',id:-456}]};assert.equal(op,64);assert.equal(body.chatId,-456);assert.match(body.message.text,/Заявка прошла квалификацию/);assert.match(body.message.text,/volume: 12/);sends++;return{message:{id:'manager-confirmed'}};}};
+ const socket={connected:true,async send(op:number,body:any){if(op===48)return{chats:[{type:'CHAT',id:-456}]};assert.equal(op,64);assert.equal(body.chatId,-456);assert.match(body.message.text,/Заявка прошла квалификацию/);assert.match(body.message.text,/Какой объём\?: 12/);sends++;return{message:{id:'manager-confirmed'}};}};
  assert.equal((await dispatchMaxManagerNotification(pool,id,{accountId:f.account,socket})as any).state,'confirmed');await dispatchMaxManagerNotification(pool,id,{accountId:f.account,socket});assert.equal(sends,1);
 });
 

@@ -305,3 +305,8 @@
 .conversation-manual-reply button {
   margin-top: 12px;
 }
+
+.conversation-request-actions{border:0;padding:0;margin:0;min-width:0}
+.request-source-text{white-space:pre-wrap;overflow-wrap:anywhere}
+.request-history article{padding:10px 0;border-bottom:1px solid #e1e7ef}
+.request-history blockquote{margin:6px 0;color:#68758a;font-size:12px}

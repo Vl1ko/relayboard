@@ -1,3 +1,4 @@
+import {singleLine} from './handoff-context.js';
 import type {Pool} from 'pg';
 import {UMax} from '@ounezz/umax';
 import {decryptCredentials} from './crypto.js';
@@ -5,7 +6,17 @@ import {ConversationWorkflow} from './conversation-workflow.js';
 import {prepareMaxAiText,type ConnectedMaxTextSocket} from './adapters/max-ai-text.js';
 export function formatManagerNotification(text:string){
  const n=JSON.parse(text),titles:Record<string,string>={qualified:'Заявка прошла квалификацию',human_requested:'Клиент просит подключить менеджера',insufficient_data:'Требуется помощь менеджера: недостаточно данных',reply_limit:'Достигнут лимит ответов: требуется менеджер'};
- return [titles[n.reason]??'Требуется менеджер','Клиент: '+(n.contact?.name||n.contact?.id||'—'),...(n.contact?.phone?['Телефон: '+n.contact.phone]:[]),'Аккаунт: '+(n.channel.accountName||n.channel.accountId),'Личный диалог '+(n.channel.platform==='whatsapp'?'WhatsApp':'MAX')+': '+n.channel.externalId,'Резюме: '+n.summary,...Object.entries(n.parameters??{}).map(([k,v])=>k+': '+String(v)),...Object.entries(n.source??{}).filter(([k])=>k!=='eventKey').map(([k,v])=>k+': '+String(v))].join('\n').slice(0,4000);
+ let labels:Record<string,unknown>={};try{const value=JSON.parse(n.source?.fieldLabelsJson??'{}');if(value&&typeof value==='object'&&!Array.isArray(value))labels=value;}catch{}
+ const lines=[titles[n.reason]??'Требуется менеджер','Клиент: '+singleLine(n.contact?.name||'Без имени'),...(n.contact?.phone?['Телефон: '+singleLine(n.contact.phone)]:[]),'Аккаунт: '+singleLine(n.channel?.accountName||'Не указан'),'Канал: '+(n.channel?.platform==='whatsapp'?'WhatsApp':'MAX')];
+ if(n.source?.cardLink)lines.push('Открыть заявку: '+singleLine(n.source.cardLink,1000));else lines.push('Личный диалог: '+singleLine(n.channel?.externalId));
+ if(n.source?.chatTitle)lines.push('Чат-источник: '+singleLine(n.source.chatTitle));if(n.source?.readerAccount)lines.push('Источник прочитан: '+singleLine(n.source.readerAccount));
+ lines.push('Резюме: '+singleLine(n.summary,700));
+ for(const [key,value]of Object.entries(n.parameters??{})){
+  const label=typeof labels[key]==='string'?labels[key]:key,line=singleLine(label,120)+': '+singleLine(value,500);
+  if(lines.join('\n').length+line.length+1>3850){lines.push('Остальные параметры доступны в карточке.');break;}lines.push(line);
+ }
+ if(n.source?.sourceLink){const line='Сообщение-источник: '+singleLine(n.source.sourceLink,1000);if(lines.join('\n').length+line.length+1<=4000)lines.push(line);}
+ return lines.join('\n');
 }
 export async function dispatchMaxManagerNotification(pool:Pool,id:string,reuse?:{accountId:string;socket:ConnectedMaxTextSocket},resolveSocket?:(accountId:string)=>Promise<ConnectedMaxTextSocket>){
  const workflow=new ConversationWorkflow(pool),notification=(await pool.query("SELECT * FROM ai_handoff_notifications WHERE id=$1",[id])).rows[0];if(!notification)throw Error('manager_notification_required');

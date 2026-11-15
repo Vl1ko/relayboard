@@ -184,10 +184,12 @@ export function nextFollowupWindow(value: Date, raw: FollowupRule) {
     if (localWindow(candidate, rule, formatter)) return candidate;
   throw new WorkflowError("working_window_not_found");
 }
+export type CommandContext={expectedRequestId?:string;expectedEpoch?:string};
 export class ConversationWorkflow {
   constructor(
     private readonly pool: Pool,
     private readonly options: {
+      requireRequestContext?:boolean;
       verifyQualification?: (
         client: PoolClient,
         conversationId: string,
@@ -234,6 +236,12 @@ export class ConversationWorkflow {
     if (!conversation) throw new WorkflowError("conversation_not_found", 404);
     return { contact, conversations, conversation };
   }
+  private async guardCommand(client:PoolClient,c:any,input:CommandContext){
+    if(!this.options.requireRequestContext&&input.expectedRequestId===undefined)return;
+    const phase=(await client.query('SELECT request_id FROM ai_request_phases WHERE id=$1',[c.conversation.active_phase_id])).rows[0];
+    if(this.options.requireRequestContext&&phase&&(!input.expectedRequestId||input.expectedEpoch===undefined))throw new WorkflowError('stale_request_context');
+    if(input.expectedRequestId!==undefined&&input.expectedRequestId!==phase?.request_id||input.expectedEpoch!==undefined&&input.expectedEpoch!==c.conversation.automation_epoch)throw new WorkflowError('stale_request_context');
+  }
   private async invalidate(
     client: PoolClient,
     conversations: any[],
@@ -274,10 +282,11 @@ export class ConversationWorkflow {
   async control(input: {
     conversationId: string;
     action: "takeover" | "stop" | "resume";
-  }) {
+  } & CommandContext) {
     z.enum(["takeover", "stop", "resume"]).parse(input.action);
     return this.tx(async (client) => {
       const c = await this.lock(client, input.conversationId);
+      await this.guardCommand(client,c,input);
       if (input.action === "resume") {
         if (
           c.contact.opted_out_at || ['closed','refused'].includes(c.conversation.business_status) ||
@@ -355,12 +364,13 @@ export class ConversationWorkflow {
     reason: string;
     proof?: unknown;
     expectedEpoch?: string;
-  }) {
+  } & CommandContext) {
     z.enum(workflowStatuses).parse(input.status);
     text.parse(input.reason);
     if (input.expectedEpoch !== undefined) epoch.parse(input.expectedEpoch);
     return this.tx(async (client) => {
       const c = await this.lock(client, input.conversationId);
+      await this.guardCommand(client,c,input);
       if (
         input.expectedEpoch !== undefined &&
         c.conversation.automation_epoch !== input.expectedEpoch
@@ -455,7 +465,7 @@ export class ConversationWorkflow {
     proof?: unknown;
     expectedEpoch?: string;
     resultStatus?: "unqualified" | "insufficient_data";
-  }) {
+  } & CommandContext) {
     const data = z
       .object({
         conversationId: uuid,
@@ -497,6 +507,7 @@ export class ConversationWorkflow {
       .digest("hex");
     return this.tx(async (client) => {
       const c = await this.lock(client, data.conversationId);
+      await this.guardCommand(client,c,input);
       const old = (
         await client.query(
           "SELECT * FROM ai_handoff_notifications WHERE conversation_id=$1 AND logical_key=$2",
@@ -805,13 +816,14 @@ export class ConversationWorkflow {
     key: string;
     anchorAt: string;
     proof?:AutomaticFollowupProof;
-  }) {
+  } & CommandContext) {
     uuid.parse(input.conversationId);
     key.parse(input.key);
     z.enum(followupScenarios).parse(input.scenario);
     const anchor = date(input.anchorAt);
     return this.tx(async (client) => {
       const c = await this.lock(client, input.conversationId);
+      await this.guardCommand(client,c,input);
       if(input.proof){
         const p=input.proof;
         if(c.conversation.automation_epoch!==p.expectedEpoch||c.conversation.active_phase_id!==p.expectedPhaseId)throw new WorkflowError('stale_followup_trigger');
@@ -1008,7 +1020,7 @@ export class ConversationWorkflow {
       | "order_completed"
       | "requested_stop"
       | "closed";
-  }) {
+  } & CommandContext) {
     z.enum([
       "customer_reply",
       "booking",
@@ -1018,6 +1030,7 @@ export class ConversationWorkflow {
     ]).parse(input.reason);
     return this.tx(async (client) => {
       const c = await this.lock(client, input.conversationId);
+      await this.guardCommand(client,c,input);
       await this.invalidate(client, c.conversations, "paused", input.reason);
       return { cancelled: true };
     });

@@ -3,7 +3,7 @@ import type {Pool,PoolClient} from 'pg';
 import {z} from 'zod';
 import {latestRequestCustomerSequence} from './customer-sequence.js';
 export const businessEventKinds=['booking_offered','booking_confirmed','order_started','order_completed','requested_later','stop_followups'] as const;
-export const businessEventSchema=z.object({operationId:z.string().uuid(),conversationId:z.string().uuid(),expectedRevision:z.number().int().nonnegative(),kind:z.enum(businessEventKinds),notBefore:z.string().datetime({offset:true}).optional(),note:z.string().trim().max(1000).default('')}).strict();
+export const businessEventSchema=z.object({operationId:z.string().uuid(),expectedRequestId:z.string().uuid().optional(),expectedEpoch:z.string().regex(/^(0|[1-9][0-9]*)$/).max(20).optional(),conversationId:z.string().uuid(),expectedRevision:z.number().int().nonnegative(),kind:z.enum(businessEventKinds),notBefore:z.string().datetime({offset:true}).optional(),note:z.string().trim().max(1000).default('')}).strict();
 export type BusinessEventInput=z.input<typeof businessEventSchema>;
 export async function lockBusinessConversation(c:PoolClient,id:string){
  const initial=(await c.query('SELECT contact_id FROM ai_conversations WHERE id=$1',[id])).rows[0];if(!initial)throw Error('business_conversation_missing');
@@ -15,12 +15,13 @@ export async function lockBusinessConversation(c:PoolClient,id:string){
  return{contact,conversation:v,phase};
 }
 /** Caller already holds contact/conversation locks. Manager facts never enter customer inbox. */
-export async function recordBusinessEventInTransaction(c:PoolClient,input:BusinessEventInput,actor:'manager'|'customer'='manager',sourceEventKey?:string){
+export async function recordBusinessEventInTransaction(c:PoolClient,input:BusinessEventInput,actor:'manager'|'customer'='manager',sourceEventKey?:string,requireContext=false){
  const d=businessEventSchema.parse(input);
  const fingerprint=createHash('sha256').update(JSON.stringify([d,actor,sourceEventKey??null])).digest('hex');
  const prior=(await c.query('SELECT * FROM ai_business_events WHERE id=$1',[d.operationId])).rows[0];
  if(prior){if(prior.fingerprint!==fingerprint)throw Error('business_operation_conflict');return{event:prior,replayed:true};}
  const context=await lockBusinessConversation(c,d.conversationId),v=context.conversation,phase=context.phase;
+ if(requireContext&&(!d.expectedRequestId||d.expectedEpoch===undefined)||d.expectedRequestId!==undefined&&d.expectedRequestId!==phase.request_id||d.expectedEpoch!==undefined&&d.expectedEpoch!==v.automation_epoch)throw Error('business_request_changed');
  if(actor==='manager'&&d.kind==='requested_later'&&!(await c.query("SELECT 1 FROM ai_outbox a JOIN ai_request_phases p ON p.id=a.request_phase_id WHERE p.request_id=$1 AND a.state='confirmed' LIMIT 1",[phase.request_id])).rowCount)throw Error('business_first_contact_required');
  if(actor==='customer'){
   if(d.kind!=='requested_later'||!sourceEventKey)throw Error('business_customer_proof_required');
@@ -51,15 +52,15 @@ export async function recordBusinessEventInTransaction(c:PoolClient,input:Busine
  return{event,state:updated,replayed:false};
 }
 export class BusinessEvents{
- constructor(private pool:Pool){}
+ constructor(private pool:Pool,private options:{requireRequestContext?:boolean}={}){}
  async record(input:BusinessEventInput){
   const d=businessEventSchema.parse(input),c=await this.pool.connect();
-  try{await c.query('BEGIN');await c.query("SET LOCAL lock_timeout='5s'");await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[d.operationId]);const result=await recordBusinessEventInTransaction(c,d);await c.query('COMMIT');return result;}
+  try{await c.query('BEGIN');await c.query("SET LOCAL lock_timeout='5s'");await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[d.operationId]);const result=await recordBusinessEventInTransaction(c,d,'manager',undefined,this.options.requireRequestContext);await c.query('COMMIT');return result;}
   catch(error){await c.query('ROLLBACK');throw error;}finally{c.release();}
  }
- async detail(conversationId:string,db:Pool|PoolClient=this.pool){
+ async detail(conversationId:string,db:Pool|PoolClient=this.pool,requestId?:string){
   z.string().uuid().parse(conversationId);const v=(await db.query('SELECT active_phase_id FROM ai_conversations WHERE id=$1',[conversationId])).rows[0];
-  const phase=(await db.query('SELECT request_id FROM ai_request_phases WHERE id=$1',[v?.active_phase_id])).rows[0];if(!phase)return{state:null,events:[]};
+  const phase=requestId?(await db.query('SELECT request_id FROM ai_request_phases WHERE request_id=$1 AND conversation_id=$2 LIMIT 1',[requestId,conversationId])).rows[0]:(await db.query('SELECT request_id FROM ai_request_phases WHERE id=$1',[v?.active_phase_id])).rows[0];if(!phase)return{state:null,events:[]};
   return{state:(await db.query('SELECT * FROM ai_request_business_state WHERE request_id=$1',[phase.request_id])).rows[0]??{request_id:phase.request_id,revision:0,booking_state:'none',order_state:'none',followups_stopped:false,requested_contact_at:null},events:(await db.query('SELECT * FROM ai_business_events WHERE request_id=$1 ORDER BY created_at DESC,id LIMIT 100',[phase.request_id])).rows};
  }
 }

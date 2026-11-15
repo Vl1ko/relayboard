@@ -14,8 +14,8 @@ export type RuntimeTransport={
 /** Durable input/outbox state drives every iteration; no browser/session Map owns business state. */
 export class AiExecutionRuntime{
  private orchestrator:AiOrchestrator;private messages:AiManagerStore;private workflow:ConversationWorkflow;private runner:OutreachRunner;
- constructor(private pool:Pool,private provider:AiProvider,private transport:RuntimeTransport,private signal:AbortSignal){
-  this.orchestrator=new AiOrchestrator(pool);this.messages=new AiManagerStore(pool);this.workflow=new ConversationWorkflow(pool,{verifyQualification:verifyAiQualification});this.runner=new OutreachRunner(pool);
+ constructor(private pool:Pool,private provider:AiProvider,private transport:RuntimeTransport,private signal:AbortSignal,options:{publicAppUrl?:string}={}){
+  this.orchestrator=new AiOrchestrator(pool,options);this.messages=new AiManagerStore(pool);this.workflow=new ConversationWorkflow(pool,{verifyQualification:verifyAiQualification});this.runner=new OutreachRunner(pool);
  }
  private async deliver(id:string){
   this.signal.throwIfAborted();

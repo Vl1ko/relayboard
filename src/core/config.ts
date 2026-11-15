@@ -4,6 +4,7 @@ import { environmentBoolean } from "./environment-flags.js";
 
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  PUBLIC_APP_URL: z.string().url().max(500).optional().refine(value=>{if(!value)return true;const u=new URL(value);return !u.username&&!u.password&&(u.protocol==='https:'||u.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(u.hostname));},'Use an HTTPS public app URL without credentials'),
   PORT: z.coerce.number().default(3001),
   LOCAL_MAX_TEST_CHAT_ID: z.string().regex(/^-?\d+$/).optional(),
   HOST: z.enum(["127.0.0.1","0.0.0.0"]).default("0.0.0.0"),

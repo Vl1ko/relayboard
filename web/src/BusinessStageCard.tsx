@@ -1,6 +1,6 @@
 import {useRef,useState} from 'react';
 export type BusinessDetail={state:{revision:number;booking_state:string;order_state:string;followups_stopped:boolean;requested_contact_at:string|null}|null;events:{id:string;kind:string;actor:string;note:string;created_at:string;not_before:string|null}[]};
-export default function BusinessStageCard({conversationId,data,labels,closed,onChange}:{conversationId:string;data:BusinessDetail;labels:{scenario:string;label:string}[];closed:boolean;onChange:()=>void}){
+export default function BusinessStageCard({conversationId,requestId,epoch,data,labels,closed,onChange}:{conversationId:string;requestId?:string;epoch:string;data:BusinessDetail;labels:{scenario:string;label:string}[];closed:boolean;onChange:()=>void}){
  const [kind,setKind]=useState('booking_offered'),[note,setNote]=useState(''),[when,setWhen]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const active=useRef(false),operation=useRef<{signature:string;id:string}|null>(null);
  const label=(scenario:string,fallback:string)=>labels.find(r=>r.scenario===scenario)?.label||fallback;
@@ -9,7 +9,7 @@ export default function BusinessStageCard({conversationId,data,labels,closed,onC
  async function save(){
   if(active.current)return;active.current=true;setBusy(true);setError('');
   try{
-   const body={expectedRevision:data.state?.revision??0,kind,note,...(kind==='requested_later'&&when?{notBefore:new Date(when).toISOString()}: {})};
+   const body={expectedRevision:data.state?.revision??0,expectedRequestId:requestId,expectedEpoch:epoch,kind,note,...(kind==='requested_later'&&when?{notBefore:new Date(when).toISOString()}: {})};
    const signature=JSON.stringify(body);if(operation.current?.signature!==signature)operation.current={signature,id:crypto.randomUUID()};
    const response=await fetch('/api/ai/workspace/conversations/'+conversationId+'/business-events',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({...body,operationId:operation.current.id})});
    const result=await response.json();if(!response.ok)throw Error(result.error||'Не удалось сохранить отметку');setNote('');setWhen('');operation.current=null;onChange();

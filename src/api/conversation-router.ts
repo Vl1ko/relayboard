@@ -1,3 +1,4 @@
+import {requestList,requestDetail} from '../core/request-workspace.js';
 import {DialogueRetention} from '../core/dialogue-retention.js';
 import {BusinessEvents,businessEventSchema} from '../core/business-events.js';
 import { Router, type RequestHandler, type ErrorRequestHandler } from "express";
@@ -70,7 +71,7 @@ export interface WorkspaceWorkflow {
 
 const conversationObject = `jsonb_build_object('id',v.id,'platform',v.platform,'accountId',v.account_id,
   'accountName',coalesce(a.name,'Удалённый аккаунт'),'externalId',v.external_id,
-  'status',v.business_status,'mode',v.automation_mode,'epoch',v.automation_epoch::text,
+  'requestId',(SELECT request_id FROM ai_request_phases WHERE id=v.active_phase_id),'managerHold',v.manager_hold,'status',v.business_status,'mode',v.automation_mode,'epoch',v.automation_epoch::text,
   'accountEnabled',coalesce(a.enabled,false),'accountNeedsAuth',(a.auth_error IS NOT NULL))`;
 const listBase = `SELECT c.id,c.display_name AS "displayName",c.phone_e164 AS phone,
  c.priority,c.priority_revision AS "priorityRevision",c.imported_stage AS "importedStage",c.comment,(c.opted_out_at IS NOT NULL) AS "optedOut",c.created_at AS "createdAt",
@@ -104,7 +105,7 @@ export function createConversationRouter(options: {
   workflow?: WorkspaceWorkflow;
 }) {
   const router = Router();
-  const business=new BusinessEvents(options.pool);
+  const business=new BusinessEvents(options.pool,{requireRequestContext:true});
   router.use(options.authorize);
   router.use((_req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
@@ -113,6 +114,13 @@ export function createConversationRouter(options: {
         .status(503)
         .json({ error: "Рабочее место диалогов пока не включено" });
     next();
+  });
+  router.use('/conversations/:id',(req,res,next)=>{
+    if(req.method==='POST'){
+      const raw=req.body&&typeof req.body==='object'&&!Array.isArray(req.body)?req.body:{};
+      res.locals.commandContext=z.object({expectedRequestId:z.string().uuid().optional(),expectedEpoch:z.string().regex(/^(0|[1-9][0-9]*)$/).max(20).optional()}).parse({expectedRequestId:raw.expectedRequestId,expectedEpoch:raw.expectedEpoch});
+      if(raw===req.body){const {expectedRequestId,expectedEpoch,...body}=raw;req.body=body;}
+    }next();
   });
   router.post('/contacts/:id/priority',async(req,res)=>{
     const id=z.string().uuid().parse(req.params.id),d=z.object({priority:z.enum(['high','normal','low']),expectedRevision:z.number().int().nonnegative()}).strict().parse(req.body);
@@ -196,6 +204,11 @@ export function createConversationRouter(options: {
       }),
     );
   });
+  router.get('/contacts/:id/requests',async(req,res)=>res.json(await requestList(options.pool,z.string().uuid().parse(req.params.id))));
+  router.get('/contacts/:id/requests/:requestId',async(req,res)=>{
+    const contactId=z.string().uuid().parse(req.params.id),id=z.string().uuid().parse(req.params.requestId);
+    const detail=await readSnapshot(options.pool,c=>requestDetail(c,contactId,id));if(!detail)return res.status(404).json({error:'Заявка контакта не найдена'});res.json(detail);
+  });
   router.get("/contacts/:id", async (req, res) => {
     const id = z.string().uuid().parse(req.params.id),
       paging = z
@@ -203,6 +216,7 @@ export function createConversationRouter(options: {
           offset: z.coerce.number().int().min(0).max(1000000).default(0),
           limit: z.coerce.number().int().min(1).max(100).default(50),
           conversationId: z.string().uuid().optional(),
+          requestId:z.string().uuid().optional(),
         })
         .parse(req.query);
     const detail = await readSnapshot(options.pool, async (client) => {
@@ -216,26 +230,28 @@ export function createConversationRouter(options: {
         )
       )
         return null;
+      if(paging.requestId&&!(await client.query('SELECT 1 FROM ai_requests r WHERE r.id=$1 AND r.contact_id=$2 AND ($3::uuid IS NULL OR EXISTS(SELECT 1 FROM ai_request_phases p WHERE p.request_id=r.id AND p.conversation_id=$3))',[paging.requestId,id,paging.conversationId??null])).rowCount)return null;
       const messages = (
         await client.query(
-          `SELECT i.event_key AS id,i.conversation_id AS "conversationId",i.external_message_id AS "externalMessageId",i.direction,i.origin,i.disposition,i.text,i.occurred_at AS "occurredAt",i.received_at AS "receivedAt" FROM ai_inbox i JOIN ai_conversations v ON v.id=i.conversation_id WHERE v.contact_id=$1 AND ($4::uuid IS NULL OR v.id=$4) ORDER BY i.occurred_at DESC,i.event_key DESC LIMIT $2 OFFSET $3`,
-          [id, paging.limit, paging.offset, paging.conversationId ?? null],
+          `SELECT i.event_key AS id,i.conversation_id AS "conversationId",i.external_message_id AS "externalMessageId",i.direction,i.origin,i.disposition,i.text,i.occurred_at AS "occurredAt",i.received_at AS "receivedAt" FROM ai_inbox i JOIN ai_conversations v ON v.id=i.conversation_id WHERE v.contact_id=$1 AND ($4::uuid IS NULL OR v.id=$4) AND ($5::uuid IS NULL OR EXISTS(SELECT 1 FROM ai_request_phases p WHERE p.id=i.request_phase_id AND p.request_id=$5)) ORDER BY i.occurred_at DESC,i.event_key DESC LIMIT $2 OFFSET $3`,
+          [id, paging.limit, paging.offset, paging.conversationId ?? null,paging.requestId??null],
         )
       ).rows;
       const messageTotal = (
         await client.query(
-          "SELECT count(*)::int n FROM ai_inbox i JOIN ai_conversations v ON v.id=i.conversation_id WHERE v.contact_id=$1 AND ($2::uuid IS NULL OR v.id=$2)",
-          [id, paging.conversationId ?? null],
+          "SELECT count(*)::int n FROM ai_inbox i JOIN ai_conversations v ON v.id=i.conversation_id WHERE v.contact_id=$1 AND ($2::uuid IS NULL OR v.id=$2) AND ($3::uuid IS NULL OR EXISTS(SELECT 1 FROM ai_request_phases p WHERE p.id=i.request_phase_id AND p.request_id=$3))",
+          [id, paging.conversationId ?? null,paging.requestId??null],
         )
       ).rows[0].n;
       const actions = (
         await client.query(
-          `SELECT id,conversation_id AS "conversationId",kind,text,state,outcome_code AS "outcomeCode",external_message_id AS "externalMessageId",cancellation_requested AS "cancellationRequested",created_at AS "createdAt",updated_at AS "updatedAt" FROM ai_outbox WHERE contact_id=$1 AND ($2::uuid IS NULL OR conversation_id=$2) ORDER BY created_at DESC,id DESC LIMIT 100`,
-          [id, paging.conversationId ?? null],
+          `SELECT id,conversation_id AS "conversationId",kind,text,state,outcome_code AS "outcomeCode",external_message_id AS "externalMessageId",cancellation_requested AS "cancellationRequested",created_at AS "createdAt",updated_at AS "updatedAt" FROM ai_outbox WHERE contact_id=$1 AND ($2::uuid IS NULL OR conversation_id=$2) AND ($3::uuid IS NULL OR EXISTS(SELECT 1 FROM ai_request_phases p WHERE p.id=ai_outbox.request_phase_id AND p.request_id=$3)) ORDER BY created_at DESC,id DESC LIMIT 100`,
+          [id, paging.conversationId ?? null,paging.requestId??null],
         )
       ).rows;
       return {
         contact,
+        requestId:paging.requestId??null,
         messages: messages.reverse(),
         messageTotal,
         offset: paging.offset,
@@ -247,7 +263,7 @@ export function createConversationRouter(options: {
     res.json(detail);
   });
   router.get("/conversations/:id/workflow", async (req, res) => {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.string().uuid().parse(req.params.id),requestId=z.string().uuid().optional().parse(req.query.requestId);
     if (!options.workflow?.detail)
       return res.status(503).json({
         error: "Сведения о передаче и повторных обращениях пока не подключены",
@@ -260,22 +276,23 @@ export function createConversationRouter(options: {
         )
       ).rows[0];
       if (!conversation) return null;
+      if(requestId&&!(await client.query('SELECT 1 FROM ai_request_phases WHERE request_id=$1 AND conversation_id=$2',[requestId,id])).rowCount)return null;
       const notifications = (
         await client.query(
-          "SELECT id,reason,summary,parameters,source,state,outcome_code,external_message_id,created_at FROM ai_handoff_notifications WHERE conversation_id=$1 ORDER BY created_at DESC,id DESC LIMIT 20",
-          [id],
+          "SELECT id,reason,summary,parameters,source,state,outcome_code,external_message_id,created_at FROM ai_handoff_notifications WHERE conversation_id=$1 AND ($2::uuid IS NULL OR EXISTS(SELECT 1 FROM ai_request_phases p WHERE p.id=ai_handoff_notifications.request_phase_id AND p.request_id=$2)) ORDER BY created_at DESC,id DESC LIMIT 20",
+          [id,requestId??null],
         )
       ).rows;
       const followups = (
         await client.query(
-          "SELECT id,scenario,step,text,due_at,state,cancellation_reason FROM ai_followup_jobs WHERE conversation_id=$1 ORDER BY due_at DESC,id DESC LIMIT 50",
-          [id],
+          "SELECT id,scenario,step,text,due_at,state,cancellation_reason FROM ai_followup_jobs WHERE conversation_id=$1 AND ($2::uuid IS NULL OR EXISTS(SELECT 1 FROM ai_request_phases p WHERE p.id=ai_followup_jobs.request_phase_id AND p.request_id=$2)) ORDER BY due_at DESC,id DESC LIMIT 50",
+          [id,requestId??null],
         )
       ).rows;
       const statusHistory = (
         await client.query(
-          "SELECT id,from_status,to_status,reason,created_at FROM ai_workflow_status_history WHERE conversation_id=$1 ORDER BY created_at DESC,id DESC LIMIT 100",
-          [id],
+          "SELECT id,from_status,to_status,reason,created_at FROM ai_workflow_status_history WHERE conversation_id=$1 AND ($2::uuid IS NULL OR EXISTS(SELECT 1 FROM ai_request_phases p WHERE p.id=ai_workflow_status_history.request_phase_id AND p.request_id=$2)) ORDER BY created_at DESC,id DESC LIMIT 100",
+          [id,requestId??null],
         )
       ).rows;
       return {
@@ -283,7 +300,7 @@ export function createConversationRouter(options: {
         notifications,
         followups,
         statusHistory,
-        business: await business.detail(id,client),
+        business: await business.detail(id,client,requestId),
         stageLabels: (await client.query("SELECT scenario,label FROM ai_followup_rules")).rows,
         limits: { notifications: 20, followups: 50, statusHistory: 100 },
       };
@@ -293,7 +310,7 @@ export function createConversationRouter(options: {
   });
   router.post("/conversations/:id/business-events", async (req,res)=>{
     const conversationId=z.string().uuid().parse(req.params.id);
-    const input=businessEventSchema.parse({...req.body,conversationId});
+    const input=businessEventSchema.parse({...req.body,...res.locals.commandContext,conversationId});
     res.json(await business.record(input));
   });
   router.get('/settings/storage',async (_req,res)=>res.json(await new DialogueRetention(options.pool).preview()));
@@ -380,7 +397,7 @@ export function createConversationRouter(options: {
         .strict()
         .parse(req.body);
     res.json(
-      await options.workflow.scheduleFollowup({ conversationId, ...data }),
+      await options.workflow.scheduleFollowup({ conversationId, ...data,...res.locals.commandContext }),
     );
   });
   router.post("/conversations/:id/cancel-followups", async (req, res) => {
@@ -402,7 +419,7 @@ export function createConversationRouter(options: {
         .strict()
         .parse(req.body);
     res.json(
-      await options.workflow.cancelFollowups({ conversationId, ...data }),
+      await options.workflow.cancelFollowups({ conversationId, ...data,...res.locals.commandContext }),
     );
   });
   router.post("/conversations/:id/handoff", async (req, res) => {
@@ -423,7 +440,7 @@ export function createConversationRouter(options: {
         })
         .strict()
         .parse(req.body);
-    res.json(await options.workflow.handoff({ conversationId, ...data }));
+    res.json(await options.workflow.handoff({ conversationId, ...data,...res.locals.commandContext }));
   });
   const requireWorkflow: RequestHandler = (_req, res, next) =>
     options.workflow
@@ -439,7 +456,7 @@ export function createConversationRouter(options: {
         .parse(req.body);
     res.json({
       result: await options.workflow!.control({
-        conversationId,
+        conversationId,...res.locals.commandContext,
         action:
           data.mode === "auto"
             ? "resume"
@@ -481,7 +498,7 @@ export function createConversationRouter(options: {
           .parse(req.body);
       res.json({
         result: await options.workflow!.setStatus({
-          conversationId,
+          conversationId,...res.locals.commandContext,
           status: data.status,
           reason: data.reason,
         }),

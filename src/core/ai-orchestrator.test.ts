@@ -48,3 +48,9 @@ test('stopping execution aborts the in-flight model and cannot persist a handoff
  const work=r.runtime.tick(),rejected=assert.rejects(work,/abort/i);await ready;r.stop.abort();await rejected;
  assert.equal(r.clientSends(),0);assert.equal((await pool.query('SELECT count(*)::int n FROM ai_engine_decisions')).rows[0].n,0);
 });
+test('manager snapshot uses configured field names, factual summary and an authenticated workspace deep link',{skip},async()=>{
+ const f=await fixture(),e=await orchestrator.ingest({...f.event,messageId:'manager-snapshot',text:'Нужно 12 тонн'});
+ const result=await new AiOrchestrator(pool,{publicAppUrl:'https://relayboard.example/'}).process(f.conv,e.event.event_key,{kind:'fixture',async complete(){return{...proposal,extracted:[{field:'volume',value:12,evidenceMessageId:'manager-snapshot',evidenceQuote:'12 тонн'}],replyKind:'none',askFields:[],proposedStatus:'qualified'};}});
+ assert.ok('notification'in result&&result.notification);const n=result.notification!;assert.match(n.summary,/соответствует настроенным критериям/);assert.equal(n.parameters.volume,'12');assert.equal(JSON.parse(n.source.fieldLabelsJson).volume,'Какой объём?');const link=new URL(n.source.cardLink);assert.equal(link.searchParams.get('contact'),f.contact);assert.equal(link.searchParams.get('conversation'),f.conv);assert.equal(link.searchParams.get('view'),'dialogs');
+ const {formatManagerNotification}=await import('./max-manager-notification.js');const text=formatManagerNotification(JSON.stringify({reason:n.reason,summary:n.summary,parameters:n.parameters,source:n.source,contact:n.contact_snapshot,channel:n.channel_snapshot}));assert.match(text,/Какой объём\?: 12/);assert.match(text,/Открыть заявку: https:/);assert.ok(!text.includes('fieldLabelsJson'));assert.ok(!text.includes('eventKey'));
+});
