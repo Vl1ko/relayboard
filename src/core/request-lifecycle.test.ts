@@ -1,3 +1,4 @@
+import {tmpdir} from 'node:os';
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -317,7 +318,7 @@ test('one request shares grounded fields across channels with collision-free pro
  await pool.query('UPDATE ai_engine_settings SET settings=settings||$1::jsonb',[JSON.stringify({fields:[{key:'volume',question:'Объём?',required:true},{key:'city',question:'Город?',required:true}],rules:[{field:'volume',op:'gte',value:10}],replyLimit:10})]);
  const f=await fixture(),first=await bindSourceRequest(pool,f),engine=new AiEngineStore(pool);
  const incoming=async(accountId:string,conversationId:string,platform:string,messageId:string,text:string)=>store.ingest({version:1,accountId,conversationId,platform,messageId,text,occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer'});
- const v1=await incoming(f.accountId,'private-author','max','same-id','Нужно12,5 тонн');
+ const v1=await incoming(f.accountId,'private-author','max','same-id','Нужно 12,5 тонн');
  const firstDecision=await engine.evaluate(f.conversationId,v1.event.event_key,{kind:'fixture',async complete(){return{replyDraft:'',extracted:[{field:'volume',value:12.5,evidenceMessageId:'same-id',evidenceQuote:'12,5 тонн'}],replyKind:'ask_fields',askFields:['city'],knowledgeKeys:[],proposedStatus:'insufficient_data',handoffReason:null};}});assert.equal(firstDecision.business_status,'insufficient_data');
  const contact=(await pool.query('SELECT contact_id FROM ai_conversations WHERE id=$1',[f.conversationId])).rows[0].contact_id;
  const waAccount=(await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext) VALUES('whatsapp','synthetic','fake') RETURNING id")).rows[0].id;
@@ -376,7 +377,7 @@ test('WhatsApp publication stages canonical content then rechecks pause, route a
 });
 test('partially sent WhatsApp attachment batch becomes unknown and never replays',{skip},async()=>{
  const {dispatchOwnedWhatsAppPublication}=await import('./owned-whatsapp-publication.js'),{mkdtemp,writeFile,rm}=await import('node:fs/promises');
- const f=await whatsappPublicationFixture(),dir=await mkdtemp('/private/tmp/relayboard-media-test-');let sends=0,stages=0;
+ const f=await whatsappPublicationFixture(),dir=await mkdtemp(tmpdir()+'/relayboard-media-test-');let sends=0,stages=0;
  try{
   for(let index=0;index<2;index++){const file=dir+'/'+index+'.png';await writeFile(file,'fake');await pool.query("INSERT INTO attachments(post_id,storage_path,stored_name,original_name,mime_type,size_bytes) VALUES($1,$2,$2,'synthetic.png','image/png',4)",[f.post,file]);}
   const options={deliveryId:f.delivery,accountId:f.accountId,sessionKey:f.sessionKey,cdp:{send(){return Promise.resolve({});}},selfAliases:['100@c.us'],recipientAliases:async()=>['500@g.us'],isActive:()=>true,maxUploadBytes:4,prepare:async(o:Parameters<typeof import('./adapters/whatsapp-ai-text.js').prepareWhatsAppAiText>[0])=>{

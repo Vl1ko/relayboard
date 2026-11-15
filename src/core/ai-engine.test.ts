@@ -541,3 +541,7 @@ test('lost model ownership cannot persist a provider_failure handoff', {skip}, a
  const rejected=assert.rejects(pending,/abort/i);await ready;owner.abort();await rejected;
  assert.equal((await pool.query('SELECT count(*)::int AS n FROM ai_engine_decisions WHERE conversation_id=$1',[f.conv.id])).rows[0].n,0);
 });
+
+test('temporary no-contact request overrides qualification and model reply without fabricating a permanent refusal',()=>{
+ const d=validateAiDecision({settings,messages:[{messageId:'pause',text:'Не пишите пока, напишу завтра',origin:'customer'}],previousFields:{volume:{value:12,evidenceMessageId:'old',evidenceQuote:'12'}},replyCount:0,proposal:{...proposal,proposedStatus:'qualified'}});assert.equal(d.reason,'contact_pause_requested');assert.equal(d.disposition,'handoff');assert.equal(d.reply,null);assert.equal(d.businessStatus,'manager_required');
+});

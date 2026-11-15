@@ -1,3 +1,4 @@
+import {literalNumbers} from './numeric-evidence.js';
 import type {Pool} from 'pg';
 import {withExecutionSlot} from './execution-slot.js';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -21,13 +22,7 @@ Use the supplied knowledge and evidence; if a commercial fact is unknown, hand o
 
 /** Literal numeric evidence only: no rounding, unit conversion or values from business rules. */
 export function numericEvidenceValues(messages:{origin:string;text:string}[]){
- const values=new Set<number>();
- for(const m of messages.filter(m=>m.origin==='customer'))for(const match of m.text.matchAll(/(?<![\p{L}\d.,+\-])[+-]?\d+(?:\.\d+)?(?![\d.,])/gu)){
-  const n=Number(match[0]);if(!Number.isFinite(n)||(Number.isInteger(n)&&!Number.isSafeInteger(n)))continue;
-  const literal=String(n).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  if(new RegExp('(^|[^0-9.,+-])'+literal+'($|[^0-9.,])').test(m.text))values.add(n);
- }
- return [...values];
+ return [...new Set(messages.filter(m=>m.origin==='customer').flatMap(m=>literalNumbers(m.text)))];
 }
 async function boundedJson(response: Response, limit: number): Promise<any> {
   if (!response.ok) { await response.body?.cancel(); throw Error('gigachat_request_failed'); }

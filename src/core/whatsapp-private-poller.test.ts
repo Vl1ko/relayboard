@@ -46,7 +46,7 @@ test('WhatsApp stale phase batch cannot become input of a newly created request'
 
 test('WhatsApp consumes closed-period opt-out and redacts private text before storage',{skip},async()=>{
  const f=await fixture();const {ConversationWorkflow}=await import('./conversation-workflow.js');await new ConversationWorkflow(pool).setStatus({conversationId:f.conversation.id,status:'closed',reason:'Synthetic completed request'});
- f.set({messages:[{...f.message('idle-stop'),body:'Не пишите мне'}]});assert.equal((await f.poller().poll(f.conversation.id)).complete,true);
+ f.set({messages:[{...f.message('idle-stop'),body:'Не пишите мне, пожалуйста.'}]});assert.equal((await f.poller().poll(f.conversation.id)).complete,true);
  const row=(await pool.query("SELECT * FROM ai_inbox WHERE external_message_id='idle-stop'")).rows[0];assert.equal(row.request_phase_id,null);assert.equal(row.text,'[Сообщение вне активной заявки]');assert.ok((await pool.query('SELECT opted_out_at FROM ai_contacts WHERE id=$1',[f.conversation.contact_id])).rows[0].opted_out_at);
  await assert.rejects(bindSourceRequest(pool,{...f.source,messageId:'after-refusal'}),/contact_opted_out/);
 });

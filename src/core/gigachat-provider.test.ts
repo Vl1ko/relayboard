@@ -44,3 +44,7 @@ test('settings accept provider-specific models and reject cross-provider model f
 });
 
  test('numeric extraction schema uses only literal customer evidence, never thresholds or units',async()=>{const {numericEvidenceValues}=await import('./gigachat-provider.js');assert.deepEqual(numericEvidenceValues([{origin:'customer',text:'Нужно 12345 м3'},{origin:'service',text:'Критерий 10'}]),[12345]);assert.deepEqual(numericEvidenceValues([{origin:'customer',text:'Пока не знаю'}]),[]);assert.deepEqual(numericEvidenceValues([{origin:'customer',text:'Нужно -12.5'}]),[-12.5]);});
+
+test('live numeric schema accepts decimal comma and excludes unit exponents and rounded values',async()=>{
+ const {numericEvidenceValues}=await import('./gigachat-provider.js');assert.deepEqual(numericEvidenceValues([{origin:'customer',text:'Нужно12,5 тонн, не -12.5; площадь м3; 0.100000000000000005; 1e3; 9007199254740993'},{origin:'service',text:'1000'}]),[-12.5]);assert.deepEqual(numericEvidenceValues([{origin:'customer',text:'Нужно 12,5 тонн'}]),[12.5]);
+});

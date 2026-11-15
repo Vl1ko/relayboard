@@ -1,3 +1,4 @@
+import {isTemporaryContactPause} from './customer-refusal.js';
 import {requestQualificationContext} from './request-qualification-context.js';
 import {hasLiteralNumber} from './numeric-evidence.js';
 import {latestRequestCustomerSequence} from './customer-sequence.js';
@@ -220,6 +221,7 @@ export function validateAiDecision(input: {
       Object.create(null),
       input.previousFields ?? {},
     );
+  if(isTemporaryContactPause([...input.messages].reverse().find(m=>m.origin==='customer')?.text??''))return handoff("contact_pause_requested",fields);
   if (input.replyCount >= settings.replyLimit)
     return handoff("reply_limit", fields);
   const parsed = aiProposalSchema.safeParse(input.proposal);
@@ -462,7 +464,8 @@ export class AiEngineStore {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      if (shared?.compatible===false) failure="criteria_version_conflict";
+      if(isTemporaryContactPause(target.text))failure='contact_pause_requested';
+      else if (shared?.compatible===false) failure="criteria_version_conflict";
       else if (found.reply_count < settings.replyLimit)
         proposal = await Promise.race([
           provider.complete({

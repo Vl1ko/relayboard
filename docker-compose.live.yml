@@ -66,7 +66,9 @@ services:
     image: relayboard:local
     pull_policy: never
     env_file: .env
-    environment: *live-environment
+    environment:
+      <<: *live-environment
+      NODE_EXTRA_CA_CERTS: /app/certs/gigachat-root-ca.pem
     command: [node, dist-node/ai-worker/index.js]
     logging: *live-logging
     stop_grace_period: 60s

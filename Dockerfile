@@ -4,6 +4,8 @@ ENV PUPPETEER_SKIP_DOWNLOAD=true
 COPY package.json package-lock.json ./
 COPY scripts ./scripts
 COPY docs/licenses ./docs/licenses
+COPY certs ./certs
+RUN node scripts/check-gigachat-ca.mjs
 RUN npm ci
 COPY tsconfig.node.json vite.config.ts ./
 COPY scripts ./scripts
@@ -24,6 +26,8 @@ ENV PUPPETEER_SKIP_DOWNLOAD=true
 COPY package.json package-lock.json ./
 COPY scripts ./scripts
 COPY docs/licenses ./docs/licenses
+COPY certs ./certs
+RUN node scripts/check-gigachat-ca.mjs
 RUN npm ci --omit=dev
 COPY --from=build --chown=node:node /app/dist-node ./dist-node
 COPY --from=build --chown=node:node /app/dist-web ./dist-web

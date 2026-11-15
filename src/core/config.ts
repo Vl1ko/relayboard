@@ -62,4 +62,5 @@ const schema = z.object({
   ),
 });
 
+if(process.env.NODE_TLS_REJECT_UNAUTHORIZED==='0')throw new Error('TLS certificate verification cannot be disabled');
 export const config = schema.parse(process.env);

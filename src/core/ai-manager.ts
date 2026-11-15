@@ -1,3 +1,4 @@
+import {isExplicitCustomerRefusal} from './customer-refusal.js';
 import {finalizeNegativeCompletion} from './negative-completion.js';
 import {latestRequestCustomerSequence} from './customer-sequence.js';
 import {requestHasOutgoing} from './request-greeting.js';
@@ -108,7 +109,7 @@ export class AiManagerStore {
         const row = (await client.query("SELECT * FROM ai_inbox WHERE event_key=$1", [channelMessageKey(event)])).rows[0];
         return { duplicate: true, event: row };
       }
-      const refusal=event.origin==='customer' && /^(?:пожалуйста[,\s]*)?(?:(?:больше\s+)?не\s+(?:пишите|звоните|связывайтесь)(?:\s+(?:мне|со\s+мной|сюда|больше))*|отпишите\s+меня|удалите\s+(?:мой\s+)?(?:номер|контакт)|стоп|stop|unsubscribe)[.!?\s]*$/iu.test(event.text.trim());
+      const refusal=event.origin==='customer' && isExplicitCustomerRefusal(event.text);
       if(refusal){
         await client.query("UPDATE ai_contacts SET opted_out_at=coalesce(opted_out_at,now()),opt_out_reason=coalesce(opt_out_reason,'explicit_customer_refusal') WHERE id=$1",[conversation.contact_id]);
         const linked=await client.query('SELECT id FROM ai_conversations WHERE contact_id=$1 ORDER BY id FOR UPDATE',[conversation.contact_id]);
