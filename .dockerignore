@@ -2,10 +2,19 @@ node_modules
 dist-node
 dist-web
 .env
+.env.*
+!.env.example
 .git
 outputs
 work
 data/whatsapp-session
+data
+.codex
+.agents
+.ssh
+.aws
+.DS_Store
+secret_key.txt
 npm-debug.log*
 
 .tools/

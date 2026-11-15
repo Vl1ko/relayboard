@@ -16,17 +16,21 @@ export async function dispatchOwnedWhatsAppPublication(pool:Pool,options:{delive
  const prepared:Prepared[]=[],ids:string[]=[];let started=false;
  try{
   const attachments=(await pool.query('SELECT storage_path AS path,original_name AS name,mime_type AS mime,size_bytes FROM attachments WHERE post_id=$1 AND expired_at IS NULL ORDER BY created_at,id',[row.post_id])).rows;
+  if(attachments.length>10)throw new DeliveryError('Слишком много вложений WhatsApp','permanent');
   const recipients=row.external_id.endsWith('@g.us')?[row.external_id]:await options.recipientAliases(row.external_id);
-  const plan:{text:string;publication:{media?:{mimetype:string;data:string;filename:string};caption?:string;forceDocument?:boolean}}[]=[];
+  const plan:{text:string;attachment?:{path:string;name:string;mime:string;size_bytes:string};publication:{media?:{mimetype:string;data:string;filename:string};caption?:string;forceDocument?:boolean}}[]=[];
   if(!attachments.length||row.text.length>1000)plan.push({text:row.text,publication:{}});
   let bytes=0;
   for(let index=0;index<attachments.length;index++){
    const a=attachments[index],info=await stat(a.path);bytes+=info.size;
-   if(!info.isFile()||info.size!==Number(a.size_bytes)||bytes>options.maxUploadBytes)throw new DeliveryError('Размер вложений WhatsApp требует проверки','permanent');
-   const data=await readFile(a.path);plan.push({text:'',publication:{media:{mimetype:a.mime,data:data.toString('base64'),filename:a.name},caption:index===0&&row.text.length<=1000?row.text:'',forceDocument:!a.mime.startsWith('image/')&&!a.mime.startsWith('video/')}});
+   if(!info.isFile()||info.size!==Number(a.size_bytes)||info.size>options.maxUploadBytes||bytes>options.maxUploadBytes*10)throw new DeliveryError('Размер вложений WhatsApp требует проверки','permanent');
+   plan.push({text:'',attachment:a,publication:{caption:index===0&&row.text.length<=1000?row.text:'',forceDocument:!a.mime.startsWith('image/')&&!a.mime.startsWith('video/')}});
   }
   if(!plan.length)throw new DeliveryError('Пустая публикация WhatsApp','permanent');
-  for(let index=0;index<plan.length;index++)prepared.push(await (options.prepare??prepareWhatsAppAiText)({cdp:options.cdp,accountId,conversationId:deliveryId,operationId:deliveryId+':'+index,externalId:row.external_id,recipientAliases:recipients,selfAliases:options.selfAliases,isActive:options.isActive,publication:plan[index].publication,maxAgeMs:120000}));
+  for(let index=0;index<plan.length;index++){
+   const item=plan[index];if(item.attachment){const data=await readFile(item.attachment.path);if(data.length!==Number(item.attachment.size_bytes))throw new DeliveryError('Вложение изменилось во время подготовки','waiting');item.publication.media={mimetype:item.attachment.mime,data:data.toString('base64'),filename:item.attachment.name};}
+   prepared.push(await (options.prepare??prepareWhatsAppAiText)({cdp:options.cdp,accountId,conversationId:deliveryId,operationId:deliveryId+':'+index,externalId:row.external_id,recipientAliases:recipients,selfAliases:options.selfAliases,isActive:options.isActive,publication:item.publication,maxAgeMs:120000}));delete item.publication.media;
+  }
   for(let index=0;index<prepared.length;index++){
    const c=await pool.connect();let acknowledgement:Promise<unknown>|undefined;
    try{

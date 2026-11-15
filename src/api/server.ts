@@ -1,8 +1,9 @@
+import {persistUploadedAttachments} from '../core/uploaded-attachments.js';
 import {startDialogueMaintenance} from '../core/dialogue-retention.js';
 import {maxWorkerRequest} from '../core/max-worker-client.js';
 import { createLocalMaxTestRouter } from './local-max-test-router.js';
 import { createGigaChatProvider } from '../core/gigachat-provider.js';
-import cors from "cors";
+import {browserOriginGuard} from "./browser-origin.js";
 import express, { type ErrorRequestHandler, type RequestHandler } from "express";
 import { createHash, randomBytes, timingSafeEqual, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
@@ -28,7 +29,8 @@ import { publishingQueue, schedulerKey } from "../core/queue.js";
 import { destinationInput, integrationInput, postDestinationsInput, postInput } from "./schemas.js";
 
 const app = express();
-app.use(cors({ origin: true, credentials: true }));
+app.use('/api',browserOriginGuard({publicAppUrl:config.PUBLIC_APP_URL,development:config.NODE_ENV==='development'}));
+app.disable('x-powered-by');
 app.use(express.json({ limit: "1mb" }));
 
 const uploadRoot = resolve(config.UPLOAD_DIR);
@@ -59,7 +61,7 @@ function cookieValue(request: express.Request, name: string) {
   const header = request.header("cookie") || "";
   for (const part of header.split(";")) {
     const [key, ...value] = part.trim().split("=");
-    if (key === name) return decodeURIComponent(value.join("="));
+    if (key === name) {try{return decodeURIComponent(value.join("="));}catch{return "";}}
   }
   return "";
 }
@@ -79,6 +81,8 @@ app.post("/api/auth/login", async (request, response) => {
   if (!parsed.success) return response.status(400).json({ error: "Введите логин и пароль" });
   const key = request.ip || "unknown";
   const now = Date.now();
+  for(const [address,attempt] of loginAttempts)if(attempt.resetAt<=now)loginAttempts.delete(address);
+  if(!loginAttempts.has(key)&&loginAttempts.size>=10000)return response.status(429).json({error:"Слишком много попыток. Повторите позднее"});
   const current = loginAttempts.get(key);
   if (current && current.resetAt > now && current.count >= 5) {
     return response.status(429).json({ error: "Слишком много попыток. Повторите через несколько минут" });
@@ -102,7 +106,7 @@ app.post("/api/auth/login", async (request, response) => {
 
 const requireAdmin: RequestHandler = async (request, response, next) => {
   try {
-    if (request.header("x-admin-key") === config.ADMIN_API_KEY) return next();
+    if (sameSecret(request.header("x-admin-key")??"", config.ADMIN_API_KEY)) return next();
     const token = cookieValue(request, SESSION_COOKIE);
     if (!token) return response.status(401).json({ error: "Требуется вход" });
     const session = await pool.query(
@@ -127,7 +131,7 @@ const localMaxTestRouter=createLocalMaxTestRouter({pool,authorize:requireAdmin,
   provider:config.AI_ALLOW_EXTERNAL_REQUESTS&&config.GIGACHAT_AUTH_KEY?createGigaChatProvider({pool,authKey:config.GIGACHAT_AUTH_KEY,scope:config.GIGACHAT_SCOPE}):undefined});
 app.use("/api/local-max-test",localMaxTestRouter);
 app.use("/api/ai/protocol", createProtocolRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,syntheticEnabled:config.AI_SEND_MODE === "synthetic",liveManualScope:config.AI_SEND_MODE==='live'?{testOnly:config.AI_TEST_ONLY,accountIds:config.AI_TEST_ACCOUNT_IDS,authorIds:config.AI_TEST_AUTHOR_IDS}:undefined}));
-app.use("/api/ai/workspace", createConversationRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,workflow:new ConversationWorkflow(pool,{verifyQualification:verifyAiQualification,requireRequestContext:true})}));
+app.use("/api/ai/workspace", createConversationRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,workflow:new ConversationWorkflow(pool,{verifyQualification:verifyAiQualification,requireRequestContext:true,requireSettingsRevision:true})}));
 app.use("/api/ai/leads", createLeadRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,runtimeEnabled:config.SOURCE_MONITOR_ENABLED&&config.AI_SEND_MODE==='live'&&!!config.MAX_WORKER_URL,scope:{testOnly:config.AI_TEST_ONLY,accountIds:config.AI_TEST_ACCOUNT_IDS,authorIds:config.AI_TEST_AUTHOR_IDS}}));
 app.use("/api/ai/engine", createAiEngineRouter({pool, authorize:requireAdmin, enabled:config.CONTACT_IMPORT_ENABLED}));
 app.use("/api/ai/outreach", createOutreachRouter({pool, authorize:requireAdmin, enabled:config.CONTACT_IMPORT_ENABLED, syntheticEnabled:config.AI_SEND_MODE === "synthetic",liveEnabled:config.AI_SEND_MODE==='live'&&!!config.MAX_WORKER_URL}));
@@ -262,20 +266,14 @@ app.get("/api/max/groups/:integrationId", async (request, response) => {
     if (isMaxTransportError(error)) {
       return response.status(503).json({ error: "MAX временно не отвечает. Сохранённый токен будет использован повторно — менять его не нужно" });
     }
-    response.status(401).json({ error: `MAX отклонил авторизацию: ${error instanceof Error ? error.message : "авторизуйтесь снова"}` });
+    response.status(401).json({ error: "MAX отклонил авторизацию. Подключите аккаунт заново." });
   }
 });
 
 app.post("/api/uploads", upload.array("files", 10), async (request, response) => {
   const files = (request.files || []) as Express.Multer.File[];
   if (!files.length) return response.status(400).json({ error: "Выберите хотя бы один файл" });
-  const saved = [];
-  for (const file of files) {
-    const result = await pool.query(`INSERT INTO attachments (original_name,stored_name,mime_type,size_bytes,storage_path)
-      VALUES ($1,$2,$3,$4,$5) RETURNING id,original_name,mime_type,size_bytes::int`,
-      [file.originalname.slice(0, 255),file.filename,file.mimetype || "application/octet-stream",file.size,file.path]);
-    saved.push(result.rows[0]);
-  }
+  const saved=await persistUploadedAttachments(pool,files,uploadRoot);
   response.status(201).json(saved);
 });
 app.get("/api/attachments/:id", async (request, response) => {
@@ -499,6 +497,7 @@ if (config.NODE_ENV === "production" && existsSync(webRoot)) {
 }
 
 const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
+  if(error instanceof Error&&error.message==='upload_empty_file')return response.status(400).json({error:'Пустой файл нельзя загрузить'});
   if (error instanceof ZodError) return response.status(400).json({ error: "Проверьте данные формы", details: error.flatten() });
   if (error instanceof multer.MulterError) return response.status(error.code === "LIMIT_FILE_SIZE" ? 413 : 400).json({ error: error.code === "LIMIT_FILE_SIZE" ? "Файл слишком большой" : "Ошибка загрузки файлов" });
   if (error && typeof error === "object" && "constraint" in error && error.constraint === "post_in_flight") {
@@ -508,13 +507,13 @@ const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => 
     return response.status(409).json({ error: "Срок хранения вложений истёк. Создайте новую публикацию и загрузите файлы заново" });
   }
   if (error && typeof error === "object" && "code" in error && error.code === "23505") return response.status(409).json({ error: "Такая запись уже существует" });
-  console.error(error);
-  response.status(500).json({ error: error instanceof Error ? error.message : "Внутренняя ошибка" });
+  const incidentId=randomUUID();console.error('API internal failure',incidentId);
+  response.status(500).json({ error: 'Внутренняя ошибка. Повторите позднее или сообщите номер ошибки.',incidentId });
 };
 app.use(errorHandler);
 
 const stopAttachmentMaintenance = startAttachmentMaintenance(
-  pool, uploadRoot, config.ATTACHMENT_RETENTION_DAYS, config.STORAGE_MAINTENANCE_INTERVAL_MS,
+  pool, uploadRoot, config.ATTACHMENT_RETENTION_DAYS, config.STORAGE_MAINTENANCE_INTERVAL_MS,config.UNATTACHED_UPLOAD_TTL_HOURS,
 );
 const server = app.listen(config.PORT, config.HOST, () => console.log(`Relayboard API listening on http://localhost:${config.PORT}`));
 const stopDialogueMaintenance=startDialogueMaintenance(pool,config.CONTACT_IMPORT_ENABLED,config.STORAGE_MAINTENANCE_INTERVAL_MS);

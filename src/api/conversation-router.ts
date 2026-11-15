@@ -332,6 +332,7 @@ export function createConversationRouter(options: {
         .json({ error: "Передача менеджеру пока не подключена" });
     const data = z
       .object({
+        expectedRevision:z.number().int().nonnegative(),
         accountId: z.string().uuid(),
         externalId: z.string().trim().min(1).max(256),
       })
@@ -346,6 +347,7 @@ export function createConversationRouter(options: {
         .json({ error: "Повторные обращения пока не подключены" });
     const data = z
       .object({
+        expectedRevision:z.number().int().nonnegative(),
         scenario: z.enum([
           "no_reply",
           "not_booked",
@@ -523,6 +525,7 @@ export function createConversationRouter(options: {
       return res
         .status(404)
         .json({ code, error: "Контакт или диалог не найден" });
+    if(code==='settings_changed')return res.status(409).json({code,error:'Настройки изменены другим менеджером. Загрузите сохранённые настройки или обновите страницу перед новым сохранением.'});
     if (code && !/^[0-9A-Z]{5}$/.test(code))
       return res.status(409).json({
         code,

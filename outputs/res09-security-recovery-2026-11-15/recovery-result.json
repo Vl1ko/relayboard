@@ -1,0 +1,23 @@
+{
+  "result": "PASS",
+  "migrations": 23,
+  "fullBundleFiles": 5,
+  "fullBundleRestored": true,
+  "configurationRestored": true,
+  "syntheticProfilesRestored": true,
+  "uploadsRestored": true,
+  "queuesRestored": true,
+  "redisRdbRestored": true,
+  "restoredApiHealthy": true,
+  "restoredWorkspaceVerified": true,
+  "traversalRejected": true,
+  "retentionPlanReadOnly": true,
+  "retentionPreservesNewestAndUnknown": true,
+  "unknownPreserved": true,
+  "resends": 0,
+  "holdPreserved": true,
+  "optOutPreserved": true,
+  "cursorPreserved": true,
+  "sourceDedupPreserved": true,
+  "scope": "synthetic-only"
+}

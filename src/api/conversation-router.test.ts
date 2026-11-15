@@ -48,7 +48,7 @@ before(async () => {
       pool,
       authorize,
       enabled: true,
-      workflow: new ConversationWorkflow(pool,{requireRequestContext:true}),
+      workflow: new ConversationWorkflow(pool,{requireRequestContext:true,requireSettingsRevision:true}),
     }),
   );
   app.use('/protocol-live',createProtocolRouter({pool,authorize,enabled:true,syntheticEnabled:false,liveManualScope:manualScope}));
@@ -288,11 +288,13 @@ test(
       headers,
       body: JSON.stringify({
         accountId: f.max,
+        expectedRevision:0,
         externalId: "synthetic-manager",
       }),
     });
     assert.equal(r.status, 200);
     const rule = {
+      expectedRevision:(await(await get("/settings")).json()).followupRules.find((r:any)=>r.scenario==="no_reply")?.revision??0,
       scenario: "no_reply",
       enabled: false,
       timezone: "Europe/Moscow",
@@ -412,4 +414,16 @@ test('stale manager tab cannot mutate or message a replacement request; accepted
  const replay=await post('/protocol-live/conversations/'+f.conv+'/manual-messages',manual);assert.equal(replay.status,200);assert.equal((await replay.json()).action.id,action.id);
  assert.equal((await pool.query("SELECT count(*)::int n FROM ai_outbox WHERE kind='manual_reply'")).rows[0].n,1);
  const current={expectedRequestId:next.requestId,expectedEpoch:snapshot.automation_epoch};const valid=await post('/on/conversations/'+f.conv+'/mode',{...current,mode:'manual'});assert.equal(valid.status,200,await valid.text());
+});
+
+test('concurrent manager-target and followup-rule settings edits reject stale versions without silent overwrite',{skip},async()=>{
+ const f=await fixture();const settings=await(await get('/settings')).json(),revision=settings.managerTarget?.revision??0;
+ const write=async(path:string,body:unknown)=>fetch(base+'/on/settings/'+path,{method:'PUT',headers,body:JSON.stringify(body)});
+ const edits=await Promise.all(Array.from({length:20},(_,i)=>write('manager',{accountId:f.max,externalId:'manager-'+i,expectedRevision:revision})));
+ assert.equal(edits.filter(r=>r.status===200).length,1);assert.equal(edits.filter(r=>r.status===409).length,19);
+ assert.equal((await write('manager',{accountId:f.max,externalId:'without-version'})).status,400);
+ const now=await(await get('/settings')).json();assert.equal(now.managerTarget.revision,revision+1);
+ const oldRule=now.followupRules.find((r:any)=>r.scenario==='no_reply'),rule={scenario:'no_reply',enabled:false,timezone:'Europe/Moscow',weekdays:[1,2,3,4,5],startMinute:540,endMinute:1080,maxSends:1,steps:[{delaySeconds:60,text:'Synthetic revised rule'}],expectedRevision:oldRule?.revision??0};
+ const saves=await Promise.all(Array.from({length:20},()=>write('followups',rule)));assert.equal(saves.filter(r=>r.status===200).length,1);assert.equal(saves.filter(r=>r.status===409).length,19);
+ assert.equal((await pool.query('SELECT count(*)::int n FROM ai_outbox')).rows[0].n,0);
 });

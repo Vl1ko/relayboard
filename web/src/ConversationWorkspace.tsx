@@ -866,6 +866,7 @@ const scenarios = {
 };
 type Scenario = keyof typeof scenarios;
 type Rule = {
+  expectedRevision:number;
   scenario: Scenario;
   enabled: boolean;
   label: string;
@@ -1194,6 +1195,7 @@ function WorkspaceSettings({
                   onClick={() =>
                     void run(async () => {
                       const rule: Rule = {
+                        expectedRevision:Number(rules.find(r=>r.scenario===scenario)?.revision??0),
                         scenario,
                         enabled,label:label.trim(),channel,acknowledgementMessage:acknowledgementMessage.trim(),
                         timezone: timezone.trim(),

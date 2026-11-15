@@ -114,11 +114,11 @@ for(const legacyVersion of [12,14])test('upgrade from version '+legacyVersion+' 
   }
   await oldStore.ingest({version:1,platform:'max',accountId:account,conversationId:'legacy',messageId:'group-source:-456:source-one',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'synthetic'});
   await legacy.query(`UPDATE ai_engine_state SET fields='{"volume":25}',reply_count=3 WHERE conversation_id=$1`,[conversation.id]);await legacy.query("UPDATE ai_conversations SET business_status='closed' WHERE id=$1",[conversation.id]);
-  assert.deepEqual(await applyAiManagerMigration(legacy),{version:22,applied:true});
+  assert.deepEqual(await applyAiManagerMigration(legacy),{version:23,applied:true});
   const phase=(await legacy.query('SELECT * FROM ai_request_phases WHERE conversation_id=$1',[conversation.id])).rows[0];assert.deepEqual(phase.fields_snapshot,{volume:25});assert.equal(phase.reply_count_snapshot,3);assert.ok(phase.closed_at);
   const replay=await bindSourceRequest(legacy,{conversationId:conversation.id,accountId:account,platform:'max',chatId:'-456',messageId:'source-one',authorId:'202'});assert.equal(replay.duplicate,true);assert.equal(replay.requestId,phase.request_id);
   const source=(await legacy.query('SELECT * FROM ai_request_sources')).rows[0];assert.equal(source.reader_account_id,account);assert.equal(source.recipient_id,'202');assert.equal(source.initial_contact,false);
-  assert.equal((await legacy.query('SELECT count(*)::int n FROM ai_requests')).rows[0].n,1);assert.deepEqual(await applyAiManagerMigration(legacy),{version:22,applied:false});
+  assert.equal((await legacy.query('SELECT count(*)::int n FROM ai_requests')).rows[0].n,1);assert.deepEqual(await applyAiManagerMigration(legacy),{version:23,applied:false});
  }finally{await legacy.end();await pool.query('DROP SCHEMA '+legacySchema+' CASCADE');}
 });
 
@@ -379,7 +379,7 @@ test('partially sent WhatsApp attachment batch becomes unknown and never replays
  const f=await whatsappPublicationFixture(),dir=await mkdtemp('/private/tmp/relayboard-media-test-');let sends=0,stages=0;
  try{
   for(let index=0;index<2;index++){const file=dir+'/'+index+'.png';await writeFile(file,'fake');await pool.query("INSERT INTO attachments(post_id,storage_path,stored_name,original_name,mime_type,size_bytes) VALUES($1,$2,$2,'synthetic.png','image/png',4)",[f.post,file]);}
-  const options={deliveryId:f.delivery,accountId:f.accountId,sessionKey:f.sessionKey,cdp:{send(){return Promise.resolve({});}},selfAliases:['100@c.us'],recipientAliases:async()=>['500@g.us'],isActive:()=>true,maxUploadBytes:1000,prepare:async(o:Parameters<typeof import('./adapters/whatsapp-ai-text.js').prepareWhatsAppAiText>[0])=>{
+  const options={deliveryId:f.delivery,accountId:f.accountId,sessionKey:f.sessionKey,cdp:{send(){return Promise.resolve({});}},selfAliases:['100@c.us'],recipientAliases:async()=>['500@g.us'],isActive:()=>true,maxUploadBytes:4,prepare:async(o:Parameters<typeof import('./adapters/whatsapp-ai-text.js').prepareWhatsAppAiText>[0])=>{
    stages++;assert.equal(sends,0);assert.equal(o.publication?.media?.data,Buffer.from('fake').toString('base64'));const reservedMessageId='prepared-'+stages;
    return{reservedMessageId,actualTargetId:'500@g.us',selfIds:['100@c.us'],release:async()=>{},prepared:{target:{accountId:f.accountId,externalConversationId:'500@g.us',platform:'whatsapp' as const},start(){sends++;return{acknowledgement:pool.query("UPDATE posts SET status='paused' WHERE id=$1",[f.post]).then(()=>({outcome:'confirmed',externalMessageId:reservedMessageId}))};}}};
   }};

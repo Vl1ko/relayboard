@@ -233,3 +233,15 @@ test('unknown MAX receipt protects media and outcome metadata even when delivery
  await assert.rejects(pool.query('DELETE FROM posts WHERE id=$1',[item.post]),error=>error instanceof Error&&'constraint'in error&&error.constraint==='post_in_flight');
  assert.equal(await readFile(item.path,'utf8'),'retained media');
 });
+
+test('abandoned uploads expire once after the draft TTL; fresh and published media stay protected',{skip:!enabled},async()=>{
+ const {expireUnattachedUploads}=await import('./attachment-retention.js');
+ const add=async(name:string,age:string,postId:string|null)=>{const path=join(root,name);await writeFile(path,'synthetic');return(await pool.query("INSERT INTO attachments(post_id,stored_name,original_name,storage_path,mime_type,size_bytes,created_at) VALUES($1,$2,$2,$3,'text/plain',9,now()-$4::interval) RETURNING id",[postId,name,path,age])).rows[0].id;};
+ const post=(await pool.query("INSERT INTO posts(text,mode,status) VALUES('active','now','active') RETURNING id")).rows[0].id;
+ const old=await add('old-draft-'+randomUUID(),'25 hours',null),fresh=await add('fresh-draft-'+randomUUID(),'23 hours',null),used=await add('used-draft-'+randomUUID(),'100 days',post);
+ try{
+  const results=await Promise.all(Array.from({length:20},()=>expireUnattachedUploads(pool,24)));assert.equal(results.reduce((a,b)=>a+b,0),1);
+  assert.ok((await pool.query('SELECT expired_at FROM attachments WHERE id=$1',[old])).rows[0].expired_at);for(const id of [fresh,used])assert.equal((await pool.query('SELECT expired_at FROM attachments WHERE id=$1',[id])).rows[0].expired_at,null);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM attachment_cleanup_jobs')).rows[0].n,1);assert.equal(await drainAttachmentCleanup(pool,root),1);
+ }finally{await pool.query('DELETE FROM attachments WHERE id=ANY($1::uuid[])',[[old,fresh,used]]);}
+});

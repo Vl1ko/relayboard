@@ -12,5 +12,6 @@ try{
  assert.deepEqual(utils.file.expand({cwd:input},'**/*.txt'),['synthetic.txt']);
  const archive=archiver('zip'),path=join(root,'synthetic.zip'),written=pipeline(archive,createWriteStream(path));archive.directory(input,false);await archive.finalize();await written;
  await createReadStream(path).pipe(unzipper.Extract({path:output})).promise();assert.equal(await readFile(join(output,'synthetic.txt'),'utf8'),'Synthetic archive compatibility');
- console.log('PASS: WhatsApp CommonJS SDK consumes Puppeteer, LocalAuth/RemoteAuth constructors and scoped glob/archive/extraction round-trip remain compatible; no browser login, profile access or network');
+ const webp=sdkRequire('node-webpmux'),image=await webp.Image.getEmptyImage();image.exif=Buffer.from('synthetic metadata');const webpBytes=await image.save(null),again=new webp.Image();await again.load(webpBytes);assert.equal(again.exif.toString(),'synthetic metadata');await assert.rejects(webp.Image.initLib(),/does not enable/);
+ console.log('PASS: WhatsApp CommonJS SDK consumes Puppeteer, LocalAuth/RemoteAuth constructors and scoped glob/archive/extraction round-trip and pure JS WebP metadata remain compatible; optional pixel codec disabled; no browser login, profile access or network');
 }finally{await rm(root,{recursive:true,force:true});}

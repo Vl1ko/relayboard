@@ -48,6 +48,7 @@ const timezone = z
 export const followupRuleSchema = z
   .object({
     scenario: z.enum(followupScenarios),
+    expectedRevision:z.number().int().nonnegative().optional(),
     enabled: z.boolean(),
     label:z.string().trim().min(1).max(120).optional(),
     channel:z.enum(['current','max','whatsapp']).optional(),
@@ -190,6 +191,7 @@ export class ConversationWorkflow {
     private readonly pool: Pool,
     private readonly options: {
       requireRequestContext?:boolean;
+      requireSettingsRevision?:boolean;
       verifyQualification?: (
         client: PoolClient,
         conversationId: string,
@@ -423,10 +425,14 @@ export class ConversationWorkflow {
       ).rows[0];
     });
   }
-  async saveManagerTarget(input: { accountId: string; externalId: string }) {
+  async saveManagerTarget(input: { accountId: string; externalId: string;expectedRevision?:number }) {
     uuid.parse(input.accountId);
     key.parse(input.externalId);
     return this.tx(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended('manager-target-settings',0))");
+      const old=(await client.query('SELECT revision FROM ai_manager_target WHERE id=1 FOR UPDATE')).rows[0];
+      if(this.options.requireSettingsRevision&&input.expectedRevision===undefined||input.expectedRevision!==undefined&&input.expectedRevision!==(old?.revision??0))throw new WorkflowError('settings_changed');
+
       const account = (
         await client.query(
           "SELECT id FROM integrations WHERE id=$1 AND platform='max' FOR SHARE",
@@ -436,7 +442,7 @@ export class ConversationWorkflow {
       if (!account) throw new WorkflowError("manager_account_not_max", 400);
       return (
         await client.query(
-          "INSERT INTO ai_manager_target(id,account_id,external_id) VALUES(1,$1,$2) ON CONFLICT(id) DO UPDATE SET account_id=excluded.account_id,external_id=excluded.external_id RETURNING *",
+          "INSERT INTO ai_manager_target(id,account_id,external_id) VALUES(1,$1,$2) ON CONFLICT(id) DO UPDATE SET account_id=excluded.account_id,external_id=excluded.external_id,revision=ai_manager_target.revision+1 RETURNING *",
           [input.accountId, input.externalId],
         )
       ).rows[0];
@@ -446,7 +452,7 @@ export class ConversationWorkflow {
     return (
       (
         await this.pool.query(
-          'SELECT account_id AS "accountId",external_id AS "externalId" FROM ai_manager_target WHERE id=1',
+          'SELECT account_id AS "accountId",external_id AS "externalId",revision FROM ai_manager_target WHERE id=1',
         )
       ).rows[0] ?? null
     );
@@ -797,6 +803,10 @@ export class ConversationWorkflow {
   async saveFollowupRule(input:FollowupRule){
     const r=followupRuleSchema.parse(input),labels={no_reply:'Ответ клиента',not_booked:'Этап 1',not_completed:'Этап 2',requested_later:'Связаться позже'};
     return this.tx(async client=>{
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['followup-rule:'+r.scenario]);
+      const old=(await client.query('SELECT revision FROM ai_followup_rules WHERE scenario=$1 FOR UPDATE',[r.scenario])).rows[0];
+      if(this.options.requireSettingsRevision&&r.expectedRevision===undefined||r.expectedRevision!==undefined&&r.expectedRevision!==(old?.revision??0))throw new WorkflowError('settings_changed');
+
       const row=(await client.query(`INSERT INTO ai_followup_rules(scenario,enabled,timezone,weekdays,start_minute,end_minute,steps,max_sends,label,channel,acknowledgement_message,automatic_enabled_at)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $2 THEN clock_timestamp() END)
        ON CONFLICT(scenario) DO UPDATE SET enabled=excluded.enabled,timezone=excluded.timezone,weekdays=excluded.weekdays,start_minute=excluded.start_minute,end_minute=excluded.end_minute,steps=excluded.steps,max_sends=excluded.max_sends,label=excluded.label,channel=excluded.channel,acknowledgement_message=excluded.acknowledgement_message,

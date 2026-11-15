@@ -36,6 +36,7 @@ const schema = z.object({
   APP_ENCRYPTION_KEY: z.string().min(16),
   UPLOAD_DIR: z.string().default("./data/uploads"),
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(100 * 1024 * 1024),
+  UNATTACHED_UPLOAD_TTL_HOURS:z.coerce.number().int().min(1).max(87600).default(24),
   ATTACHMENT_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
   STORAGE_MAINTENANCE_INTERVAL_MS: z.coerce.number().int().min(1000).max(86400000).default(60000),
   MESSENGER_SEND_MODE: z.enum(["live", "fake"]).default("live"),

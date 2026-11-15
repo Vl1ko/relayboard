@@ -9,3 +9,6 @@ npm-debug.log*
 .tools/
 .secrets/
 data/backups/
+
+# Generated for the actual platform during npm ci.
+docs/licenses/runtime-dependencies.json

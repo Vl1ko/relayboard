@@ -2,8 +2,14 @@ FROM node:24-bookworm-slim AS build
 WORKDIR /app
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 COPY package.json package-lock.json ./
+COPY scripts ./scripts
+COPY docs/licenses ./docs/licenses
 RUN npm ci
-COPY . .
+COPY tsconfig.node.json vite.config.ts ./
+COPY scripts ./scripts
+COPY src ./src
+COPY web ./web
+COPY database ./database
 RUN npm run build
 
 FROM node:24-bookworm-slim AS runtime
@@ -14,6 +20,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 COPY package.json package-lock.json ./
+COPY scripts ./scripts
+COPY docs/licenses ./docs/licenses
 RUN npm ci --omit=dev
 COPY --from=build --chown=node:node /app/dist-node ./dist-node
 COPY --from=build --chown=node:node /app/dist-web ./dist-web

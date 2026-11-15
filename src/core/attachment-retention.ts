@@ -48,6 +48,13 @@ export async function expirePostAttachments(pool: Pool, days: number, batchSize 
   } finally { client.release(); }
 }
 
+/** Uploads never attached to a publication are temporary drafts, not permanent media. */
+export async function expireUnattachedUploads(pool:Pool,hours=24,batchSize=100){
+ if(!Number.isInteger(hours)||hours<1||hours>87600||!Number.isInteger(batchSize)||batchSize<1||batchSize>1000)throw Error('Invalid unattached upload policy');
+ return(await pool.query(`WITH candidates AS(SELECT id FROM attachments WHERE post_id IS NULL AND expired_at IS NULL AND created_at<=now()-make_interval(hours=>$1::int) ORDER BY created_at,id LIMIT $2 FOR UPDATE SKIP LOCKED)
+ UPDATE attachments a SET expired_at=now() FROM candidates c WHERE a.id=c.id AND a.post_id IS NULL AND a.expired_at IS NULL RETURNING a.id`,[hours,batchSize])).rowCount||0;
+}
+
 function isMissing(error: unknown) {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
@@ -98,14 +105,15 @@ export async function drainAttachmentCleanup(pool: Pool, uploadRoot: string, bat
 }
 
 /** One non-overlapping pass per process; row locks also support multiple API replicas. */
-export function startAttachmentMaintenance(pool: Pool, uploadRoot: string, days: number, intervalMs: number) {
+export function startAttachmentMaintenance(pool: Pool, uploadRoot: string, days: number, intervalMs: number, unattachedHours=24) {
   let running: Promise<void> | undefined;
   const tick = () => {
     if (running) return;
     running = (async () => {
       const expired = await expirePostAttachments(pool, days);
+      const drafts = await expireUnattachedUploads(pool,unattachedHours);
       const deleted = await drainAttachmentCleanup(pool, uploadRoot);
-      if (expired || deleted) console.log("Attachment maintenance", { expired, deleted });
+      if (expired || deleted || drafts) console.log("Attachment maintenance", { expired, drafts, deleted });
     })().catch(error => console.error("Attachment maintenance failed", error instanceof Error ? error.message : error))
       .finally(() => { running = undefined; });
   };
