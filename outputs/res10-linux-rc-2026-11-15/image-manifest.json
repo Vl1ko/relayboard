@@ -1,0 +1,15 @@
+{
+  "sourceCommit": "4e06b8b0f81cb42787df3db4e88cb439d44f43c5",
+  "imageTag": "relayboard:rc-4e06b8b",
+  "imageId": "sha256:d456ba195323aa352bb8cc02000dc6273b9393477503a4d1e63bba640086f4b0",
+  "repoDigests": [
+    "relayboard@sha256:d456ba195323aa352bb8cc02000dc6273b9393477503a4d1e63bba640086f4b0"
+  ],
+  "os": "linux",
+  "architecture": "amd64",
+  "sizeBytes": 434919415,
+  "user": "node",
+  "testNetworkInternal": true,
+  "runtimeNode": "v24.22.3",
+  "chromium": "Chromium 156.0.8078.79 built on Debian GNU/Linux 12 (bookworm)"
+}

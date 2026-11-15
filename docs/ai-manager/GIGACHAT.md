@@ -26,3 +26,9 @@ AI_SEND_MODE=synthetic
 - https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/gigachat-api
 - https://developers.sber.ru/docs/ru/gigachat/tariffs/individual-tariffs
 - https://developers.sber.ru/docs/ru/gigachat/quickstart/ind-create-project
+
+## Актуализация15 ноября2026
+
+Исторические живые проверки выше относятся к13 ноября, не являются проверкой финального RC. В текущем продолжении платных/модельных запросов не было. Публичный CA теперь входит в certs/, проверяется по SHA256 на сборке и подключается только AI-процессу; NODE_TLS_REJECT_UNAUTHORIZED=0 отклоняется. Подробности: [final-regressions.md](final-regressions.md).
+
+Согласно [официальному коммерческому quickstart](https://developers.sber.ru/docs/ru/gigachat/legal-quickstart), с1 сентября2026 новые или ранее не платившие клиенты направляются за оплатой на Cloud.ru. Перед коммерческим запуском проверить конкретный маршрут доступа владельца; Sber B2B/CORP scope не доказывает его наличие. Текущий адаптер использует Sber OAuth; иной Cloud API требует отдельного подключения и приёмки, если он окажется необходим.
