@@ -116,7 +116,7 @@ function describeCronPattern(pattern: string | null) {
 
 function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
-  const [view, setView] = useState<View>(()=>new URLSearchParams(window.location.search).get('view')==='dialogs'?'dialogs':'compose');
+  const [view, setView] = useState<View>(()=>{const requested=new URLSearchParams(window.location.search).get('view');return (['compose','leads','dialogs','contacts','qualification','connections','campaigns','history'] as string[]).includes(requested??'')?requested as View:'compose';});
   useEffect(()=>{const url=new URL(window.location.href);url.searchParams.set('view',view);if(view!=='dialogs')for(const key of ['contact','conversation','request'])url.searchParams.delete(key);window.history.replaceState(null,'',url);},[view]);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [destinations, setDestinations] = useState<Destination[]>([]);
