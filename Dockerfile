@@ -13,6 +13,8 @@ COPY database ./database
 RUN npm run build
 
 FROM node:24-bookworm-slim AS runtime
+ARG RELEASE_REVISION=unversioned
+LABEL org.opencontainers.image.revision=$RELEASE_REVISION
 RUN apt-get update \
   && apt-get install -y --no-install-recommends chromium ca-certificates fonts-liberation \
   && rm -rf /var/lib/apt/lists/*

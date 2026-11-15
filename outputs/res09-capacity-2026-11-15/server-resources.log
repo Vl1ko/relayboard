@@ -1,0 +1,12 @@
+Filesystem       1B-blocks        Used  Available Use% Mounted on
+/dev/vda1      15764316160 11396485120 3546046464  77% /
+               total        used        free      shared  buff/cache   available
+Mem:      2063568896  1983410176    92569600    26857472   166969344    80158720
+Swap:      536866816   536625152      241664
+amnezia-awg2 21.43MiB / 1.922GiB 1.17%
+relayboard-worker-1 438.5MiB / 1.922GiB 3.98%
+relayboard-whatsapp-1 735.7MiB / 1.922GiB 11.35%
+relayboard-api-1 52.12MiB / 1.922GiB 0.00%
+relayboard-telegram-1 51.51MiB / 1.922GiB 0.00%
+relayboard-postgres-1 38.48MiB / 1.922GiB 1.58%
+relayboard-redis-1 7.547MiB / 1.922GiB 1.35%

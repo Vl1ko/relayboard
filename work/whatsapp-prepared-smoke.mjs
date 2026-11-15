@@ -7,7 +7,7 @@ import {prepareWhatsAppAiText} from '../dist-node/core/adapters/whatsapp-ai-text
 const profile=await mkdtemp(join(tmpdir(),'relayboard-wa-synthetic-'));
 let browser;
 try{
- browser=await puppeteer.launch({executablePath:process.env.CHROME_PATH??'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true,userDataDir:profile,args:['--no-first-run','--disable-background-networking']});
+ browser=await puppeteer.launch({executablePath:process.env.CHROME_PATH??'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true,userDataDir:profile,args:['--no-first-run','--disable-background-networking',...(process.env.CHROME_NO_SANDBOX==='true'?['--no-sandbox']:[])]});
  const page=await browser.newPage();await page.goto('about:blank');
  await page.evaluate(`(()=>{
  window.synthetic={sends:0,ack:1,state:'CONNECTED',self:'100@c.us'};

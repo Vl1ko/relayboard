@@ -1,0 +1,22 @@
+{
+  "status": "passed",
+  "startedAt": "2026-11-15T02:56:17.155Z",
+  "finishedAt": "2026-11-15T02:56:47.157Z",
+  "requestedDurationMs": 30000,
+  "elapsedMs": 30002,
+  "cycles": 30,
+  "requests": 600,
+  "dialogues": {
+    "max": 30,
+    "whatsapp": 30
+  },
+  "simulatedAccounts": {
+    "max": 5,
+    "whatsapp": 5
+  },
+  "parallelRequests": 20,
+  "duplicateStarts": 0,
+  "p95CycleMs": 648.0485120000012,
+  "full24Hours": false,
+  "scope": "synthetic runtime only; does not prove real Chromium/session or model capacity"
+}
