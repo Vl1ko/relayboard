@@ -238,3 +238,7 @@ HEAD на момент записи 82370c2. Текущее дерево сод�
 ## F02 завершён, 15 ноября 2026
 
 [request-lifecycle-hardening.md](request-lifecycle-hardening.md): миграция22, closed-period opt-out/cursor gap, межканальная синхронизация перед отправкой, общая память/лимит заявки, decimal comma.357 PASS/0 FAIL/0 SKIP, typecheck PASS. Новая миграция потребовала исправить fixtures: текущие сообщения датируются после начала фазы вместо устаревшей константы13 ноября; assertions версии22 обновлены, прежние checksum не менялись. F02 DONE, F03 IN_PROGRESS. Обновлённые compiled transport smoke входят в F03; реальная приёмка остаётся F08.
+
+## F03 автономно завершён, 15 ноября 2026
+
+[whatsapp-publication-boundary.md](whatsapp-publication-boundary.md): подготовленная отправка прежних WhatsApp-публикаций, canonical DB payload, final lock/gate на каждое сообщение, unknown без повторения частичного пакета.360 PASS/0 FAIL/0 SKIP, typecheck/build PASS, compiled owners/SIGKILL и настоящий Chrome/CDP с синтетическими модулями PASS. Первоначальная ошибка нового fixture — обязательный stored_name вложений — исправлена; повторный полный прогон прошёл. Добавлен синтетический versioned corpus для реальной модельной приёмки, labels не выдаются за проверенное качество GigaChat. F03 автономная часть DONE, F04 IN_PROGRESS; реальные EV остаются F08. Production и действующие аккаунты не переключались.

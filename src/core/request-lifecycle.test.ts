@@ -352,3 +352,38 @@ test('before a new-channel send, refusal in historical channel cancels it and un
  const seen:string[]=[];await synchronizeContactHistory(pool,action.id,{allows:async()=>true,async sync(v){seen.push(v.id);if(v.id===f.conversationId)await store.ingest({version:1,platform:'max',accountId:f.accountId,conversationId:'private-author',messageId:'closed-opt-out',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'Не пишите мне'});return{complete:true};}});
  assert.equal(seen.length,2);assert.equal((await pool.query('SELECT state FROM ai_outbox WHERE id=$1',[action.id])).rows[0].state,'cancelled');let sends=0;await store.dispatch(action.id,{target:{accountId:waAccount,externalConversationId:'200@c.us',platform:'whatsapp'},start(){sends++;throw Error('Must not send');}});assert.equal(sends,0);
 });
+
+async function whatsappPublicationFixture(){
+ const f=await fixture();await pool.query("UPDATE integrations SET platform='whatsapp' WHERE id=$1",[f.accountId]);
+ const sessionKey=(await pool.query('SELECT session_key FROM integrations WHERE id=$1',[f.accountId])).rows[0].session_key;
+ const destination=(await pool.query("INSERT INTO destinations(integration_id,external_id,title) VALUES($1,'500@g.us','synthetic group') RETURNING id",[f.accountId])).rows[0].id;
+ const post=(await pool.query("INSERT INTO posts(text,mode,status) VALUES('stored publication','now','active') RETURNING id")).rows[0].id,delivery=(await pool.query("INSERT INTO deliveries(post_id,destination_id,occurrence_key,status) VALUES($1,$2,'synthetic','sending') RETURNING id",[post,destination])).rows[0].id;
+ return{accountId:f.accountId,sessionKey,destination,post,delivery};
+}
+test('WhatsApp publication stages canonical content then rechecks pause, route and concurrent receipt before commit',{skip},async()=>{
+ const {dispatchOwnedWhatsAppPublication}=await import('./owned-whatsapp-publication.js');
+ for(const interruption of ['pause','route','none']){
+  const f=await whatsappPublicationFixture();let sends=0,stages=0;
+  const options={deliveryId:f.delivery,accountId:f.accountId,sessionKey:f.sessionKey,cdp:{send(){return Promise.resolve({});}},selfAliases:['100@c.us'],recipientAliases:async()=>['500@g.us'],isActive:()=>true,maxUploadBytes:1000,prepare:async(o:Parameters<typeof import('./adapters/whatsapp-ai-text.js').prepareWhatsAppAiText>[0])=>{
+   stages++;if(interruption==='pause')await pool.query("UPDATE posts SET status='paused' WHERE id=$1",[f.post]);if(interruption==='route')await pool.query("UPDATE destinations SET external_id='600@g.us' WHERE id=$1",[f.destination]);
+   return{reservedMessageId:'prepared-id',actualTargetId:'500@g.us',selfIds:['100@c.us'],release:async()=>{},prepared:{target:{accountId:f.accountId,externalConversationId:'500@g.us',platform:'whatsapp' as const},start(a:{text:string}){assert.equal(a.text,'stored publication');sends++;return{acknowledgement:Promise.resolve({outcome:'confirmed',externalMessageId:'prepared-id'})};}}};
+  }};
+  if(interruption==='none'){
+   const results=await Promise.allSettled(Array.from({length:20},()=>dispatchOwnedWhatsAppPublication(pool,options)));assert.ok(results.some(r=>r.status==='fulfilled'));assert.equal(sends,1);assert.equal(stages,1);
+   assert.deepEqual(await dispatchOwnedWhatsAppPublication(pool,options),{externalMessageId:'prepared-id'});assert.equal(sends,1);
+  }else{await assert.rejects(dispatchOwnedWhatsAppPublication(pool,options));assert.equal(sends,0);assert.equal((await pool.query('SELECT count(*)::int n FROM whatsapp_send_receipts WHERE delivery_id=$1',[f.delivery])).rows[0].n,0);}
+ }
+});
+test('partially sent WhatsApp attachment batch becomes unknown and never replays',{skip},async()=>{
+ const {dispatchOwnedWhatsAppPublication}=await import('./owned-whatsapp-publication.js'),{mkdtemp,writeFile,rm}=await import('node:fs/promises');
+ const f=await whatsappPublicationFixture(),dir=await mkdtemp('/private/tmp/relayboard-media-test-');let sends=0,stages=0;
+ try{
+  for(let index=0;index<2;index++){const file=dir+'/'+index+'.png';await writeFile(file,'fake');await pool.query("INSERT INTO attachments(post_id,storage_path,stored_name,original_name,mime_type,size_bytes) VALUES($1,$2,$2,'synthetic.png','image/png',4)",[f.post,file]);}
+  const options={deliveryId:f.delivery,accountId:f.accountId,sessionKey:f.sessionKey,cdp:{send(){return Promise.resolve({});}},selfAliases:['100@c.us'],recipientAliases:async()=>['500@g.us'],isActive:()=>true,maxUploadBytes:1000,prepare:async(o:Parameters<typeof import('./adapters/whatsapp-ai-text.js').prepareWhatsAppAiText>[0])=>{
+   stages++;assert.equal(sends,0);assert.equal(o.publication?.media?.data,Buffer.from('fake').toString('base64'));const reservedMessageId='prepared-'+stages;
+   return{reservedMessageId,actualTargetId:'500@g.us',selfIds:['100@c.us'],release:async()=>{},prepared:{target:{accountId:f.accountId,externalConversationId:'500@g.us',platform:'whatsapp' as const},start(){sends++;return{acknowledgement:pool.query("UPDATE posts SET status='paused' WHERE id=$1",[f.post]).then(()=>({outcome:'confirmed',externalMessageId:reservedMessageId}))};}}};
+  }};
+  await assert.rejects(dispatchOwnedWhatsAppPublication(pool,options),e=>e instanceof Error&&e.message.includes('требует проверки'));assert.equal(stages,2);assert.equal(sends,1);assert.equal((await pool.query('SELECT status FROM whatsapp_send_receipts WHERE delivery_id=$1',[f.delivery])).rows[0].status,'unknown');
+  await assert.rejects(dispatchOwnedWhatsAppPublication(pool,options));assert.equal(sends,1);
+ }finally{await rm(dir,{recursive:true,force:true});}
+});

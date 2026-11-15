@@ -18,8 +18,9 @@ try{
  WAWebUserPrefsMeUser:{getMaybeMePnUser:()=>wid(synthetic.self),getMaybeMeLidUser:()=>null},
  WAWebMsgKey:Key,WAWebGetEphemeralFieldsMsgActionsUtils:{getEphemeralFields:()=>({})},
  WAWebSendMsgChatAction:{addAndSendMsgToChat(chat,message){if(this!==modules.WAWebSendMsgChatAction)throw Error('binding');synthetic.sends++;message.ack=synthetic.ack;messages.set(message.id._serialized,message);return [Promise.resolve(message),Promise.resolve()];}},
+ WAWebWidFactory:{asUserWidOrThrow:v=>v},
  WAWebCollections:{Msg:{get:id=>messages.get(id)}}};
- window.require=name=>modules[name];window.WWebJS={getChat:async id=>({id:wid(id),isGroup:false})};
+ window.require=name=>modules[name];window.WWebJS={processMediaData:async()=>({type:'image',preview:'prepared-preview',filehash:'synthetic-file',toJSON(){return{type:'image',preview:'prepared-preview'};}}),getChat:async id=>({id:wid(id),isGroup:id.endsWith('@g.us'),groupMetadata:{isLidAddressingMode:false}})};
  })()`);
  const cdp=await page.createCDPSession();
  const options={cdp,accountId:'synthetic-account',conversationId:'synthetic-conversation',operationId:'synthetic-operation',externalId:'200@c.us',recipientAliases:['200@c.us'],selfAliases:['100@c.us'],isActive:()=>true};
@@ -29,5 +30,9 @@ try{
  await prepared.prepared.start(action).acknowledgement;assert.equal(await page.evaluate('synthetic.sends'),1);await prepared.release();
  await page.evaluate('synthetic.ack=0');const ack0=await prepareWhatsAppAiText(options);assert.equal((await ack0.prepared.start(action).acknowledgement).outcome,'unknown');await ack0.release();
  const changed=await prepareWhatsAppAiText(options);await page.evaluate("synthetic.self='300@c.us'");assert.equal((await changed.prepared.start(action).acknowledgement).outcome,'rejected');assert.equal(await page.evaluate('synthetic.sends'),2);await changed.release();
- await cdp.detach();console.log('PASS: actual isolated Chrome/CDP; preparation sends zero; exact reserved receipt; no duplicate; ack0 unknown; changed self rejected. Synthetic modules only, no WhatsApp login or network messages.');
+ await page.evaluate("synthetic.self='100@c.us';synthetic.ack=1");
+ const media=await prepareWhatsAppAiText({...options,operationId:'synthetic-media',externalId:'500@g.us',recipientAliases:['500@g.us'],publication:{media:{mimetype:'image/png',data:'c3ludGhldGlj',filename:'test.png'},caption:'Synthetic caption'}});
+ const beforeMedia=await page.evaluate('synthetic.sends');const mediaResult=await media.prepared.start({...action,operationId:'synthetic-media',text:''}).acknowledgement;
+ assert.equal(mediaResult.outcome,'confirmed');assert.equal(await page.evaluate('synthetic.sends'),beforeMedia+1);await media.release();
+ await cdp.detach();console.log('PASS: actual isolated Chrome/CDP; preparation sends zero; exact reserved receipt; no duplicate; ack0 unknown; changed self rejected; group media prepared and confirmed. Synthetic modules only, no WhatsApp login or network messages.');
 }finally{await browser?.close();await rm(profile,{recursive:true,force:true});}

@@ -1,5 +1,6 @@
+import {dispatchOwnedWhatsAppPublication} from '../core/owned-whatsapp-publication.js';
+import {DeliveryError} from '../core/delivery-policy.js';
 import {startSourceHeartbeat} from '../core/source-runtime-health.js';
-import { sentMessageId } from "../core/whatsapp-receipt.js";
 import express, { type RequestHandler } from "express";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -7,7 +8,7 @@ import QRCode from "qrcode";
 import pkg from "whatsapp-web.js";
 import { config } from "../core/config.js";
 
-const { Client, LocalAuth, MessageMedia } = pkg;
+const { Client, LocalAuth } = pkg;
 const nodeRequire = createRequire(import.meta.url);
 const { LoadUtils: loadWhatsAppUtils } = nodeRequire("whatsapp-web.js/src/util/Injected/Utils.js") as {
   LoadUtils: () => void;
@@ -350,76 +351,19 @@ app.post('/ai/actions/:id/dispatch',async(request,response)=>{
  }finally{await prepared?.release();await cdp.detach().catch(()=>{});}
 });
 
-app.post("/send", async (request, response) => {
-  const { deliveryId, destinationId, text = "", attachments = [] } = request.body as {
-    deliveryId?: string;
-    destinationId?: string;
-    text?: string;
-    attachments?: Array<{ path: string; name: string; mimeType: string }>;
-  };
-  if (!deliveryId || !/^[0-9a-f-]{36}$/i.test(deliveryId) || !destinationId || (!text.trim() && attachments.length === 0)) {
-    return response.status(400).json({ error: "Нужны destinationId и текст или файл" });
-  }
-  const existing=await pool.query("SELECT status,message_id,session_key,destination_id FROM whatsapp_send_receipts WHERE delivery_id=$1",[deliveryId]);
-  if (existing.rowCount) {
-    const receipt=existing.rows[0];
-    if (receipt.session_key !== sessionKey || receipt.destination_id !== destinationId) return response.status(409).json({error:"Идентификатор отправки уже занят",kind:"ambiguous"});
-    if (receipt.status === "sent") return response.json({messageId:receipt.message_id});
-    return response.status(409).json({error:"Отправка уже начата; повтор заблокирован до проверки результата",kind:"ambiguous"});
-  }
-  if (!(await probeClientReady())) return response.status(409).json({ error: "WhatsApp ещё синхронизирует сессию", kind:"waiting" });
-  if (activeSends) return response.status(409).json({error:"WhatsApp завершает предыдущую отправку",kind:"waiting"});
-  activeSends+=1;
-  activeSendStartedAt=Date.now();
-  try {
-    const claimed=await pool.query(`INSERT INTO whatsapp_send_receipts(delivery_id,session_key,destination_id,status)
-      VALUES($1,$2,$3,'sending') ON CONFLICT DO NOTHING RETURNING delivery_id`,[deliveryId,sessionKey,destinationId]);
-    if (!claimed.rowCount) { activeSends-=1;return response.status(409).json({error:"Отправка уже начата",kind:"ambiguous"}); }
-  } catch(error) { activeSends-=1;throw error; }
-  const sendGeneration=generation;
-  const deadline=Date.now()+Math.max(1000,config.SEND_TIMEOUT_MS-15000);
-  // Persist even a late result, after the caller has stopped waiting.
-  const sending=(async()=>{
-    try {
-      const result=await sendMessage(destinationId);
-      await pool.query("UPDATE whatsapp_send_receipts SET status='sent',message_id=$2,updated_at=now() WHERE delivery_id=$1",[deliveryId,result]);
-      return result;
-    } catch(error) {
-      await pool.query("UPDATE whatsapp_send_receipts SET status='unknown',updated_at=now() WHERE delivery_id=$1",[deliveryId]);
-      throw error;
-    } finally { activeSends-=1; }
-  })();
-  try {
-    const messageId=await withTimeout(sending,Math.max(1000,config.SEND_TIMEOUT_MS-15000),"отправка WhatsApp: результат требует проверки");
-    response.json({messageId});
-  } catch(error) {
-    lastError=errorMessage(error);
-    await pool.query("UPDATE whatsapp_send_receipts SET status='unknown',updated_at=now() WHERE delivery_id=$1 AND status='sending'",[deliveryId]);
-    response.status(503).json({error:"Не удалось подтвердить отправку WhatsApp",details:lastError,kind:"ambiguous"});
-  }
-  async function sendMessage(destinationId: string) {
-    await ensureUtilityInjection();
-    const assertSending=()=>{if(closing||ownerSignal.aborted||generation!==sendGeneration||Date.now()>=deadline)throw Error('WhatsApp send interrupted; inspect durable outcome');};
-    assertSending();
-    if (attachments.length === 0) {
-      const message = await client.sendMessage(destinationId, text, {waitUntilMsgSent:true});
-      return sentMessageId(message);
-    }
-    if (text.length > 1000) sentMessageId(await client.sendMessage(destinationId, text, {waitUntilMsgSent:true}));
-    const messageIds: string[] = [];
-    for (let index = 0; index < attachments.length; index += 1) {
-      if (generation !== sendGeneration || Date.now() >= deadline) throw new Error("Отправка вложений прервана; результат требует проверки");
-      const attachment = attachments[index];
-      const media=MessageMedia.fromFilePath(attachment.path);assertSending();
-      const message = await client.sendMessage(destinationId, media, {
-        waitUntilMsgSent:true,
-        caption: index === 0 && text.length <= 1000 ? text : "",
-        sendMediaAsDocument: !attachment.mimeType.startsWith("image/") && !attachment.mimeType.startsWith("video/"),
-      });
-      messageIds.push(sentMessageId(message));
-    }
-    return messageIds.join(",");
-  }
+app.post('/send',async(request,response)=>{
+ const deliveryId=z.string().uuid().parse(request.body?.deliveryId);
+ if(!await probeClientReady()||activeSends)return response.status(409).json({error:'WhatsApp ожидает готовности',kind:'waiting'});
+ activeSends++;activeSendStartedAt=Date.now();const sendGeneration=generation;
+ let cdp:Awaited<ReturnType<NonNullable<typeof client.pupPage>['createCDPSession']>>|undefined;
+ try{
+  await ensureUtilityInjection();const page=client.pupPage;if(!page)throw new DeliveryError('WhatsApp ожидает страницу','waiting');cdp=await page.createCDPSession();
+  const work=dispatchOwnedWhatsAppPublication(pool,{deliveryId,accountId,sessionKey,cdp,selfAliases:await selfAliases(),recipientAliases,maxUploadBytes:config.MAX_UPLOAD_BYTES,isActive:()=>!closing&&!ownerSignal.aborted&&generation===sendGeneration&&state==='ready'&&!recovering});
+  // Work owns its prepared handles until completion, even after the HTTP timeout.
+  const cleanup=work.finally(async()=>{activeSends--;await cdp?.detach().catch(()=>{});});
+  try{const result=await withTimeout(cleanup,Math.max(1000,config.SEND_TIMEOUT_MS-15000),'WhatsApp result requires review');return response.json({messageId:result.externalMessageId});}
+  catch(error){const kind=error instanceof DeliveryError?error.kind:'ambiguous';return response.status(kind==='waiting'?409:503).json({error:'WhatsApp: проверьте сохранённый результат отправки',kind});}
+ }catch(error){activeSends--;await cdp?.detach().catch(()=>{});return response.status(503).json({error:'WhatsApp: не удалось подготовить отправку',kind:error instanceof DeliveryError?error.kind:'waiting'});}
 });
 
 function initialize() {

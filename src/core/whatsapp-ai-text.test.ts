@@ -12,8 +12,9 @@ function harness(){
  WAWebUserPrefsMeUser:{getMaybeMePnUser:()=>wid(self),getMaybeMeLidUser:()=>null},
  WAWebMsgKey:Key,WAWebGetEphemeralFieldsMsgActionsUtils:{getEphemeralFields:()=>({})},
  WAWebSendMsgChatAction:{addAndSendMsgToChat(chat:any,message:any){assert.equal(this,modules.WAWebSendMsgChatAction);sends++;if(failure)throw Error('private');message.ack=ack;messages.set(message.id._serialized,message);return [Promise.resolve(message),Promise.resolve()];}},
+ WAWebWidFactory:{asUserWidOrThrow:(v:any)=>v},
  WAWebCollections:{Msg:{get:(id:string)=>messages.get(id)}}};
- const context=vm.createContext({window:{require:(name:string)=>modules[name],WWebJS:{getChat:async()=>({id:wid(target),isGroup:false})}}});
+ const context=vm.createContext({window:{require:(name:string)=>modules[name],WWebJS:{processMediaData:async()=>({type:'image',preview:'prepared-preview',filehash:'synthetic-file-hash',toJSON(){return{type:'image',preview:'prepared-preview'};}}),getChat:async()=>({id:wid(target),isGroup:target.endsWith('@g.us'),groupMetadata:{isLidAddressingMode:false}})}}});
  let staged:any,commits=0;
  const cdp={send(method:string,params:Record<string,any>){
   try{if(method==='Runtime.evaluate')return Promise.resolve(vm.runInContext(params.expression,context)).then(value=>{staged=value;return{result:{objectId:'staged'}};});
@@ -52,4 +53,8 @@ test('WhatsApp preparation rejects group, self, unverified recipient and asynchr
 test('WhatsApp errors after commit are unknown without claiming not_started or leaking data',async()=>{
  const h=harness();h.failure=true;const p=await prepareWhatsAppAiText({...options,cdp:h.cdp});
  const result=await p.prepared.start(action).acknowledgement as any;assert.equal(result.outcome,'unknown');assert.equal(result.dispatchState,undefined);assert.ok(!JSON.stringify(result).includes('private'));
+});
+
+test('WhatsApp publication stages group media before commit and retains caption and preview',async()=>{
+ const h=harness();h.target='500@g.us';const p=await prepareWhatsAppAiText({...options,cdp:h.cdp,externalId:'500@g.us',recipientAliases:['500@g.us'],publication:{media:{mimetype:'image/png',data:'c3ludGhldGlj',filename:'test.png'},caption:'Caption'}});assert.equal(h.sends,0);assert.equal((await p.prepared.start({...action,text:''}).acknowledgement as any).outcome,'confirmed');assert.equal(h.sends,1);await p.release();
 });
