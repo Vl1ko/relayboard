@@ -114,6 +114,7 @@ export class AiManagerStore {
         const linked=await client.query('SELECT id FROM ai_conversations WHERE contact_id=$1 ORDER BY id FOR UPDATE',[conversation.contact_id]);
         for(const row of linked.rows)await this.invalidate(client,row.id,'paused','refused');
       }
+      else if (inserted.rows[0].request_phase_id !== conversation.active_phase_id) { /* Closed-period history is not input to the current request. Refusal above remains global. */ }
       else if (event.origin === "human" || event.origin === "unresolved") {
         const linked=await client.query("SELECT id FROM ai_conversations WHERE contact_id=$1 AND business_status NOT IN ('closed','refused') ORDER BY id FOR UPDATE",[conversation.contact_id]);
         for(const row of linked.rows)await this.invalidate(client,row.id,event.origin==='human'?'manual':'paused',event.origin==='human'?'manager_working':undefined);

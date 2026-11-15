@@ -68,3 +68,22 @@ test('phase change rejects a stale inbound batch instead of assigning it to the 
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM ai_inbox')).rows[0].n,0);
  }finally{f.stop.abort();}
 });
+
+test('MAX consumes closed-period opt-out without storing its text or reopening a request',{skip},async()=>{
+ const f=await fixture();try{
+  const {ConversationWorkflow}=await import('./conversation-workflow.js');await new ConversationWorkflow(pool).setStatus({conversationId:f.conversation.id,status:'closed',reason:'Synthetic completed request'});
+  f.set([{...message('idle-stop',f.base+500),text:'Не пишите мне'}]);assert.equal((await f.poller().poll(f.conversation.id)).complete,true);
+  const row=(await pool.query("SELECT * FROM ai_inbox WHERE external_message_id='idle-stop'")).rows[0];assert.equal(row.request_phase_id,null);assert.equal(row.text,'[Сообщение вне активной заявки]');
+  assert.ok((await pool.query('SELECT opted_out_at FROM ai_contacts WHERE id=$1',[f.conversation.contact_id])).rows[0].opted_out_at);
+  await assert.rejects(bindSourceRequest(pool,{...f.source,messageId:'after-refusal'}),/contact_opted_out/);
+ }finally{f.stop.abort();}
+});
+test('MAX phase switch catches an unread refusal from the gap before the replacement request',{skip},async()=>{
+ const f=await fixture();try{
+  f.set([]);await f.poller().poll(f.conversation.id);const gap=f.base+1500;
+  const {ConversationWorkflow}=await import('./conversation-workflow.js');await new ConversationWorkflow(pool).setStatus({conversationId:f.conversation.id,status:'closed',reason:'Synthetic completed request'});
+  await bindSourceRequest(pool,{...f.source,messageId:'next-gap'});await pool.query('UPDATE ai_request_phases SET started_at=to_timestamp($2::double precision/1000) WHERE id=(SELECT active_phase_id FROM ai_conversations WHERE id=$1)',[f.conversation.id,f.base+2000]);
+  f.setTime(f.base+3000);f.set([{...message('gap-stop',gap),text:'стоп'}]);await f.poller().poll(f.conversation.id);
+  const row=(await pool.query("SELECT * FROM ai_inbox WHERE external_message_id='gap-stop'")).rows[0];assert.equal(row.request_phase_id,null);assert.ok((await pool.query('SELECT opted_out_at FROM ai_contacts WHERE id=$1',[f.conversation.contact_id])).rows[0].opted_out_at);
+ }finally{f.stop.abort();}
+});

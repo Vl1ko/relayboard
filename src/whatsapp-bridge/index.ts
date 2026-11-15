@@ -321,6 +321,12 @@ app.post('/ai/contacts/:id/resolve',async(request,response)=>{
  response.json(await resolveWhatsAppContactRoute(pool,scope,{accountId,contactId},phoneProof));
 });
 
+app.post('/ai/conversations/:id/sync',async(request,response)=>{
+ const id=z.string().uuid().parse(request.params.id);
+ if(config.AI_SEND_MODE!=='live'||!(await pool.query("SELECT 1 FROM ai_conversations WHERE id=$1 AND account_id=$2 AND platform='whatsapp'",[id,accountId])).rowCount)return response.status(409).json({error:'Private sync unavailable'});
+ response.json(await privatePoller.poll(id));
+});
+
 app.post('/ai/actions/:id/dispatch',async(request,response)=>{
  const id=z.string().uuid().parse(request.params.id);
  if(config.AI_SEND_MODE!=='live'||!await runtimeAllowsConversation(pool,scope,(await pool.query('SELECT conversation_id FROM ai_outbox WHERE id=$1',[id])).rows[0]?.conversation_id))return response.status(409).json({error:'AI action is outside the enabled runtime scope'});
@@ -490,7 +496,7 @@ async function owned(signal:AbortSignal){
  const inboxTimer=setInterval(()=>{
   if(config.AI_SEND_MODE!=='live'||polling||signal.aborted)return;
   polling=(async()=>{
-   const active=(await pool.query("SELECT v.id,v.account_id,i.session_key FROM ai_conversations v JOIN integrations i ON i.id=v.account_id WHERE v.platform='whatsapp' AND i.enabled AND v.active_phase_id IS NOT NULL AND v.business_status NOT IN ('closed','refused') ORDER BY v.account_id,v.id LIMIT 100")).rows;
+   const active=(await pool.query("SELECT v.id,v.account_id,i.session_key FROM ai_conversations v JOIN integrations i ON i.id=v.account_id WHERE v.platform='whatsapp' AND i.enabled AND v.active_phase_id IS NOT NULL ORDER BY coalesce((SELECT updated_at FROM ai_whatsapp_private_cursors WHERE conversation_id=v.id),'-infinity'::timestamptz),v.account_id,v.id LIMIT 100")).rows;
    await Promise.all([...new Set(active.map(v=>v.account_id))].map(async account=>{for(const v of active.filter(v=>v.account_id===account)){
     try{if(!await runtimeAllowsConversation(pool,{testOnly:config.AI_TEST_ONLY,accountIds:config.AI_TEST_ACCOUNT_IDS,authorIds:config.AI_TEST_AUTHOR_IDS},v.id))continue;await (await sessions.get(v.session_key)).poll(v.id);}catch{console.error('WhatsApp private sync deferred; cursor retained');}
    }}));

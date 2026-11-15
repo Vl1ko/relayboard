@@ -55,7 +55,7 @@ export async function bindSourceRequestInTransaction(c:PoolClient,input:z.input<
   if(open.length>1)throw Error('multiple_open_requests_require_review');
   if(s.requestId&&open.length&&open[0].id!==s.requestId)throw Error('active_request_exists');
   if(open.length&&!s.allowAdditionalChannel){await persist(open[0].id);return finish(open[0].id);}
-  const settings=(await c.query('SELECT version,settings FROM ai_engine_settings ORDER BY version DESC LIMIT 1 FOR SHARE')).rows[0];
+  const settings=(await c.query('SELECT version,settings FROM ai_engine_settings WHERE version=coalesce((SELECT settings_version FROM ai_request_phases WHERE request_id=$1 AND closed_at IS NULL ORDER BY started_at,id LIMIT 1),(SELECT max(version) FROM ai_engine_settings)) FOR SHARE',[s.requestId??open[0]?.id??null])).rows[0];
   if(!aiSettingsSchema.parse(settings.settings).qualificationEnabled)throw Error('qualification_disabled');
   const requestId=s.requestId??open[0]?.id??randomUUID(),created=!s.requestId&&!open.length;
   if(created)await c.query('INSERT INTO ai_requests(id,contact_id) VALUES($1,$2)',[requestId,contact.id]);

@@ -234,3 +234,7 @@ HEAD на момент записи 82370c2. Текущее дерево сод�
 ## F01 завершён, 15 ноября 2026
 
 [request-history.md](request-history.md): история отдельных заявок, источники/параметры и ссылки из уведомлений, защита команд expectedRequestId/expectedEpoch. Полный прогон349 PASS/0 FAIL/0 SKIP, typecheck/build PASS. Регрессия старой карточки проверяет mode/status/business/followups/cancel/handoff/manual и стабильный replay принятого manual. Синтетический браузер проверил архив/новую заявку, MAX→WhatsApp, квитанцию ручного ответа и390px без переполнения. Доказательства outputs/res08-requests-2026-11-15. F01 DONE; следующий F02 IN_PROGRESS. Реальные данные/production не мигрировали.
+
+## F02 завершён, 15 ноября 2026
+
+[request-lifecycle-hardening.md](request-lifecycle-hardening.md): миграция22, closed-period opt-out/cursor gap, межканальная синхронизация перед отправкой, общая память/лимит заявки, decimal comma.357 PASS/0 FAIL/0 SKIP, typecheck PASS. Новая миграция потребовала исправить fixtures: текущие сообщения датируются после начала фазы вместо устаревшей константы13 ноября; assertions версии22 обновлены, прежние checksum не менялись. F02 DONE, F03 IN_PROGRESS. Обновлённые compiled transport smoke входят в F03; реальная приёмка остаётся F08.

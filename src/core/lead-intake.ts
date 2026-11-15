@@ -1,3 +1,4 @@
+import {hasLiteralNumber} from './numeric-evidence.js';
 import { createHash } from "node:crypto";
 import type { Pool } from "pg";
 import { z } from "zod";
@@ -77,11 +78,9 @@ export function checkLeadEvidence(text: string, params: z.infer<typeof leadParam
       Math.max(0, at - 1),
       at + p.evidenceQuote.length + 1,
     );
-    const literal = String(p.value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const pattern = new RegExp("(^|[^0-9.,+-])" + literal + "($|[^0-9.,])");
     if (
       typeof p.value === "number"
-        ? !(pattern.test(p.evidenceQuote) && pattern.test(numericContext))
+        ? !(hasLiteralNumber(p.evidenceQuote,p.value) && hasLiteralNumber(numericContext,p.value))
         : !p.evidenceQuote
             .toLocaleLowerCase()
             .includes(String(p.value).toLocaleLowerCase())

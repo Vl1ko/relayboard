@@ -43,3 +43,16 @@ test('WhatsApp stale phase batch cannot become input of a newly created request'
  const f=await fixture();let release!:()=>void;const wait=new Promise<void>(r=>release=r);const poller=new WhatsAppPrivatePoller(pool,async()=>{await wait;return f.read();},f.stop.signal,f.scope,()=>f.base+5000);f.set({messages:[f.message('stale')]});const work=poller.poll(f.conversation.id);await new Promise(r=>setTimeout(r,30));
  await pool.query("UPDATE ai_conversations SET business_status='closed' WHERE id=$1",[f.conversation.id]);await bindSourceRequest(pool,{...f.source,messageId:'next'});release();await assert.rejects(work,/request_phase_changed/);assert.equal((await pool.query('SELECT count(*)::int n FROM ai_inbox')).rows[0].n,0);
 });
+
+test('WhatsApp consumes closed-period opt-out and redacts private text before storage',{skip},async()=>{
+ const f=await fixture();const {ConversationWorkflow}=await import('./conversation-workflow.js');await new ConversationWorkflow(pool).setStatus({conversationId:f.conversation.id,status:'closed',reason:'Synthetic completed request'});
+ f.set({messages:[{...f.message('idle-stop'),body:'Не пишите мне'}]});assert.equal((await f.poller().poll(f.conversation.id)).complete,true);
+ const row=(await pool.query("SELECT * FROM ai_inbox WHERE external_message_id='idle-stop'")).rows[0];assert.equal(row.request_phase_id,null);assert.equal(row.text,'[Сообщение вне активной заявки]');assert.ok((await pool.query('SELECT opted_out_at FROM ai_contacts WHERE id=$1',[f.conversation.contact_id])).rows[0].opted_out_at);
+ await assert.rejects(bindSourceRequest(pool,{...f.source,messageId:'after-refusal'}),/contact_opted_out/);
+});
+test('WhatsApp phase switch catches unread gap refusal without adding it to new qualification',{skip},async()=>{
+ const f=await fixture();f.set({messages:[]});await f.poller().poll(f.conversation.id);
+ const {ConversationWorkflow}=await import('./conversation-workflow.js');await new ConversationWorkflow(pool).setStatus({conversationId:f.conversation.id,status:'closed',reason:'Synthetic completed request'});await bindSourceRequest(pool,{...f.source,messageId:'next-gap'});
+ await pool.query('UPDATE ai_request_phases SET started_at=to_timestamp($2::double precision/1000) WHERE id=(SELECT active_phase_id FROM ai_conversations WHERE id=$1)',[f.conversation.id,f.base+10000]);f.setTime(f.base+15000);f.set({messages:[{...f.message('gap-stop'),timestamp:f.base/1000+7,body:'unsubscribe'}]});await f.poller().poll(f.conversation.id);
+ const row=(await pool.query("SELECT * FROM ai_inbox WHERE external_message_id='gap-stop'")).rows[0];assert.equal(row.request_phase_id,null);assert.ok((await pool.query('SELECT opted_out_at FROM ai_contacts WHERE id=$1',[f.conversation.contact_id])).rows[0].opted_out_at);
+});

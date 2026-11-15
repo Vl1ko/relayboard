@@ -1,3 +1,4 @@
+import {synchronizeContactHistory} from '../core/synchronize-contact-history.js';
 import {startSourceHeartbeat} from '../core/source-runtime-health.js';
 import {SourceRuntime} from '../core/source-runtime.js';
 import {createGigaChatSourceScorer} from '../core/gigachat-source-scorer.js';
@@ -27,7 +28,11 @@ async function run(signal:AbortSignal){
  const scope={testOnly:config.AI_TEST_ONLY,accountIds:config.AI_TEST_ACCOUNT_IDS,authorIds:config.AI_TEST_AUTHOR_IDS};
  const transport:RuntimeTransport=live?{
   allowsConversation:id=>runtimeAllowsConversation(pool,scope,id),
-  async dispatchAction(id,target){return target.platform==='whatsapp'?dispatchWhatsAppAction(pool,id,target.accountId):maxWorkerRequest(`/actions/${id}/dispatch`,'POST');},
+  async dispatchAction(id,target){
+   await synchronizeContactHistory(pool,id,{allows:id=>runtimeAllowsConversation(pool,scope,id),async sync(v){
+    return v.platform==='max'?await maxWorkerRequest(`/conversations/${v.id}/sync`,'POST'):await whatsappWorkerRequest(pool,v.account_id,`/ai/conversations/${v.id}/sync`);
+   }});
+   return target.platform==='whatsapp'?dispatchWhatsAppAction(pool,id,target.accountId):maxWorkerRequest(`/actions/${id}/dispatch`,'POST');},
   dispatchNotification:id=>maxWorkerRequest(`/notifications/${id}/dispatch`,'POST'),
  }:{
   allowsConversation:async()=>true,

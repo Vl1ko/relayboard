@@ -18,15 +18,14 @@ export class WhatsAppPrivatePoller{
  }
  private async read(id:string){
   this.signal.throwIfAborted();
-  const v=(await this.pool.query(`SELECT v.*,p.started_at,c.through_time,c.phase_id AS cursor_phase,s.recipient_id,s.author_id,s.reader_account_id
+  const v=(await this.pool.query(`SELECT v.*,p.started_at,(SELECT min(started_at) FROM ai_request_phases WHERE conversation_id=v.id) AS history_started_at,c.through_time,c.phase_id AS cursor_phase,s.recipient_id,s.author_id,s.reader_account_id
    FROM ai_conversations v JOIN ai_request_phases p ON p.id=v.active_phase_id
    LEFT JOIN ai_whatsapp_private_cursors c ON c.conversation_id=v.id
    JOIN LATERAL(SELECT recipient_id,author_id,reader_account_id FROM ai_request_sources WHERE request_id=p.request_id AND conversation_id=v.id ORDER BY created_at DESC LIMIT 1)s ON true
    WHERE v.id=$1 AND v.platform='whatsapp'`,[id])).rows[0];
   if(!v||!runtimeAllows(this.scope,v.account_id,v.recipient_id)||!runtimeAllows(this.scope,v.reader_account_id,v.author_id))return{complete:false,reason:'outside_runtime_scope'};
-  if(['closed','refused'].includes(v.business_status))return{complete:false,reason:'request_inactive'};
-  const phaseSince=Math.max(0,Math.floor(new Date(v.started_at).getTime()/1000)*1000-1),cursor=v.cursor_phase===v.active_phase_id?Number(v.through_time):phaseSince;
-  const since=Math.max(phaseSince,cursor-2000),until=this.now();
+  const phaseSince=Math.max(0,Math.floor(new Date(v.started_at).getTime()/1000)*1000-1),cursor=v.through_time!==null?Math.min(Number(v.through_time),v.cursor_phase===v.active_phase_id?Infinity:phaseSince):Math.max(0,Math.floor(new Date(v.history_started_at).getTime()/1000)*1000-1);
+  const since=Math.max(0,cursor-2000),until=this.now();
   if(until<cursor)throw Error('wa_clock_moved_backwards');
   try{
    const history=await this.readHistory(v.account_id,v.recipient_id,v.external_id);

@@ -71,7 +71,7 @@ test('source account or author substitution cannot bind a second identity', {ski
 
 test('new phase model context excludes all old request messages', {skip},async()=>{
  const f=await fixture();await bindSourceRequest(pool,f);
- const event=(id:string,text:string)=>({version:1,platform:'max',accountId:f.accountId,conversationId:'private-author',messageId:id,occurredAt:'2026-11-13T10:00:00Z',direction:'inbound',origin:'customer',text});
+ const event=(id:string,text:string)=>({version:1,platform:'max',accountId:f.accountId,conversationId:'private-author',messageId:id,occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text});
  await store.ingest(event('old','OLD REQUEST VOLUME 999'));
  await pool.query("UPDATE ai_conversations SET business_status='closed' WHERE id=$1",[f.conversationId]);
  await bindSourceRequest(pool,{...f,messageId:'new-source'});
@@ -114,17 +114,17 @@ for(const legacyVersion of [12,14])test('upgrade from version '+legacyVersion+' 
   }
   await oldStore.ingest({version:1,platform:'max',accountId:account,conversationId:'legacy',messageId:'group-source:-456:source-one',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'synthetic'});
   await legacy.query(`UPDATE ai_engine_state SET fields='{"volume":25}',reply_count=3 WHERE conversation_id=$1`,[conversation.id]);await legacy.query("UPDATE ai_conversations SET business_status='closed' WHERE id=$1",[conversation.id]);
-  assert.deepEqual(await applyAiManagerMigration(legacy),{version:21,applied:true});
+  assert.deepEqual(await applyAiManagerMigration(legacy),{version:22,applied:true});
   const phase=(await legacy.query('SELECT * FROM ai_request_phases WHERE conversation_id=$1',[conversation.id])).rows[0];assert.deepEqual(phase.fields_snapshot,{volume:25});assert.equal(phase.reply_count_snapshot,3);assert.ok(phase.closed_at);
   const replay=await bindSourceRequest(legacy,{conversationId:conversation.id,accountId:account,platform:'max',chatId:'-456',messageId:'source-one',authorId:'202'});assert.equal(replay.duplicate,true);assert.equal(replay.requestId,phase.request_id);
   const source=(await legacy.query('SELECT * FROM ai_request_sources')).rows[0];assert.equal(source.reader_account_id,account);assert.equal(source.recipient_id,'202');assert.equal(source.initial_contact,false);
-  assert.equal((await legacy.query('SELECT count(*)::int n FROM ai_requests')).rows[0].n,1);assert.deepEqual(await applyAiManagerMigration(legacy),{version:21,applied:false});
+  assert.equal((await legacy.query('SELECT count(*)::int n FROM ai_requests')).rows[0].n,1);assert.deepEqual(await applyAiManagerMigration(legacy),{version:22,applied:false});
  }finally{await legacy.end();await pool.query('DROP SCHEMA '+legacySchema+' CASCADE');}
 });
 
 test('pre-ledger group-source inbox identity remains deduplicated after upgrade and close', {skip},async()=>{
  const f=await fixture(),first=await bindSourceRequest(pool,f);
- await store.ingest({version:1,platform:'max',accountId:f.accountId,conversationId:'private-author',messageId:'group-source:'+f.chatId+':'+f.messageId,occurredAt:'2026-11-13T10:00:00Z',direction:'inbound',origin:'customer',text:'old source'});
+ await store.ingest({version:1,platform:'max',accountId:f.accountId,conversationId:'private-author',messageId:'group-source:'+f.chatId+':'+f.messageId,occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'old source'});
  await pool.query('DELETE FROM ai_request_sources');
  await pool.query("UPDATE ai_conversations SET business_status='closed' WHERE id=$1",[f.conversationId]);
  const replay=await bindSourceRequest(pool,f);assert.equal(replay.requestId,first.requestId);assert.equal(replay.duplicate,true);
@@ -311,4 +311,44 @@ test('greeting is once per request across criteria phases; a later separate requ
  assert.equal(await requestHasOutgoing(pool,v.id),true);
  await beginConfiguredQualification(pool,v.id);assert.equal(await requestHasOutgoing(pool,v.id),true);
  await pool.query("UPDATE ai_conversations SET business_status='closed' WHERE id=$1",[v.id]);await bindSourceRequest(pool,{...f,messageId:'new-request'});assert.equal(await requestHasOutgoing(pool,v.id),false);
+});
+
+test('one request shares grounded fields across channels with collision-free proof IDs and latest correction',{skip},async()=>{
+ await pool.query('UPDATE ai_engine_settings SET settings=settings||$1::jsonb',[JSON.stringify({fields:[{key:'volume',question:'Объём?',required:true},{key:'city',question:'Город?',required:true}],rules:[{field:'volume',op:'gte',value:10}],replyLimit:10})]);
+ const f=await fixture(),first=await bindSourceRequest(pool,f),engine=new AiEngineStore(pool);
+ const incoming=async(accountId:string,conversationId:string,platform:string,messageId:string,text:string)=>store.ingest({version:1,accountId,conversationId,platform,messageId,text,occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer'});
+ const v1=await incoming(f.accountId,'private-author','max','same-id','Нужно12,5 тонн');
+ const firstDecision=await engine.evaluate(f.conversationId,v1.event.event_key,{kind:'fixture',async complete(){return{replyDraft:'',extracted:[{field:'volume',value:12.5,evidenceMessageId:'same-id',evidenceQuote:'12,5 тонн'}],replyKind:'ask_fields',askFields:['city'],knowledgeKeys:[],proposedStatus:'insufficient_data',handoffReason:null};}});assert.equal(firstDecision.business_status,'insufficient_data');
+ const contact=(await pool.query('SELECT contact_id FROM ai_conversations WHERE id=$1',[f.conversationId])).rows[0].contact_id;
+ const waAccount=(await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext) VALUES('whatsapp','synthetic','fake') RETURNING id")).rows[0].id;
+ const wa=await store.createConversation({contactId:contact,accountId:waAccount,externalId:'200@c.us'});const second=await bindSourceRequest(pool,{conversationId:wa.id,accountId:waAccount,platform:'whatsapp',chatId:'source@g.us',messageId:'wa-source',authorId:'200@c.us',allowAdditionalChannel:true});assert.equal(second.requestId,first.requestId);
+ const v2=await incoming(waAccount,'200@c.us','whatsapp','same-id','Город Казань');
+ const result=await engine.evaluate(wa.id,v2.event.event_key,{kind:'fixture',async complete(input){
+  assert.equal(input.data.fields.volume.value,12.5);assert.equal(new Set(input.data.messages.map(m=>m.messageId)).size,input.data.messages.length);assert.notEqual(input.data.messages[0].messageId,input.data.messages[1].messageId);
+  assert.equal(input.data.fields.volume.evidenceMessageId,v1.event.event_key);
+  return{replyDraft:'',extracted:[{field:'city',value:'Казань',evidenceMessageId:v2.event.event_key,evidenceQuote:'Казань'}],replyKind:'none',askFields:[],knowledgeKeys:[],proposedStatus:'qualified',handoffReason:null};}});
+ assert.equal(result.business_status,'qualified');assert.equal(result.fields.volume.value,12.5);assert.equal(result.fields.city.value,'Казань');
+ const v3=await incoming(waAccount,'200@c.us','whatsapp','correction','Исправляю:5 тонн');const correction=await engine.evaluate(wa.id,v3.event.event_key,{kind:'fixture',async complete(){return{replyDraft:'',extracted:[{field:'volume',value:5,evidenceMessageId:v3.event.event_key,evidenceQuote:'5 тонн'}],replyKind:'none',askFields:[],knowledgeKeys:[],proposedStatus:'unqualified',handoffReason:null};}});assert.equal(correction.business_status,'unqualified');assert.equal(correction.fields.volume.value,5);
+});
+
+test('second channel inherits pinned criteria and cannot reset request reply limit',{skip},async()=>{
+ await pool.query('UPDATE ai_engine_settings SET settings=settings||$1::jsonb',[JSON.stringify({replyLimit:1})]);const f=await fixture();await bindSourceRequest(pool,f);const original=(await pool.query('SELECT settings_version FROM ai_engine_state WHERE conversation_id=$1',[f.conversationId])).rows[0].settings_version;
+ await pool.query('UPDATE ai_engine_state SET reply_count=1 WHERE conversation_id=$1',[f.conversationId]);
+ const contact=(await pool.query('SELECT contact_id FROM ai_conversations WHERE id=$1',[f.conversationId])).rows[0].contact_id,waAccount=(await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext) VALUES('whatsapp','synthetic','fake') RETURNING id")).rows[0].id,wa=await store.createConversation({contactId:contact,accountId:waAccount,externalId:'200@c.us'});
+ const {settings}=await new AiEngineStore(pool).settings();await new AiEngineStore(pool).saveSettings({expectedVersion:original,settings:{...settings,replyLimit:9}});
+ await bindSourceRequest(pool,{conversationId:wa.id,accountId:waAccount,platform:'whatsapp',chatId:'source@g.us',messageId:'wa-source',authorId:'200@c.us',allowAdditionalChannel:true});assert.equal((await pool.query('SELECT settings_version FROM ai_engine_state WHERE conversation_id=$1',[wa.id])).rows[0].settings_version,original);
+ const event=await store.ingest({version:1,platform:'whatsapp',accountId:waAccount,conversationId:'200@c.us',messageId:'new',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'Продолжим'});
+ const decision=await new AiEngineStore(pool).evaluate(wa.id,event.event.event_key,{kind:'fixture',async complete(){throw Error('Model must not run past shared limit');}});assert.equal(decision.reason,'reply_limit');
+});
+
+test('before a new-channel send, refusal in historical channel cancels it and unavailable history fails closed',{skip},async()=>{
+ const f=await fixture();await bindSourceRequest(pool,f);const {ConversationWorkflow}=await import('./conversation-workflow.js');await new ConversationWorkflow(pool).setStatus({conversationId:f.conversationId,status:'closed',reason:'Old channel complete'});
+ const contact=(await pool.query('SELECT contact_id FROM ai_conversations WHERE id=$1',[f.conversationId])).rows[0].contact_id;
+ const waAccount=(await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext) VALUES('whatsapp','synthetic','fake') RETURNING id")).rows[0].id,wa=await store.createConversation({contactId:contact,accountId:waAccount,externalId:'200@c.us'});await bindSourceRequest(pool,{conversationId:wa.id,accountId:waAccount,platform:'whatsapp',chatId:'source@g.us',messageId:'second-request',authorId:'200@c.us'});
+ const epoch=(await pool.query('SELECT automation_epoch FROM ai_conversations WHERE id=$1',[wa.id])).rows[0].automation_epoch;const action=(await store.enqueue({conversationId:wa.id,kind:'reply',expectedEpoch:epoch,logicalKey:'pending-new-channel',text:'Synthetic reply'})).action;
+ const {synchronizeContactHistory}=await import('./synchronize-contact-history.js');
+ await assert.rejects(synchronizeContactHistory(pool,action.id,{allows:async()=>true,sync:async()=>({complete:false})}),/history_incomplete/);
+ await assert.rejects(synchronizeContactHistory(pool,action.id,{allows:async()=>false,sync:async()=>{throw Error('Must not read denied history');}}),/outside_scope/);
+ const seen:string[]=[];await synchronizeContactHistory(pool,action.id,{allows:async()=>true,async sync(v){seen.push(v.id);if(v.id===f.conversationId)await store.ingest({version:1,platform:'max',accountId:f.accountId,conversationId:'private-author',messageId:'closed-opt-out',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'Не пишите мне'});return{complete:true};}});
+ assert.equal(seen.length,2);assert.equal((await pool.query('SELECT state FROM ai_outbox WHERE id=$1',[action.id])).rows[0].state,'cancelled');let sends=0;await store.dispatch(action.id,{target:{accountId:waAccount,externalConversationId:'200@c.us',platform:'whatsapp'},start(){sends++;throw Error('Must not send');}});assert.equal(sends,0);
 });

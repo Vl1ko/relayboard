@@ -1,3 +1,5 @@
+import {requestQualificationContext} from './request-qualification-context.js';
+import {hasLiteralNumber} from './numeric-evidence.js';
 import {latestRequestCustomerSequence} from './customer-sequence.js';
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
@@ -179,12 +181,7 @@ function grounded(
   const rendered = String(extracted.value).toLocaleLowerCase();
   // No inferred conversions, unit arithmetic or claims from model/system/human messages.
   if (typeof extracted.value === "number") {
-    const pattern = new RegExp(
-      "(^|[^0-9.,+-])" +
-        rendered.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") +
-        "($|[^0-9.,])",
-    );
-    return pattern.test(quoted) && pattern.test(numericContext);
+    return hasLiteralNumber(quoted,extracted.value) && hasLiteralNumber(numericContext,extracted.value);
   }
   return quoted.includes(rendered);
 }
@@ -439,7 +436,9 @@ export class AiEngineStore {
       ["closed", "refused"].includes(found.business_status)
     )
       throw new AiEngineError("automation_forbidden");
-    const all = (
+    const shared=await requestQualificationContext(this.pool,conversationId,found.settings_version);
+    if(shared){found.fields=shared.fields;found.reply_count=shared.replyCount;}
+    const all = shared?.messages ?? (
       await this.pool.query(
         `SELECT event_key,ingest_sequence,external_message_id AS "messageId",left(text,4000) AS text,origin FROM ai_inbox WHERE conversation_id=$1 AND request_phase_id IS NOT DISTINCT FROM(SELECT active_phase_id FROM ai_conversations WHERE id=$1) AND ingest_sequence>=coalesce((SELECT first_ingest_sequence FROM ai_request_phases WHERE id=(SELECT active_phase_id FROM ai_conversations WHERE id=$1)),0) ORDER BY ingest_sequence DESC LIMIT 20`,
         [conversationId],
@@ -463,7 +462,8 @@ export class AiEngineStore {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      if (found.reply_count < settings.replyLimit)
+      if (shared?.compatible===false) failure="criteria_version_conflict";
+      else if (found.reply_count < settings.replyLimit)
         proposal = await Promise.race([
           provider.complete({
             system: AI_SYSTEM_PROMPT,
@@ -537,8 +537,8 @@ export class AiEngineStore {
       if(BigInt(await latestRequestCustomerSequence(c,conversationId))>BigInt(target.ingest_sequence))throw new AiEngineError('superseded_customer_event');
       ownerSignal?.throwIfAborted();
       const accepted =
-        state.reply_count >= settings.replyLimit
-          ? handoff("reply_limit", state.fields)
+        found.reply_count >= settings.replyLimit
+          ? handoff("reply_limit", found.fields)
           : decision;
       const result = (
         await c.query(

@@ -44,6 +44,7 @@ async function owned(signal:AbortSignal){
   res.json(await resolveMaxContactRoute(pool,connections,scope,{contactId:z.string().uuid().parse(req.params.id),accountId}));
  });
  app.post('/deliveries/:id/dispatch',async(req,res)=>res.json(await dispatchOwnedMaxPublication(pool,connections,z.string().uuid().parse(req.params.id),signal,config.SEND_TIMEOUT_MS)));
+ app.post('/conversations/:id/sync',async(req,res)=>res.json(await poller.poll(z.string().uuid().parse(req.params.id))));
  app.post('/actions/:id/dispatch',async(req,res)=>{
   const id=z.string().uuid().parse(req.params.id),action=(await pool.query('SELECT conversation_id FROM ai_outbox WHERE id=$1',[id])).rows[0];
   if(!action)throw new DeliveryError('Действие не найдено','permanent');
@@ -63,7 +64,7 @@ async function owned(signal:AbortSignal){
  const inboxTimer=setInterval(()=>{
   if(config.AI_SEND_MODE!=='live'||polling||signal.aborted)return;polling=true;
   inboxWork=(async()=>{
-   const active=(await pool.query(`SELECT id,account_id FROM ai_conversations WHERE platform='max' AND active_phase_id IS NOT NULL AND business_status NOT IN ('closed','refused') ORDER BY account_id,id LIMIT 100`)).rows;
+   const active=(await pool.query(`SELECT id,account_id FROM ai_conversations WHERE platform='max' AND active_phase_id IS NOT NULL ORDER BY coalesce((SELECT updated_at FROM ai_max_private_cursors WHERE conversation_id=ai_conversations.id),'-infinity'::timestamptz),account_id,id LIMIT 100`)).rows;
    const accounts=[...new Set(active.map(v=>v.account_id))];
    await Promise.all(accounts.map(async account=>{for(const v of active.filter(v=>v.account_id===account)){try{await poller.poll(v.id);}catch{console.error('MAX private sync deferred; cursor retained');}}}));
   })().catch(()=>console.error('MAX inbox iteration deferred')).finally(()=>{polling=false;});
