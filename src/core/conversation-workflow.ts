@@ -557,6 +557,7 @@ export class ConversationWorkflow {
       const target = (
         await client.query("SELECT * FROM ai_manager_target WHERE id=1")
       ).rows[0];
+      const senderAccount=(await client.query('SELECT name FROM integrations WHERE id=$1',[c.conversation.account_id])).rows[0];
       return (
         await client.query(
           `INSERT INTO ai_handoff_notifications(conversation_id,logical_key,fingerprint,reason,summary,parameters,source,contact_snapshot,channel_snapshot,target_account_id,target_external_id,state,outcome_code) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
@@ -576,6 +577,7 @@ export class ConversationWorkflow {
             {
               platform: c.conversation.platform,
               accountId: c.conversation.account_id,
+              accountName: senderAccount?.name ?? null,
               externalId: c.conversation.external_id,
             },
             target?.account_id ?? null,

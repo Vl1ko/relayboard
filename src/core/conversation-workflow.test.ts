@@ -752,3 +752,10 @@ test('historical closed channel does not block follow-up of a later active reque
  assert.equal((await pool.query('SELECT business_status FROM ai_conversations WHERE id=$1',[f.conversations[0].id])).rows[0].business_status,'closed');
  await assert.rejects(service.scheduleFollowup({conversationId:f.conversations[0].id,scenario:'no_reply',key:'archived',anchorAt:'2026-11-13T10:00:00Z'}));
 });
+
+test('handoff snapshots the selected sender name separately from the source reader',{skip},async()=>{
+ const f=await fixture();await pool.query('UPDATE integrations SET name=$2 WHERE id=$1',[f.accounts[0],'Selected sender']);
+ const input={conversationId:f.conversations[0].id,key:'sender-name',reason:'human_requested' as const,summary:'Synthetic',source:{readerAccount:'Different reader'}};
+ const n=await service.handoff(input);assert.equal(n.channel_snapshot.accountName,'Selected sender');assert.equal(n.source.readerAccount,'Different reader');
+ await pool.query('UPDATE integrations SET name=$2 WHERE id=$1',[f.accounts[0],'Renamed later']);const replay=await service.handoff(input);assert.equal(replay.id,n.id);assert.equal(replay.channel_snapshot.accountName,'Selected sender');
+});
