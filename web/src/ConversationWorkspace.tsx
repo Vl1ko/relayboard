@@ -142,6 +142,7 @@ function recordText(record: Record<string, unknown>, keys: string[]) {
 }
 function queryId(name:string){const value=new URLSearchParams(window.location.search).get(name)||'';return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)?value:'';}
 export default function ConversationWorkspace() {
+  const [showContactList,setShowContactList]=useState(false);
   const [filters, setFilters] = useState({
       q: "",
       status: "",
@@ -305,6 +306,8 @@ export default function ConversationWorkspace() {
   }
   function selectContact(id: string) {
     if (operating.current) return;
+    setShowContactList(false);
+    if(id===selected)return;
     setSelected(id);
     setMessageOffset(0);
     setConversationId("");
@@ -317,14 +320,22 @@ export default function ConversationWorkspace() {
     (scopeMatches?detail?.messages:[])?.filter(
       (m) => !conversationId || m.conversationId === conversationId,
     ) || [];
+  const detailPanel=useRef<HTMLElement>(null);
+  useEffect(()=>{if(selected&&!showContactList&&window.matchMedia('(max-width:680px)').matches)detailPanel.current?.scrollIntoView({block:'start'});},[selected,showContactList]);
+  const threadRef=useRef<HTMLDivElement>(null);
+  const threadState=useRef({key:'',count:0});
+  useEffect(()=>{const thread=threadRef.current;if(!thread)return;const key=conversationId+':'+viewingRequest+':'+messageOffset;
+    if(messageOffset===0&&(threadState.current.key!==key||threadState.current.count===0||thread.scrollHeight-thread.scrollTop-thread.clientHeight<180))thread.scrollTop=thread.scrollHeight;
+    threadState.current={key,count:selectedMessages.length};
+  },[conversationId,viewingRequest,messageOffset,detail?.messages]);
   return (
-    <div className="conversation-workspace">
+    <div className="conversation-workspace" data-selected={Boolean(selected)} data-list={showContactList}>
       <section
         className="card conversation-filters"
         aria-label="Поиск и фильтры диалогов"
       >
         <label>
-          Поиск по имени, телефону или сообщению
+          Найти клиента или сообщение
           <input
             value={filters.q}
             onChange={(e) => filter("q", e.target.value)}
@@ -345,7 +356,7 @@ export default function ConversationWorkspace() {
             ))}
           </select>
         </label>
-        <label>
+        <details className="conversation-extra-filters"><summary>Ещё фильтры</summary><div>        <label>
           Режим
           <select
             value={filters.mode}
@@ -403,17 +414,8 @@ export default function ConversationWorkspace() {
           onClick={() => setRevision((v) => v + 1)}
         >
           Обновить
-        </button>
+        </button></div></details>
       </section>
-      <BindConversation
-        accounts={accounts}
-        onChange={() => setRevision((v) => v + 1)}
-      />
-      <WorkspaceSettings
-        selectedConversationId={historyView?'':conversationId}
-        requestId={historyView?'':viewingRequest} epoch={conversation?.epoch||''}
-        onChange={() => setRevision((v) => v + 1)}
-      />
       {list && (
         <section
           className="conversation-counters"
@@ -434,7 +436,7 @@ export default function ConversationWorkspace() {
             </div>
           ))}
           <p>
-            По всей базе диалогов. Контакт может входить в несколько категорий.
+            Сводка по всем заявкам
           </p>
         </section>
       )}
@@ -465,7 +467,7 @@ export default function ConversationWorkspace() {
               disabled={operation}
             >
               <strong>{c.displayName || c.phone || "Без имени"}</strong>
-              <span>{c.phone || "Телефон не указан"} · Приоритет: {priorityLabels[c.priority]}</span>
+              <span>{c.phone || "Телефон не указан"}{c.priority!=='normal'?' · '+priorityLabels[c.priority]:''}</span>
               <small>
                 {c.conversations
                   ?.map((v) => `${v.platform} · ${v.accountName}`)
@@ -505,6 +507,7 @@ export default function ConversationWorkspace() {
         </section>
         <section
           className="card conversation-detail"
+          ref={detailPanel}
           aria-label="Карточка контакта"
           aria-busy={detailLoading}
         >
@@ -524,6 +527,7 @@ export default function ConversationWorkspace() {
           )}
           {detail && (
             <>
+              <button className="conversation-back" onClick={()=>setShowContactList(true)}>← Все диалоги</button>
               <h2>
                 {detail.contact.displayName ||
                   detail.contact.phone ||
@@ -535,18 +539,8 @@ export default function ConversationWorkspace() {
                   ? " · Контакт исключён из сообщений"
                   : ""}
               </p>
-              <ContactPriority key={detail.contact.id} contact={detail.contact} onChange={()=>setRevision(v=>v+1)}/>
-              <dl className="conversation-facts">
-                <div>
-                  <dt>Комментарий</dt>
-                  <dd>{detail.contact.comment || "—"}</dd>
-                </div>
-                <div>
-                  <dt>Этап из импорта</dt>
-                  <dd>{detail.contact.importedStage || "—"}</dd>
-                </div>
-              </dl>
-              <label>
+
+              {(detail.contact.conversations?.length||0)>1 ? (              <label>
                 Канал и аккаунт
                 <select
                   value={conversationId}
@@ -559,18 +553,29 @@ export default function ConversationWorkspace() {
                 >
                   {detail.contact.conversations?.map((v) => (
                     <option key={v.id} value={v.id}>
-                      {v.platform} · {v.accountName} · {v.externalId}
+                      {v.platform === "whatsapp" ? "WhatsApp" : "MAX"} · {v.accountName}
                     </option>
                   ))}
                 </select>
-              </label>
+              </label>) : <p className="conversation-channel">{conversation?.platform==='whatsapp'?'WhatsApp':'MAX'} · {conversation?.accountName||'Аккаунт не выбран'}</p>}
               {conversation && (
                 <>
-                  <RequestHistory contactId={detail.contact.id} requestId={viewingRequest} currentRequestId={conversation.requestId||''} revision={revision} onSelect={id=>{setMessageOffset(0);setViewingRequest(id);}}/>
+                  <details className="conversation-secondary"><summary>О клиенте и заявке</summary><ContactPriority key={detail.contact.id} contact={detail.contact} onChange={()=>setRevision(v=>v+1)}/>
+              <dl className="conversation-facts">
+                <div>
+                  <dt>Комментарий</dt>
+                  <dd>{detail.contact.comment || "—"}</dd>
+                </div>
+                <div>
+                  <dt>Этап из импорта</dt>
+                  <dd>{detail.contact.importedStage || "—"}</dd>
+                </div>
+              </dl>
+              <RequestHistory contactId={detail.contact.id} requestId={viewingRequest} currentRequestId={conversation.requestId||''} revision={revision} onSelect={id=>{setMessageOffset(0);setViewingRequest(id);}}/></details>
                   {historyView&&<p className="conversation-muted">Просмотр другой заявки: действия и ручной ответ недоступны. Выберите текущую заявку канала для работы.</p>}
-                  <p>
+                  <p className="conversation-status-strip">
                     <b>{statuses[conversation.status]}</b> ·{" "}
-                    {modes[conversation.mode]}
+                    {conversation.mode==='auto'?'Бот ведёт диалог':conversation.mode==='manual'?'Вы ведёте диалог':'Автоответы остановлены'}
                     {!conversation.accountEnabled
                       ? " · Аккаунт недоступен"
                       : ""}
@@ -578,25 +583,15 @@ export default function ConversationWorkspace() {
                       ? " · Требуется авторизация"
                       : ""}
                   </p>
-                  <p className="conversation-address">
-                    Исходный диалог: {conversation.externalId}
-                    <br />
-                    Аккаунт: {conversation.accountName} (
-                    {conversation.accountId})
-                  </p>
+
                   {!historyView&&conversation.status!=='closed'&&<fieldset className="conversation-request-actions" disabled={detailLoading}>
+                  <div className="conversation-primary-actions">
+                    <button disabled={operation||conversation.mode==='manual'} onClick={()=>void act('/conversations/'+conversation.id+'/mode',{mode:'manual'})}>Взять в работу</button>
+                    <button disabled={operation} onClick={()=>void act('/conversations/'+conversation.id+'/status',{status:'closed',reason:'Заявка завершена менеджером'})}>Закрыть заявку</button>
+                  </div>
+                  <details className="conversation-secondary"><summary>Другие действия</summary>
                   <div className="conversation-controls">
-                    <button
-                      disabled={operation}
-                      onClick={() =>
-                        void act(
-                          "/conversations/" + conversation.id + "/mode",
-                          { mode: "manual" },
-                        )
-                      }
-                    >
-                      Взять в работу
-                    </button>
+
                     <button
                       disabled={operation}
                       onClick={() =>
@@ -673,15 +668,15 @@ export default function ConversationWorkspace() {
                     «Подходит» требует проверки критериев на сервере.
                     Возобновление не снимает отказ контакта.
                   </small>
-                  </fieldset>}
-                  {(historyView||conversation.status==='closed')&&!detail.contact.optedOut&&<section className="conversation-operation"><label>Причина исключения контакта<input value={reason} maxLength={512} onChange={e=>setReason(e.target.value)}/></label><button disabled={operation||!reason.trim()} onClick={()=>void act('/contacts/'+detail.contact.id+'/opt-out',{reason:reason.trim()})}>Исключить контакт</button></section>}
-                  <h3>История выбранной заявки в канале</h3>
+                  </details></fieldset>}
+                  {(historyView||conversation.status==='closed')&&!detail.contact.optedOut&&<details className="conversation-secondary"><summary>Исключить клиента из сообщений</summary><section className="conversation-operation"><label>Причина исключения контакта<input value={reason} maxLength={512} onChange={e=>setReason(e.target.value)}/></label><button disabled={operation||!reason.trim()} onClick={()=>void act('/contacts/'+detail.contact.id+'/opt-out',{reason:reason.trim()})}>Исключить контакт</button></section></details>}
+                  <h3>Переписка</h3>
                   {!selectedMessages.length && (
                     <p>
-                      На этой странице истории сообщений выбранного диалога нет.
+                      Сообщений пока нет.
                     </p>
                   )}
-                  <div className="conversation-messages">
+                  <div className="conversation-messages" ref={threadRef} role="log" aria-label="Переписка с клиентом">
                     {selectedMessages.map((m) => (
                       <article
                         key={m.id}
@@ -694,16 +689,13 @@ export default function ConversationWorkspace() {
                               : m.origin === "human"
                                 ? "Менеджер"
                                 : m.origin === "service"
-                                  ? "Сервис"
+                                  ? "Ваш аккаунт"
                                   : "Источник требует проверки"}
                           </b>
                           <time>{time(m.occurredAt)}</time>
                         </header>
                         <p>{m.text || "Сообщение без текста"}</p>
-                        <small>
-                          {m.direction === "inbound" ? "Входящее" : "Исходящее"}{" "}
-                          · ID {m.externalMessageId}
-                        </small>
+
                       </article>
                     ))}
                   </div>
@@ -730,6 +722,22 @@ export default function ConversationWorkspace() {
                       Более поздние
                     </button>
                   </div>
+                  {!historyView&&<ManualReplyComposer
+                    key={conversation.id+':'+viewingRequest}
+                    conversationId={conversation.id}
+                    requestId={conversation.requestId||undefined} epoch={conversation.epoch}
+                    blocked={
+                      detailLoading || detail.contact.optedOut ||
+                      conversation.status==='closed'||conversation.status==='refused'
+                    }
+                    onQueued={() => setRevision((v) => v + 1)}
+                  />}
+                  <details className="conversation-secondary conversation-journal"><summary>Отправки и история обработки</summary>                  <details className="conversation-secondary"><summary>Технические сведения</summary><p className="conversation-address">
+                    Исходный диалог: {conversation.externalId}
+                    <br />
+                    Аккаунт: {conversation.accountName} (
+                    {conversation.accountId})
+                  </p></details>
                   <h3>Операции отправки</h3>
                   <p>
                     Намерение отправки не означает доставку. Ниже последние 100
@@ -838,22 +846,24 @@ export default function ConversationWorkspace() {
                       ))}
                     </details>
                   ) : null}
-                  {!historyView&&<ManualReplyComposer
-                    key={conversation.id+':'+viewingRequest}
-                    conversationId={conversation.id}
-                    requestId={conversation.requestId||undefined} epoch={conversation.epoch}
-                    blocked={
-                      detailLoading || detail.contact.optedOut ||
-                      conversation.status==='closed'||conversation.status==='refused'
-                    }
-                    onQueued={() => setRevision((v) => v + 1)}
-                  />}
+                  </details>
                 </>
               )}
             </>
           )}
         </section>
       </div>
+      <details className="conversation-admin"><summary>Настройки диалогов</summary>      <BindConversation
+        accounts={accounts}
+        onChange={() => setRevision((v) => v + 1)}
+      />
+      <WorkspaceSettings
+        selectedConversationId={historyView?'':conversationId}
+        requestId={historyView?'':viewingRequest} epoch={conversation?.epoch||''}
+        onChange={() => setRevision((v) => v + 1)}
+      />
+
+      </details>
     </div>
   );
 }
@@ -1647,11 +1657,8 @@ function ManualReplyComposer({
   }
   return (
     <section className="conversation-manual-reply">
-      <h3>Ручной ответ{sendMode==='synthetic'?' — имитация':''}</h3>
-      <p>
-        Создаётся отдельное ручное намерение, автоматика контакта
-        останавливается. {sendMode==='synthetic'?'Отправка имитируется.':'Сообщение ставится в очередь выбранного аккаунта; подтверждение канала появится в списке операций.'}
-      </p>
+      <h3>Ответ клиенту{sendMode==='synthetic'?' — тестовый режим':''}</h3>
+      <p className="conversation-muted">{sendMode==='synthetic'?'Тестовый режим: сообщение не отправится клиенту.':'После вашего ответа бот не вмешивается в диалог.'}</p>
       {!capabilitiesLoaded && (
         <p role="status">Проверяем доступность ручной отправки…</p>
       )}
@@ -1663,7 +1670,7 @@ function ManualReplyComposer({
       )}
       {blocked && (
         <p>
-          Ручной ответ запрещён: контакт исключён либо выбранный диалог закрыт.
+          {blocked?'Заявка закрыта или клиент отказался от сообщений. Ответ недоступен.':''}
         </p>
       )}
       {error && (
@@ -1674,8 +1681,7 @@ function ManualReplyComposer({
       {receipt ? (
         <>
           <p role="status" className="conversation-success">
-            {sendMode==='synthetic'?'ТЕСТ: отправка имитируется.':'Ручной ответ записан в очередь.'} Операция{" "}
-            {receipt}; её состояние показано в списке операций.
+            {sendMode==='synthetic'?'Тестовый ответ сохранён.':'Сообщение передано на отправку. Статус — в разделе «Отправки и история обработки».'}
           </p>
           <button
             type="button"
@@ -1687,13 +1693,13 @@ function ManualReplyComposer({
               attempt.current = null;
             }}
           >
-            Начать новый ответ
+            Написать ещё
           </button>
         </>
       ) : (
         <>
           <label>
-            Текст ручного ответа
+            Сообщение
             <textarea
               rows={4}
               maxLength={4000}
@@ -1708,10 +1714,10 @@ function ManualReplyComposer({
             onClick={() => void submit()}
           >
             {busy
-              ? "Записываем ручное намерение…"
+              ? "Отправляем…"
               : locked
-                ? "Повторить подтверждение того же ответа"
-                : "Записать ручной ответ в очередь"}
+                ? "Проверить отправку"
+                : "Отправить"}
           </button>
         </>
       )}

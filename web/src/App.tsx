@@ -157,7 +157,7 @@ function App() {
   const pageMeta: Record<View, { title: string; description: string }> = {
     compose: { title: "Новая публикация", description: "Одно сообщение для нужных бесед — отправьте сейчас или запланируйте повторение." },
     leads: { title: "Источники заявок", description: "Проверка источников и явное создание заявок." },
-    dialogs: { title: "Диалоги", description: "История общения, ручное управление и ожидающие действия." },
+    dialogs: { title: "Диалоги", description: "Переписка с клиентами и работа с заявками." },
     contacts: { title: "Клиенты", description: "Импорт контактов из CSV/XLSX с проверкой номеров и дубликатов." },
     qualification: { title: "ИИ-квалификация", description: "Сценарий, по которому ассистент задаёт вопросы и передаёт готового клиента менеджеру." },
     connections: { title: "Подключения", description: "Личные аккаунты и беседы, доступные для рассылки." },
