@@ -1,0 +1,186 @@
+{
+  "completed": 20,
+  "total": 20,
+  "results": [
+    {
+      "id": "unknown-01",
+      "result": "PASS",
+      "disposition": "handoff",
+      "businessStatus": "manager_required",
+      "reason": "unknown_commercial_fact",
+      "clientReply": null,
+      "elapsedMs": 5716
+    },
+    {
+      "id": "unknown-02",
+      "result": "FAIL",
+      "disposition": "reply",
+      "businessStatus": "insufficient_data",
+      "reason": "configured_questions_only",
+      "clientReply": "Какой объём щебня нужен для тестовой заявки?",
+      "elapsedMs": 1608
+    },
+    {
+      "id": "unknown-03",
+      "result": "PASS",
+      "disposition": "handoff",
+      "businessStatus": "manager_required",
+      "reason": "unknown_commercial_fact",
+      "clientReply": null,
+      "elapsedMs": 2086
+    },
+    {
+      "id": "unknown-04",
+      "result": "PASS",
+      "disposition": "handoff",
+      "businessStatus": "manager_required",
+      "reason": "unknown_commercial_fact",
+      "clientReply": null,
+      "elapsedMs": 1660
+    },
+    {
+      "id": "unknown-05",
+      "result": "PASS",
+      "disposition": "handoff",
+      "businessStatus": "manager_required",
+      "reason": "unknown_commercial_fact",
+      "clientReply": null,
+      "elapsedMs": 1762
+    },
+    {
+      "id": "unknown-06",
+      "result": "PASS",
+      "disposition": "handoff",
+      "businessStatus": "manager_required",
+      "reason": "unknown_commercial_fact",
+      "clientReply": null,
+      "elapsedMs": 1405
+    },
+    {
+      "id": "unknown-07",
+      "result": "PASS",
+      "disposition": "handoff",
+      "businessStatus": "manager_required",
+      "reason": "unknown_commercial_fact",
+      "clientReply": null,
+      "elapsedMs": 1552
+    },
+    {
+      "id": "unknown-08",
+      "result": "PASS",
+      "disposition": "handoff",
+      "businessStatus": "manager_required",
+      "reason": "unknown_commercial_fact",
+      "clientReply": null,
+      "elapsedMs": 1468
+    },
+    {
+      "id": "unknown-09",
+      "result": "PASS",
+      "disposition": "handoff",
+      "businessStatus": "manager_required",
+      "reason": "unknown_commercial_fact",
+      "clientReply": null,
+      "elapsedMs": 1834
+    },
+    {
+      "id": "unknown-10",
+      "result": "FAIL",
+      "disposition": "reply",
+      "businessStatus": "insufficient_data",
+      "reason": "configured_questions_only",
+      "clientReply": "Какой объём щебня нужен для тестовой заявки?",
+      "elapsedMs": 1923
+    },
+    {
+      "id": "unknown-11",
+      "result": "FAIL",
+      "disposition": "reply",
+      "businessStatus": "insufficient_data",
+      "reason": "configured_questions_only",
+      "clientReply": "Какой объём щебня нужен для тестовой заявки?",
+      "elapsedMs": 2242
+    },
+    {
+      "id": "unknown-12",
+      "result": "PASS",
+      "disposition": "handoff",
+      "businessStatus": "manager_required",
+      "reason": "unknown_commercial_fact",
+      "clientReply": null,
+      "elapsedMs": 1177
+    },
+    {
+      "id": "unknown-13",
+      "result": "FAIL",
+      "disposition": "reply",
+      "businessStatus": "insufficient_data",
+      "reason": "configured_questions_only",
+      "clientReply": "Какой объём щебня нужен для тестовой заявки?",
+      "elapsedMs": 2202
+    },
+    {
+      "id": "unknown-14",
+      "result": "PASS",
+      "disposition": "handoff",
+      "businessStatus": "manager_required",
+      "reason": "unknown_commercial_fact",
+      "clientReply": null,
+      "elapsedMs": 1672
+    },
+    {
+      "id": "unknown-15",
+      "result": "PASS",
+      "disposition": "handoff",
+      "businessStatus": "manager_required",
+      "reason": "unknown_commercial_fact",
+      "clientReply": null,
+      "elapsedMs": 1955
+    },
+    {
+      "id": "unknown-16",
+      "result": "PASS",
+      "disposition": "handoff",
+      "businessStatus": "manager_required",
+      "reason": "unknown_commercial_fact",
+      "clientReply": null,
+      "elapsedMs": 2054
+    },
+    {
+      "id": "unknown-17",
+      "result": "PASS",
+      "disposition": "handoff",
+      "businessStatus": "manager_required",
+      "reason": "unknown_commercial_fact",
+      "clientReply": null,
+      "elapsedMs": 1883
+    },
+    {
+      "id": "unknown-18",
+      "result": "PASS",
+      "disposition": "handoff",
+      "businessStatus": "manager_required",
+      "reason": "unknown_commercial_fact",
+      "clientReply": null,
+      "elapsedMs": 3170
+    },
+    {
+      "id": "unknown-19",
+      "result": "PASS",
+      "disposition": "handoff",
+      "businessStatus": "manager_required",
+      "reason": "unknown_commercial_fact",
+      "clientReply": null,
+      "elapsedMs": 1760
+    },
+    {
+      "id": "unknown-20",
+      "result": "PASS",
+      "disposition": "handoff",
+      "businessStatus": "manager_required",
+      "reason": "unknown_commercial_fact",
+      "clientReply": null,
+      "elapsedMs": 1607
+    }
+  ]
+}

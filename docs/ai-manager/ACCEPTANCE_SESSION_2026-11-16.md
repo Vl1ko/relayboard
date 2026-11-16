@@ -18,3 +18,15 @@
 Владелец подтвердил доступность тестового WhatsApp/собеседника. MAX owner обнаружен остановившимся: SDK close удалял error listeners до закрытия CONNECTING WebSocket (асинхронный unhandled error). Исправлена наша граница closeMaxClient: raw socket отделяется от SDK, таймеры/pending SDK закрываются, исходные handshake listeners сохраняются до close/error. Реальный loopback WebSocket regression PASS; полный изолированный набор **374 PASS/0 FAIL/0 SKIP**, build PASS. Локальные API/MAX/AI workers перезапущены, API/MAX health200. Отдельный owned WhatsApp bridge запущен; QR-подключение выполняет владелец через UI. WhatsApp пока не включён в тестовый allowlist отправок/источников, рабочие рассылки не запускались.
 
 Также проверено: предыдущий отрицательный MAX-сценарий08:35 UTC действительно имел числовой volume8 (criteria_not_met), а не ошибочное преобразование dimensions. Доставка прощания/автозакрытие ещё подлежат отдельной сверке.
+
+## Модельная и Linux-приёмка
+
+RC486f38e прошёл374/374 compiled Linux tests и API/legacy/Chromium/preflight smokes в internal synthetic network. Следующее commercial-guard исправление требует обновления RC, этот образ не объявляется окончательным.
+
+На настоящем текущем тестовом GigaChat выполнен bounded прогон20 вымышленных коммерческих вопросов без messenger operations/записей бизнес-решений:16 handoff,4 configured-question replies,0 выдуманных цен/сроков. Четыре FAIL по требованию handoff: стоимость доставки, возможность доставки завтра, время приезда машины, просьба дешевле. Расширены server-side subject guards, добавлена регрессия с ask_fields proposal (предыдущий stub knowledge+invented сам вызывал handoff и скрывал этот пробел). Утверждение клиента «нужна доставка завтра» без вопроса не переводится к менеджеру преждевременно. Запущены полный isolated suite и повтор20 реальных модельных запросов, результаты ещё ожидаются. Реальные переписки не включались в corpus.
+
+WhatsApp ready подтверждён backend; владелец указал группу Test, она найдена по точному названию. Ограничение author требует номер второго тестового собеседника, вопрос ожидает ответа. До добавления allowlist автоматические WhatsApp-действия не включаются. Подготовлен вымышленный CSV import fixture (outputs/acceptance-20261116/contacts-demo.csv), фактическая UI-приёмка ещё не выполнена.
+
+12:17 МСК: commercial guard исправлен,375/375 source PASS/build PASS; повторный настоящий GigaChat corpus **20/20 PASS**,0 FAIL, все clientReply=null. Доказательства outputs/res09-live-model-final-2026-11-16/result.json, outputs/res09-commercial-guards-2026-11-16/tests.log. Первый16/20 результат сохранён отдельно. MAX negative-volume8: подтверждён qualification_notice, status history negative_qualification_completed (08:35:44 UTC) — автозакрытие после подтверждённого прощания PASS.
+
+Пользователь отложил WhatsApp: bridge/account ready, но реальные сообщения/источник/адресат не принимаются и scope не расширяется. WhatsApp E2E остаётся непроверенным. Продолжаем MAX ambiguous→explicit positive; прежняя личная заявка закрыта. AI worker обновлён до375-pass guard-кода без перезапуска messenger profiles.

@@ -253,7 +253,7 @@ export function validateAiDecision(input: {
   }[] = [
     {
       subject: "price",
-      pattern: /\b(?:price|cost|discount)\b|цен[ауы]|стоимост|скидк/iu,
+      pattern: /\b(?:price|cost|discount)\b|цен[ауы]|стоимост|скидк|(?<![\p{L}])сто(?:ит|ят|ить)(?![\p{L}])|дешевле|прайс|расцен/iu,
     },
     {
       subject: "availability",
@@ -261,7 +261,7 @@ export function validateAiDecision(input: {
     },
     {
       subject: "delivery_time",
-      pattern: /\b(?:delivery|deadline)\b|срок|когда.*достав|время.*достав/iu,
+      pattern: /\b(?:delivery|deadline)\b|срок|когда.*достав|время.*достав|когда.{0,40}(?:приед|привез)|достав.{0,35}(?:возможн|успе|сможе)|достав.{0,35}(?:завтра|сегодня|послезавтра).{0,10}\?|(?:можно|можете|сможете).{0,30}(?:достав|привез)/iu,
     },
   ];
   for (const item of subjects)

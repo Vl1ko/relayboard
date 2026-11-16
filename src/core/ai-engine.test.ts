@@ -551,3 +551,10 @@ test('a dimension or truncated operand proof cannot qualify a scalar volume',()=
  const d=decide({...proposal,extracted:[{field:'volume',value:20,evidenceMessageId:'dimension',evidenceQuote}],proposedStatus:'qualified'},settings,[{messageId:'dimension',text,origin:'customer'}]);assert.equal(d.reason,'ungrounded_extraction');assert.notEqual(d.businessStatus,'qualified');
  }
 });
+
+test('unknown delivery cost, negotiated price and delivery date interrupt qualification with manager handoff',()=>{
+ for(const text of ['Сколько стоит доставка?','Доставка завтра возможна?','Когда приедет машина?','Можно дешевле?']){
+ const d=decide(proposal,settings,[{...message,text}]);assert.equal(d.reason,'unknown_commercial_fact',text);assert.equal(d.disposition,'handoff',text);assert.equal(d.reply,null,text);
+ }
+ const dateStatement=decide(proposal,settings,[{...message,text:'Нужен щебень, доставка завтра'}]);assert.equal(dateStatement.disposition,'reply');
+});
