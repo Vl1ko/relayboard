@@ -156,10 +156,10 @@ function App() {
   async function logout() { await api("/api/auth/logout", { method: "POST" }).catch(() => undefined); setAuthenticated(false); }
   const pageMeta: Record<View, { title: string; description: string }> = {
     compose: { title: "Новая публикация", description: "Одно сообщение для нужных бесед — отправьте сейчас или запланируйте повторение." },
-    leads: { title: "Источники заявок", description: "Проверка источников и явное создание заявок." },
+    leads: { title: "Заявки", description: "Найденные обращения и очередь проверки." },
     dialogs: { title: "Диалоги", description: "Переписка с клиентами и работа с заявками." },
-    contacts: { title: "Клиенты", description: "Импорт контактов из CSV/XLSX с проверкой номеров и дубликатов." },
-    qualification: { title: "ИИ-квалификация", description: "Сценарий, по которому ассистент задаёт вопросы и передаёт готового клиента менеджеру." },
+    contacts: { title: "Клиенты", description: "Клиентская база, контакты и ограничения сообщений." },
+    qualification: { title: "ИИ-квалификация", description: "Вопросы, условия отбора и готовые ответы клиентам." },
     connections: { title: "Подключения", description: "Личные аккаунты и беседы, доступные для рассылки." },
     campaigns: { title: "Задания", description: "Активные, запланированные и завершённые публикации." },
     history: { title: "История доставки", description: "Результат каждой отправки по мессенджерам и беседам." },

@@ -170,8 +170,8 @@ export default function ContactsImport() {
   const previewRows = preview?.rows.filter(row => filter === "all" || row.outcome === filter) || [];
   const shownRows = previewRows.slice(previewPage * pageSize, (previewPage + 1) * pageSize);
   const fieldLabels = { phone: "Телефон — обязательный столбец", name: "Имя", comment: "Комментарий", stage: "Текущий этап клиента" };
-  return <div className="contacts-import">
-    <section className="card contact-import-card" aria-labelledby="contact-import-title">
+  return <div className="contacts-import workflow-page clients-page">
+    <details className="workflow-disclosure workflow-card import-disclosure"><summary>Импортировать клиентов из файла</summary>    <section className="card contact-import-card" aria-labelledby="contact-import-title">
       <h2 id="contact-import-title">Импорт контактов</h2>
       <p className="contact-import-safety">Импорт только добавляет контакты. Сообщения не отправляются, автоматические сценарии не запускаются.</p>
       <form onSubmit={event => void inspect(event)}>
@@ -254,26 +254,25 @@ export default function ContactsImport() {
         <p>Сообщения не отправлялись. Новые контакты доступны в базе ниже.</p>
       </div>}
     </section>
+    </details>
     <section className="card contact-import-card" aria-labelledby="contact-list-title" aria-busy={listLoading}>
-      <div className="contact-import-list-heading"><h2 id="contact-list-title">База контактов <span>({total})</span></h2>
+      <div className="contact-import-list-heading"><h2 id="contact-list-title">Клиенты <span>({total})</span></h2>
         <button type="button" disabled={listLoading} onClick={() => setReload(value => value + 1)}>Обновить</button>
       </div>
       {listLoading && <p role="status">Загружаем контакты…</p>}
       {listError && <p className="contact-import-error" role="alert">{listError}</p>}
-      {!listLoading && !listError && !contacts.length && <p className="empty">Контактов пока нет. Загрузите и подтвердите файл выше.</p>}
+      {!listLoading && !listError && !contacts.length && <p className="empty">Клиентов пока нет. Раскройте импорт и добавьте файл с контактами.</p>}
       {!listLoading && !listError && Boolean(contacts.length) && <div className="contact-import-scroll"><table className="contact-import-table">
         <caption>Сохранённые контакты</caption>
-        <thead><tr><th scope="col">Телефон</th><th scope="col">Имя</th><th scope="col">Комментарий</th><th scope="col">Этап</th><th scope="col">Ограничения</th></tr></thead>
-        <tbody>{contacts.map(contact => <tr key={contact.id}><td className="contact-import-phone">{contact.phone || "Номер не указан"}</td><td>{contact.displayName || "—"}</td>
-          <td>{contact.comment || "—"}</td><td>{contact.stage || "—"}</td>
-          <td>{contact.optedOut ? <span className="contact-import-excluded">Исключён: сообщения запрещены</span> : "Нет отказа"}</td></tr>)}</tbody>
+        <thead><tr><th scope="col">Клиент</th><th scope="col">Телефон</th><th scope="col">Статус</th><th scope="col">Действия</th></tr></thead>
+        <tbody>{contacts.map(contact=><tr key={contact.id}><td data-label="Клиент"><strong>{contact.displayName||'Без имени'}</strong>{(contact.comment||contact.stage)&&<details className="client-note"><summary>Подробнее</summary>{contact.comment&&<p>{contact.comment}</p>}{contact.stage&&<p>Этап: {contact.stage}</p>}</details>}</td><td data-label="Телефон" className="contact-import-phone">{contact.phone||'Не указан'}</td><td data-label="Статус"><span className={contact.optedOut?'contact-import-excluded':'workflow-chip'}>{contact.optedOut?'Сообщения запрещены':'Без ограничений'}</span></td><td data-label="Действия"><a className="workflow-link" href={'/?view=dialogs&contact='+encodeURIComponent(contact.id)}>Открыть диалоги →</a></td></tr>)}</tbody>
       </table></div>}
-      <div className="contact-import-pagination">
+      {(offset>0||total>pageSize)&&<div className="contact-import-pagination">
         <button type="button" disabled={offset === 0 || listLoading} onClick={() => setOffset(value => Math.max(0, value - pageSize))}>Предыдущие контакты</button>
         <span>{total && contacts.length ? offset + 1 : 0}–{Math.min(offset + contacts.length, total)} из {total}</span>
         <button type="button" disabled={listLoading || offset + pageSize >= total} onClick={() => setOffset(value => value + pageSize)}>Следующие контакты</button>
-      </div>
+      </div>}
     </section>
-    <OutreachPanel/>
+    <details className="workflow-disclosure workflow-card"><summary>Первое обращение и запуски</summary><OutreachPanel/></details>
   </div>;
 }

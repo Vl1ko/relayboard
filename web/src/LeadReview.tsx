@@ -161,14 +161,11 @@ export default function LeadReview({accounts,destinations}:{accounts:{id:string;
     }
   }
   return (
-    <section
-      className="card contact-import-card"
-      style={{ overflowWrap: "anywhere" }}
-    >
+    <div className="workflow-page leads-page">
       <SearchSourcesPanel />
-      <h2>Источники заявок — проверка</h2>
+      <section className="card contact-import-card lead-inbox"><h2>Проверка заявок</h2>
       <p>
-        Здесь можно проверить неоднозначные заявки. Подтверждение источника запускает личное обращение к его автору с выбранного аккаунта. Отклонённые источники не запускают обращение.
+        Подтвердите подходящую заявку, чтобы начать личный диалог. Отклонённые заявки не получают сообщений.
       </p>
       {error && (
         <p role="alert" className="contact-import-error">
@@ -214,12 +211,14 @@ export default function LeadReview({accounts,destinations}:{accounts:{id:string;
         </label>
         <button onClick={() => void load()}>Обновить</button>
         <p>
-          {total} источников, показаны {leads.length}
+          Всего: {total} · на странице: {leads.length}
         </p>
+        <div className="lead-columns"><aside className="lead-list">
+        {!leads.length&&<p className="workflow-empty">В этой категории заявок пока нет.</p>}
         <ul>
           {leads.map((l) => (
             <li key={l.id}>
-              <button onClick={() => choose(l)}>
+              <button className={current?.id===l.id?'selected':''} onClick={() => choose(l)}>
                 {l.platform} · {l.original_text.slice(0, 100)} ·{" "}
                 {l.source_kind === "fixture"
                   ? "Тестовый источник"
@@ -228,7 +227,7 @@ export default function LeadReview({accounts,destinations}:{accounts:{id:string;
             </li>
           ))}
         </ul>
-        <button
+        {(offset>0||total>25)&&<><button
           disabled={!offset}
           onClick={() => setOffset(Math.max(0, offset - 25))}
         >
@@ -239,7 +238,9 @@ export default function LeadReview({accounts,destinations}:{accounts:{id:string;
           onClick={() => setOffset(offset + 25)}
         >
           Следующие
-        </button>
+        </button></>}
+        </aside><div className="lead-detail">
+        {!current&&<div className="workflow-empty"><h3>Выберите заявку</h3><p>Здесь появятся сообщение клиента, параметры и действия.</p></div>}
         {current && (
           <div>
             <h3>Исходное сообщение</h3>
@@ -256,7 +257,7 @@ export default function LeadReview({accounts,destinations}:{accounts:{id:string;
               <dt>Дата сообщения</dt>
               <dd>{new Date(current.occurred_at).toLocaleString("ru-RU")}</dd>
 
-              <dt>Заявленная уверенность, требует проверки</dt>
+              <dt>Уверенность поиска</dt>
               <dd>{Math.round(current.confidence*100)}%</dd>
             </dl>
             {current.source_link && (
@@ -270,7 +271,9 @@ export default function LeadReview({accounts,destinations}:{accounts:{id:string;
             )}
             {current.status === "pending" ? (
               <>
-                {current.source_message_id?<div><h4>Извлечённые параметры</h4>{(JSON.parse(params) as Lead['params']).length===0&&<p>Параметры ещё не указаны. Их уточнит ИИ в личном диалоге.</p>}{(JSON.parse(params) as Lead['params']).map((p,i)=>{const numeric=fields.find(f=>f.key===p.key)?.numeric||typeof p.value==='number';const update=(patch:Partial<Lead['params'][number]>)=>setParams(JSON.stringify((JSON.parse(params) as Lead['params']).map((v,j)=>j===i?{...v,...patch}:v)));return <div key={i}><label>Параметр<select value={p.key} onChange={e=>update({key:e.target.value,value:fields.find(f=>f.key===e.target.value)?.numeric?0:''})}>{!fields.some(f=>f.key===p.key)&&<option value={p.key}>Из прежних настроек</option>}{fields.map(f=><option key={f.key} value={f.key} disabled={(JSON.parse(params) as Lead['params']).some((v,j)=>j!==i&&v.key===f.key)}>{f.question}</option>)}</select></label><label>Значение<input type={numeric?'number':'text'} value={p.value} onChange={e=>update({value:numeric?Number(e.target.value):e.target.value})}/></label><label>Цитата из источника<input value={p.evidenceQuote} maxLength={1000} onChange={e=>update({evidenceQuote:e.target.value})}/></label><button onClick={()=>setParams(JSON.stringify((JSON.parse(params) as Lead['params']).filter((_,j)=>j!==i)))}>Убрать параметр</button></div>;})}<button disabled={!fields.some(f=>!(JSON.parse(params) as Lead['params']).some(p=>p.key===f.key))} onClick={()=>{const field=fields.find(f=>!(JSON.parse(params) as Lead['params']).some(p=>p.key===f.key));if(field)setParams(JSON.stringify([...JSON.parse(params),{key:field.key,value:field.numeric?0:'',evidenceQuote:''}]));}}>Добавить параметр</button></div>:<><label>
+                {current.params.length>0&&<dl className="lead-parameters">{current.params.map(p=><div key={p.key}><dt>{fields.find(f=>f.key===p.key)?.question||'Параметр'}</dt><dd>{String(p.value)}</dd></div>)}</dl>}
+                <details className="workflow-disclosure"><summary>Уточнить параметры заявки</summary>
+                {current.source_message_id?<div><h4>Извлечённые параметры</h4>{(JSON.parse(params) as Lead['params']).length===0&&<p>Параметры ещё не указаны. Их уточнит ИИ в личном диалоге.</p>}{(JSON.parse(params) as Lead['params']).map((p,i)=>{const numeric=fields.find(f=>f.key===p.key)?.numeric||typeof p.value==='number';const update=(patch:Partial<Lead['params'][number]>)=>setParams(JSON.stringify((JSON.parse(params) as Lead['params']).map((v,j)=>j===i?{...v,...patch}:v)));return <div key={i}><label>Параметр<select value={p.key} onChange={e=>update({key:e.target.value,value:fields.find(f=>f.key===e.target.value)?.numeric?0:''})}>{!fields.some(f=>f.key===p.key)&&<option value={p.key}>Из прежних настроек</option>}{fields.map(f=><option key={f.key} value={f.key} disabled={(JSON.parse(params) as Lead['params']).some((v,j)=>j!==i&&v.key===f.key)}>{f.question}</option>)}</select></label><label>Значение<input type={numeric?'number':'text'} value={p.value} onChange={e=>update({value:numeric?Number(e.target.value):e.target.value})}/></label><label>Цитата из источника<input value={p.evidenceQuote} maxLength={1000} onChange={e=>update({evidenceQuote:e.target.value})}/></label><button onClick={()=>setParams(JSON.stringify((JSON.parse(params) as Lead['params']).filter((_,j)=>j!==i)))}>Убрать параметр</button></div>;})}<button disabled={!fields.some(f=>!(JSON.parse(params) as Lead['params']).some(p=>p.key===f.key))} onClick={()=>{const field=fields.find(f=>!(JSON.parse(params) as Lead['params']).some(p=>p.key===f.key));if(field)setParams(JSON.stringify([...JSON.parse(params),{key:field.key,value:field.numeric?0:'',evidenceQuote:''}]));}}>Добавить параметр</button></div>:<details className="workflow-disclosure"><summary>Редактирование параметров источника</summary><label>
                   Параметры с точными цитатами, JSON
                   <textarea
                     rows={7}
@@ -281,11 +284,11 @@ export default function LeadReview({accounts,destinations}:{accounts:{id:string;
                 <small>
                   Каждый параметр: key, value, evidenceQuote. Цитата должна
                   находиться в исходном сообщении.
-                </small></>}
+                </small></details>}
                 <button onClick={() => void send("edit")}>
                   Сохранить параметры
-                </button>
-                {current.source_message_id?<><label>Аккаунт отправителя<select value={sender} onChange={e=>setSender(e.target.value)}><option value="">По порядку из настроек первого обращения</option>{accounts.filter(a=>a.enabled&&a.platform===current.platform&&allowedSenders.includes(a.id)).map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label><p>Получатель определяется по автору исходного сообщения. Групповой чат не является получателем.</p>{current.activation_error&&<p>Источник ожидает проверки маршрута или подключения аккаунта.</p>}{JSON.stringify(JSON.parse(params))!==JSON.stringify(current.params)&&<p>Сохраните изменённые параметры перед подтверждением.</p>}<button disabled={!canActivate||JSON.stringify(JSON.parse(params))!==JSON.stringify(current.params)} onClick={()=>void send('approve')}>Подтвердить источник и начать обращение</button></>:<><label>
+                </button></details>
+                {current.source_message_id?<><label>Аккаунт отправителя<select value={sender} onChange={e=>setSender(e.target.value)}><option value="">По порядку из настроек первого обращения</option>{accounts.filter(a=>a.enabled&&a.platform===current.platform&&allowedSenders.includes(a.id)).map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label><p>Получатель определяется по автору исходного сообщения. Групповой чат не является получателем.</p>{current.activation_error&&<p>Источник ожидает проверки маршрута или подключения аккаунта.</p>}{JSON.stringify(JSON.parse(params))!==JSON.stringify(current.params)&&<p>Сохраните изменённые параметры перед подтверждением.</p>}<button className="primary" disabled={!canActivate||JSON.stringify(JSON.parse(params))!==JSON.stringify(current.params)} onClick={()=>void send('approve')}>Подтвердить и написать клиенту</button></>:<><label>
                   Явно подтверждённый контакт
                   <select
                     value={contact}
@@ -325,8 +328,8 @@ export default function LeadReview({accounts,destinations}:{accounts:{id:string;
                 >
                   Одобрить и привязать заявку
                 </button></>}
-                <label>
-                  Причина / заметка
+                <details className="workflow-disclosure"><summary>Отклонить заявку</summary><label>
+                  Причина отклонения
                   <input
                     value={reason}
                     maxLength={500}
@@ -338,7 +341,7 @@ export default function LeadReview({accounts,destinations}:{accounts:{id:string;
                   onClick={() => void send("reject")}
                 >
                   Отклонить
-                </button>
+                </button></details>
               </>
             ) : (
               <p>
@@ -349,7 +352,8 @@ export default function LeadReview({accounts,destinations}:{accounts:{id:string;
             )}
           </div>
         )}
+        </div></div>
       </fieldset>
-    </section>
+    </section></div>
   );
 }

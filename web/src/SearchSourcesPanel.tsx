@@ -35,7 +35,7 @@ export default function SearchSourcesPanel() {
     void load();
   }, []);
   return (
-    <section className="card contact-import-card">
+    <><details className="workflow-disclosure workflow-card"><summary>Чаты для поиска{state?' · '+state.sources.length:''}</summary><section className="card contact-import-card">
       <h2>Чаты для поиска заявок</h2>
       <p>
         Выберите до пяти чатов MAX и пяти WhatsApp. Для одного чата используйте один аккаунт чтения. Ответ отправляется автору заявки в личку.
@@ -117,7 +117,6 @@ export default function SearchSourcesPanel() {
           </button>
         </fieldset>
       )}
-      <MonitorControls/>
-    </section>
+    </section></details><MonitorControls/></>
   );
 }

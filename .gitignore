@@ -18,3 +18,7 @@ outputs/ui-dialogs-simple-2026-11-16/desktop.jpg
 outputs/ui-dialogs-simple-2026-11-16/mobile.jpg
 .wwebjs_cache/
 .wwebjs_auth/
+
+# UI proof stays local except the synthetic settings round-trip.
+outputs/ui-workspace-pages-2026-11-16/*.jpg
+!outputs/ui-workspace-pages-2026-11-16/settings-synthetic-saved.jpg
