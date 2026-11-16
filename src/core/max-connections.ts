@@ -1,3 +1,4 @@
+import {closeMaxClient} from './max-close.js';
 import type {Pool} from 'pg';
 import {isAuthorizationError} from './delivery-policy.js';
 import {UMax} from '@ounezz/umax';
@@ -9,13 +10,13 @@ export type MaxConnectionFactory=(token:string,signal:AbortSignal)=>Promise<MaxC
 export const connectMax:MaxConnectionFactory=async(token,signal)=>{
  const client=new UMax(token);
  (client.chats as unknown as {subscribe_all:()=>void}).subscribe_all=()=>{};
- const close=()=>client.close();signal.addEventListener('abort',close,{once:true});
+ const close=()=>closeMaxClient(client as unknown as Parameters<typeof closeMaxClient>[0]);signal.addEventListener('abort',close,{once:true});
  try{
   signal.throwIfAborted();await client.connect();signal.throwIfAborted();
   const socket=(client as unknown as{ws:ConnectedMaxTextSocket}).ws;
   if(!client.account?.id||!socket.connected)throw Error('max_connection_unverified');
-  return {socket,selfId:client.account.id,async openDialog(authorId){signal.throwIfAborted();const chat=await client.chats.new(authorId);signal.throwIfAborted();return String(chat.id);},groups:client.chats.list.filter(c=>c.type==='CHAT').map(c=>({id:String(c.id),title:c.title,participantsCount:c.participants_count})),close(){signal.removeEventListener('abort',close);client.close();}};
- }catch(error){signal.removeEventListener('abort',close);client.close();throw error;}
+  return {socket,selfId:client.account.id,async openDialog(authorId){signal.throwIfAborted();const chat=await client.chats.new(authorId);signal.throwIfAborted();return String(chat.id);},groups:client.chats.list.filter(c=>c.type==='CHAT').map(c=>({id:String(c.id),title:c.title,participantsCount:c.participants_count})),close(){signal.removeEventListener('abort',close);close();}};
+ }catch(error){signal.removeEventListener('abort',close);close();throw error;}
 };
 
 /** Owned by one messenger process. API discovery and sends share the same socket. */
