@@ -10,7 +10,13 @@ function renderedNumber(value:number){
  return canonical((negative?'-':'')+expanded);
 }
 /** Literal decimal notation only: no units, arithmetic, exponent or precision loss. */
+export function scalarNumericText(text:string):string{
+ // Dimensions, ranges and arithmetic do not establish a single quantity.
+ // Mask the entire expression so a truncated evidence quote cannot admit an operand.
+ return text.replace(/(?<![\p{L}\p{N}])[+\-]?[0-9]+(?:[.,][0-9]+)?(?:\s*(?:[xх×*\/+−–=\-]|на)\s*[+\-]?[0-9]+(?:[.,][0-9]+)?)+(?![0-9])/giu,match=>' '.repeat(match.length));
+}
 export function literalNumbers(text:string):number[]{
+ text=scalarNumericText(text);
  const values=new Set<number>();
  for(const match of text.matchAll(/(?<![\p{L}\p{N}.,+\-])[+\-]?[0-9]+(?:[.,][0-9]+)?(?![0-9.,])/gu)){
   const after=text.slice(match.index!+match[0].length);if(/^[eE][+\-]?[0-9]/u.test(after))continue;

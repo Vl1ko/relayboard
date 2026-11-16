@@ -545,3 +545,9 @@ test('lost model ownership cannot persist a provider_failure handoff', {skip}, a
 test('temporary no-contact request overrides qualification and model reply without fabricating a permanent refusal',()=>{
  const d=validateAiDecision({settings,messages:[{messageId:'pause',text:'Не пишите пока, напишу завтра',origin:'customer'}],previousFields:{volume:{value:12,evidenceMessageId:'old',evidenceQuote:'12'}},replyCount:0,proposal:{...proposal,proposedStatus:'qualified'}});assert.equal(d.reason,'contact_pause_requested');assert.equal(d.disposition,'handoff');assert.equal(d.reply,null);assert.equal(d.businessStatus,'manager_required');
 });
+
+test('a dimension or truncated operand proof cannot qualify a scalar volume',()=>{
+ for(const text of ['20х10','20 х 10','Размер 20х10, уточню объём позже'])for(const evidenceQuote of ['20',text]){
+ const d=decide({...proposal,extracted:[{field:'volume',value:20,evidenceMessageId:'dimension',evidenceQuote}],proposedStatus:'qualified'},settings,[{messageId:'dimension',text,origin:'customer'}]);assert.equal(d.reason,'ungrounded_extraction');assert.notEqual(d.businessStatus,'qualified');
+ }
+});

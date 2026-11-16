@@ -1,6 +1,6 @@
 import {isTemporaryContactPause} from './customer-refusal.js';
 import {requestQualificationContext} from './request-qualification-context.js';
-import {hasLiteralNumber} from './numeric-evidence.js';
+import {hasLiteralNumber,scalarNumericText} from './numeric-evidence.js';
 import {latestRequestCustomerSequence} from './customer-sequence.js';
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
@@ -176,7 +176,7 @@ function grounded(
   if (!source?.text.includes(extracted.evidenceQuote)) return false;
   const quoted = extracted.evidenceQuote.toLocaleLowerCase();
   const at = source.text.indexOf(extracted.evidenceQuote);
-  const numericContext = source.text
+  const numericContext = scalarNumericText(source.text)
     .slice(Math.max(0, at - 1), at + extracted.evidenceQuote.length + 1)
     .toLocaleLowerCase();
   const rendered = String(extracted.value).toLocaleLowerCase();
