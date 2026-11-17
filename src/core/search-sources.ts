@@ -12,8 +12,7 @@ export const searchSourcesSchema = z
             platform: z.enum(["max", "whatsapp"]),
           })
           .strict(),
-      )
-      .max(10),
+      ),
   })
   .superRefine((v, c) => {
     if (
@@ -21,7 +20,6 @@ export const searchSourcesSchema = z
         .size !== v.sources.length
     )
       c.addIssue({ code: "custom", message: "Duplicate source" });
-    for(const platform of ["max","whatsapp"])if(v.sources.filter(s=>s.platform===platform).length>5)c.addIssue({code:"custom",message:"Five sources per messenger maximum"});
   });
 export class SearchSourceError extends Error {
   constructor(public code: string) {

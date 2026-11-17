@@ -1,3 +1,4 @@
+import {SourceReadBatch} from '../core/source-read-batch.js';
 import {dispatchOwnedWhatsAppPublication} from '../core/owned-whatsapp-publication.js';
 import {DeliveryError} from '../core/delivery-policy.js';
 import {startSourceHeartbeat} from '../core/source-runtime-health.js';
@@ -453,11 +454,12 @@ async function owned(signal:AbortSignal){
    for(const row of (await pool.query("SELECT DISTINCT a.id FROM ai_outbox a JOIN ai_whatsapp_send_intents i ON i.action_id=a.id WHERE a.state='unknown' AND i.server_ack>=1 LIMIT 100")).rows)await new WhatsAppAiReceipts(pool).reconcile(row.id);
   })().catch(()=>console.error('WhatsApp inbox iteration deferred')).finally(()=>{polling=undefined;});
  },5000);inboxTimer.unref();
- let groupWork:Promise<void>|undefined;
+ const sourceReadBatch=new SourceReadBatch();let groupWork:Promise<void>|undefined;
  const groupTimer=setInterval(()=>{
   if(!config.SOURCE_MONITOR_ENABLED||config.AI_SEND_MODE!=='live'||signal.aborted||groupWork)return;
   groupWork=(async()=>{
-   const sources=(await pool.query("SELECT s.account_id,s.chat_id,i.session_key FROM ai_search_sources s JOIN integrations i ON i.id=s.account_id AND i.enabled JOIN ai_monitor_settings m ON m.id=1 AND m.mode<>'stopped' WHERE s.platform='whatsapp' ORDER BY s.account_id,s.chat_id LIMIT 5")).rows;
+   const selected=(await pool.query("SELECT s.account_id,s.chat_id,i.session_key FROM ai_search_sources s JOIN integrations i ON i.id=s.account_id AND i.enabled JOIN ai_monitor_settings m ON m.id=1 AND m.mode<>'stopped' WHERE s.platform='whatsapp' ORDER BY s.account_id,s.chat_id")).rows;
+   const sources=sourceReadBatch.take(selected.filter(s=>!config.AI_TEST_ONLY||config.AI_TEST_ACCOUNT_IDS.includes(s.account_id)));
    await Promise.all([...new Set(sources.map(s=>s.account_id))].map(async account=>{for(const source of sources.filter(s=>s.account_id===account))try{await (await sessions.get(source.session_key)).pollSource(source.chat_id);}catch{if(!signal.aborted)console.error('WhatsApp source sync deferred; cursor retained');}}));
   })().catch(()=>console.error('WhatsApp group iteration deferred')).finally(()=>{groupWork=undefined;});
  },5000);groupTimer.unref();

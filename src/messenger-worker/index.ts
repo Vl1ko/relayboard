@@ -1,3 +1,4 @@
+import {SourceReadBatch} from '../core/source-read-batch.js';
 import {startSourceHeartbeat} from '../core/source-runtime-health.js';
 import {MaxSourcePoller} from '../core/max-source-poller.js';
 import {AiManagerStore} from '../core/ai-manager.js';
@@ -74,11 +75,12 @@ async function owned(signal:AbortSignal){
    await Promise.all(accounts.map(async account=>{for(const v of active.filter(v=>v.account_id===account)){try{await poller.poll(v.id);}catch{console.error('MAX private sync deferred; cursor retained');}}}));
   })().catch(()=>console.error('MAX inbox iteration deferred')).finally(()=>{polling=false;});
  },config.MAX_POLL_INTERVAL_MS);inboxTimer.unref();
- const sourcePoller=new MaxSourcePoller(pool,connections,signal,scope);let sourceWork:Promise<void>|undefined;
+ const sourceReadBatch=new SourceReadBatch(),sourcePoller=new MaxSourcePoller(pool,connections,signal,scope);let sourceWork:Promise<void>|undefined;
  const sourceTimer=setInterval(()=>{
   if(!config.SOURCE_MONITOR_ENABLED||config.AI_SEND_MODE!=='live'||signal.aborted||sourceWork)return;
   sourceWork=(async()=>{
-   const sources=(await pool.query("SELECT s.account_id,s.chat_id FROM ai_search_sources s JOIN ai_monitor_settings m ON m.id=1 AND m.mode<>'stopped' WHERE s.platform='max' ORDER BY s.account_id,s.chat_id LIMIT 5")).rows;
+   const selected=(await pool.query("SELECT s.account_id,s.chat_id FROM ai_search_sources s JOIN ai_monitor_settings m ON m.id=1 AND m.mode<>'stopped' WHERE s.platform='max' ORDER BY s.account_id,s.chat_id")).rows;
+   const sources=sourceReadBatch.take(selected.filter(s=>!scope.testOnly||scope.accountIds.includes(s.account_id)));
    await Promise.all([...new Set(sources.map(s=>s.account_id))].map(async account=>{for(const source of sources.filter(s=>s.account_id===account))try{await sourcePoller.poll(account,source.chat_id);}catch{if(!signal.aborted)console.error('MAX source sync deferred; cursor retained');}}));
   })().catch(()=>console.error('MAX source iteration deferred')).finally(()=>{sourceWork=undefined;});
  },config.MAX_POLL_INTERVAL_MS);sourceTimer.unref();

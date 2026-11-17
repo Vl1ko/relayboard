@@ -86,10 +86,12 @@ test(
 );
 
 
-test('AI source list permits five chats per messenger and one reader per chat',()=>{
+test('AI source list accepts more than ten total sources while preserving one reader per chat',()=>{
  const source={accountId:randomUUID(),chatId:'chat',platform:'max' as const};
  assert.throws(()=>searchSourcesSchema.parse({revision:0,sources:[source,{...source,accountId:randomUUID()}]}));
- assert.throws(()=>searchSourcesSchema.parse({revision:0,sources:Array.from({length:6},(_,i)=>({...source,chatId:String(i)}))}));
+ assert.equal(searchSourcesSchema.parse({revision:0,sources:Array.from({length:100},(_,i)=>({...source,chatId:String(i)}))}).sources.length,100);
  assert.throws(()=>searchSourcesSchema.parse({revision:0,sources:[{...source,platform:'telegram'}]}));
- assert.equal(searchSourcesSchema.safeParse({revision:0,sources:['max','whatsapp'].flatMap(platform=>Array.from({length:5},(_,i)=>({...source,platform,chatId:String(i)})))}).success,true);
+ assert.equal(searchSourcesSchema.safeParse({revision:0,sources:['max','whatsapp'].flatMap(platform=>Array.from({length:25},(_,i)=>({...source,platform,chatId:String(i)})))}).success,true);
 });
+
+test('saving more than five chats per messenger persists the complete source list',{skip},async()=>{const sources=[];for(const platform of ['max','whatsapp'] as const){const account=(await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext) VALUES($1,'many chats','fake') RETURNING id",[platform])).rows[0].id;for(let i=0;i<12;i++){const chatId=platform+'-many-'+i;await pool.query("INSERT INTO destinations(integration_id,external_id,title,kind) VALUES($1,$2,$2,'group')",[account,chatId]);sources.push({accountId:account,chatId,platform});}}const before=await store.get(),saved=await store.save({revision:before.revision,sources});assert.equal(saved.sources.length,24);assert.equal((await store.get()).sources.length,24);});

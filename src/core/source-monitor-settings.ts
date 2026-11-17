@@ -31,7 +31,6 @@ export class SourceMonitorSettings{
     const sources=(await c.query('SELECT platform,chat_id FROM ai_search_sources')).rows;
     if((await c.query("SELECT 1 FROM ai_search_sources s LEFT JOIN integrations i ON i.id=s.account_id WHERE i.id IS NULL OR NOT i.enabled OR i.auth_error IS NOT NULL LIMIT 1")).rowCount)throw Error('monitor_sources_unavailable');
     if(!sources.length||sources.some(s=>!['max','whatsapp'].includes(s.platform)))throw Error('monitor_sources_required');
-    for(const platform of ['max','whatsapp'])if(sources.filter(s=>s.platform===platform).length>5)throw Error('monitor_source_limit');
     if(new Set(sources.map(s=>JSON.stringify([s.platform,s.chat_id]))).size!==sources.length)throw Error('monitor_duplicate_reader');
    }
    const mode=d.action==='start'?'active':d.action==='pause'?'paused':'stopped';

@@ -44,10 +44,10 @@ test('settings revision during model call discards stale score; pause preserves 
  const paused=await settings.control({expectedRevision:changed.revision,action:'pause'});assert.equal((await f.monitor.pending()).length,0);assert.ok((await pool.query('SELECT original_text FROM ai_source_messages')).rows[0].original_text);
  const stopped=await settings.control({expectedRevision:paused.revision,action:'stop'});assert.equal((await pool.query('SELECT original_text FROM ai_source_messages')).rows[0].original_text,null);const restarted=await settings.control({expectedRevision:stopped.revision,action:'start'});assert.notEqual(restarted.epoch,f.policy.epoch);assert.equal((await f.monitor.pending()).length,0);
 });
-test('duplicate readers and more than five selected chats cannot start a monitor',{skip},async()=>{
+test('monitor starts with more than five chats but still rejects duplicate readers',{skip},async()=>{
  const f=await fixture(),stopped=await settings.control({expectedRevision:f.policy.revision,action:'stop'});
- for(let i=0;i<5;i++)await pool.query("INSERT INTO ai_search_sources(account_id,platform,chat_id) VALUES($1,'max',$2)",[f.accountId,'-'+(20+i)]);await assert.rejects(settings.control({expectedRevision:stopped.revision,action:'start'}),/source_limit/);
- await pool.query("DELETE FROM ai_search_sources WHERE chat_id<>'-10'");const other=(await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext) VALUES('max','Other','fake') RETURNING id")).rows[0].id;await pool.query("INSERT INTO ai_search_sources(account_id,platform,chat_id) VALUES($1,'max','-10')",[other]);await assert.rejects(settings.control({expectedRevision:stopped.revision,action:'start'}),/duplicate_reader/);
+ for(let i=0;i<20;i++)await pool.query("INSERT INTO ai_search_sources(account_id,platform,chat_id) VALUES($1,'max',$2)",[f.accountId,'-'+(20+i)]);const started=await settings.control({expectedRevision:stopped.revision,action:'start'});assert.equal(started.mode,'active');const paused=await settings.control({expectedRevision:started.revision,action:'pause'});
+ await pool.query("DELETE FROM ai_search_sources WHERE chat_id<>'-10'");const other=(await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext) VALUES('max','Other','fake') RETURNING id")).rows[0].id;await pool.query("INSERT INTO ai_search_sources(account_id,platform,chat_id) VALUES($1,'max','-10')",[other]);await assert.rejects(settings.control({expectedRevision:paused.revision,action:'start'}),/duplicate_reader/);
 });
 
 
