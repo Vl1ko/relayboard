@@ -1,0 +1,13 @@
+{
+  "result": "PASS",
+  "provider": "gigachat",
+  "model": "GigaChat-2-Pro",
+  "scope": "GIGACHAT_API_PERS",
+  "oauthAccepted": true,
+  "modelAvailable": true,
+  "tlsVerified": true,
+  "generationRequests": 0,
+  "customerMessagesTransmitted": 0,
+  "aiSendMode": "disabled",
+  "publicHttpsStatus": 200
+}

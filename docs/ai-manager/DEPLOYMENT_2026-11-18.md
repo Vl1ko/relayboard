@@ -31,3 +31,9 @@ WhatsApp account readiness is separate from container health: after restart, one
 Approximately 2.4 GiB disk space remained at the final infrastructure check. The 2 GiB VPS has not been certified for maximum multi-account commercial load by this deployment.
 
 Safe evidence is in `outputs/deploy-392e602-2026-11-17/`. The source revision remains 392e602; changes to the smoke harness and this report are deployment documentation, not an unbuilt runtime revision.
+
+## GigaChat configuration follow-up — 2026-11-18
+
+At the user's request, the existing local GigaChat authorization key and scope were transferred through SSH directly into the production `.env` (0600, atomic replacement; no secret value in tool output or Git). Provider mode is now `gigachat`, external model requests are enabled, and model `GigaChat-2-Pro` was selected as settings version 2 while preserving existing business fields/rules. The image's pinned CA is configured through `NODE_EXTRA_CA_CERTS`; TLS verification remains enabled. The API was recreated with the new environment and the public HTTPS site still returns 200.
+
+Production OAuth accepted the key and the models endpoint confirmed `GigaChat-2-Pro` is available. No completion was requested, no conversation was sent, and no messenger message was sent by this check. Scope is `GIGACHAT_API_PERS`, matching the local test configuration. This is not a transition to commercial access. AI sending remains `disabled`; source monitoring and additional AI/MAX worker activation were not changed. The earlier pre-configuration status above describes the original deployment check.
