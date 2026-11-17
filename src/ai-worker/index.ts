@@ -1,3 +1,4 @@
+import {ImportOutreach,type ImportLookup} from '../core/import-outreach.js';
 import {synchronizeContactHistory} from '../core/synchronize-contact-history.js';
 import {startSourceHeartbeat} from '../core/source-runtime-health.js';
 import {SourceRuntime} from '../core/source-runtime.js';
@@ -44,11 +45,15 @@ async function run(signal:AbortSignal){
   if(platform==='whatsapp'){const lead=(await pool.query('SELECT account_id FROM ai_leads WHERE id=$1',[id])).rows[0];if(!lead)throw Error('source_lead_missing');return await whatsappWorkerRequest(pool,lead.account_id,`/ai/leads/${id}/resolve`) as VerifiedSourceRoute;}
   return await maxWorkerRequest(`/leads/${id}/resolve`,'POST') as VerifiedSourceRoute;
  },signal):undefined;
+ const imports=live?new ImportOutreach(pool,scope,async(contactId,accountId,platform)=>platform==='max'?await maxWorkerRequest(`/contacts/${contactId}/lookup`,'POST',{accountId}) as Awaited<ReturnType<ImportLookup>>:await whatsappWorkerRequest(pool,accountId,`/ai/contacts/${contactId}/lookup`) as Awaited<ReturnType<ImportLookup>>):undefined;
+ let importTick:Promise<void>|undefined;
  console.log(live?'AI worker: owned live MAX/WhatsApp transport':'AI worker: synthetic transport');
  while(!signal.aborted){
+  if(imports&&!importTick)importTick=imports.tick().catch(()=>console.error('Import outreach deferred')).finally(()=>{importTick=undefined;});
   try{await runtime.tick();if(sources)await sources.tick();}catch{if(!signal.aborted)console.error('AI iteration deferred; durable state retained');}
   try{await delay(1000,undefined,{signal});}catch{break;}
  }
+ await importTick;
  }finally{await heartbeat.close();}
 }
 async function main(){

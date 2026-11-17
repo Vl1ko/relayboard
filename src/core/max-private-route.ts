@@ -23,6 +23,7 @@ export async function resolveMaxPhone(connection:MaxConnection,phone:string){
  if(!Array.isArray(result?.result))throw Error('max_contact_response_invalid');
  const matches=result.result.filter((c:any)=>verifiedWirePhone(c.phone)===phone).map(profile);
  const ids=[...new Set(matches.map((c:any)=>c.authorId))];
+ if(result.result.length===0)throw Error('max_phone_not_found');
  if(ids.length!==1||ids[0]===String(connection.selfId))throw Error('max_phone_not_uniquely_verified');
  return matches.find((c:any)=>c.authorId===ids[0])!;
 }

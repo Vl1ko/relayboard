@@ -47,7 +47,7 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!r.ok) throw new Error(b.error || "Ошибка запроса");
   return b;
 }
-export default function OutreachPanel() {
+export default function OutreachPanel({settingsOnly=false,onSaved}: {settingsOnly?:boolean;onSaved?:()=>void}) {
   const [settings, setSettings] = useState<Settings | null>(null),
     [accounts, setAccounts] = useState<
       {
@@ -138,18 +138,18 @@ export default function OutreachPanel() {
   }
   return (
     <section className="card contact-import-card">
-      <h2>Первое обращение — подготовка</h2>
-      <p>
+      <h2>{settingsOnly?"Первое сообщение после импорта":"Первое обращение — подготовка"}</h2>
+      {settingsOnly?<p>Бот проверит номер в выбранных каналах по порядку и напишет через один найденный канал. После первого сообщения начнётся квалификация по вашим правилам.</p>:<p>
         Заявка создаётся отдельно от импорта. Здесь можно сохранить настройки и
         проверить маршрут. Реальные отправки выключены; тестовый запуск использует имитацию.
-      </p>
+      </p>}
       {error && (
         <p role="alert" className="contact-import-error">
           {error}
         </p>
       )}
       <button disabled={busy} onClick={() => void load()}>
-        Обновить настройки, контакты и заявки
+        {settingsOnly?"Обновить настройки":"Обновить настройки, контакты и заявки"}
       </button>
       {settings && (
         <fieldset disabled={busy}>
@@ -227,6 +227,7 @@ export default function OutreachPanel() {
                 });
                 if (mounted.current) {
                   setSettings(s);
+                  onSaved?.();
                   setDirty(false);
                   setPreview(null);
                 }
@@ -235,6 +236,7 @@ export default function OutreachPanel() {
           >
             Сохранить настройки
           </button>
+          {!settingsOnly&&<>
           <hr />
           <label>
             Контакт для новой заявки
@@ -314,9 +316,10 @@ export default function OutreachPanel() {
             Проверить выбранные заявки
           </button>
           {dirty && <p>Сохраните настройки перед проверкой.</p>}
+          </>}
         </fieldset>
       )}
-      {preview && (
+      {!settingsOnly&&preview && (
         <div aria-live="polite">
           <h3>Предпросмотр: готовых маршрутов {preview.eligible}</h3>
           <p>Интервал: {preview.intervalSeconds} сек. Реальные сообщения не отправляются.</p>
@@ -343,11 +346,13 @@ export default function OutreachPanel() {
           </ul>
         </div>
       )}
+      {!settingsOnly&&<>
       <h3>Запуски первого обращения</h3>
       <p>Подтверждения тестовых запусков относятся к имитации. Для обновления нажмите «Обновить настройки, контакты и заявки».</p>
       {runs.map(row=><div key={row.id}><p>{row.id} · {({active:'Активен',paused:'На паузе',stopped:'Остановлен',completed:'Обработка завершена',review:'Требует проверки'} as Record<string,string>)[row.state]||row.state} · имитаций подтверждено {row.confirmed}/{row.total} · требуют проверки {row.review}</p>
         {(['active','paused'] as string[]).includes(row.state) && <div>{(['paused','active','stopped'] as const).map(state=><button key={state} disabled={busy||row.state===state} onClick={()=>void run(async()=>{await api('/api/ai/outreach/runs/'+row.id+'/control',{method:'POST',body:JSON.stringify({state})});setRuns(await api<RunRow[]>('/api/ai/outreach/runs'));})}>{({paused:'Пауза',active:'Продолжить',stopped:'Стоп'})[state]}</button>)}</div>}
       </div>)}
+      </>}
     </section>
   );
 }

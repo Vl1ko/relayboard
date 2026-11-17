@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import "./contacts-import.css";
 import OutreachPanel from "./OutreachPanel";
+import ImportOutreachStatus from "./ImportOutreachStatus";
 
 type Contact = { id: string; displayName: string; phone: string | null; comment: string; stage: string; optedOut: boolean };
 type Summary = { total: number; new: number; duplicate: number; invalid: number };
@@ -13,7 +14,7 @@ type PreviewRow = {
   outcome: "new" | "duplicate" | "invalid"; reason?: string;
 };
 type Preview = { previewId: string; expiresAt: string; summary: Summary; rows: PreviewRow[] };
-type Confirmation = { importId: string; summary: Summary; replayed: boolean };
+type Confirmation = { importId: string; summary: Summary; outreach?: {queued:number}; replayed: boolean };
 type Operation = "inspect" | "preview" | "confirm" | null;
 const pageSize = 50;
 const outcomes = { new: "Новый контакт", duplicate: "Дубликат", invalid: "Ошибка" };
@@ -35,7 +36,7 @@ function rowReason(reason: string | undefined) { return reason ? rowReasons[reas
 async function request<T>(path: string, init: RequestInit): Promise<T> {
   const response = await fetch(path, { ...init, credentials: "include" });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `Ошибка запроса: ${response.status}`);
+  if (!response.ok) throw Object.assign(new Error(body.error || `Ошибка запроса: ${response.status}`),{status:response.status});
   return body as T;
 }
 function message(error: unknown) { return error instanceof Error ? error.message : "Не удалось выполнить запрос"; }
@@ -68,6 +69,16 @@ export default function ContactsImport() {
   const [reload, setReload] = useState(0);
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState("");
+  const [startOutreach,setStartOutreach]=useState(true);
+  const [outreachConfig,setOutreachConfig]=useState<{revision:number;template:string;accountIds:string[]}|null>(null);
+  const [outreachEnabled,setOutreachEnabled]=useState(false);
+  const [testOnly,setTestOnly]=useState(true);
+  const confirmIntent=useRef<{startOutreach:boolean;revision?:number}|null>(null);
+  useEffect(()=>{const controller=new AbortController();void Promise.all([
+    request<{revision:number;template:string;accountIds:string[]}>('/api/ai/outreach/settings',{signal:controller.signal}),
+    request<{enabled:boolean;testOnly:boolean}>('/api/ai/import-outreach',{signal:controller.signal})
+  ]).then(([settings,status])=>{if(!controller.signal.aborted){setOutreachConfig(settings);setOutreachEnabled(status.enabled);setTestOnly(status.testOnly);}}).catch(()=>{if(!controller.signal.aborted){setOutreachConfig(null);setOutreachEnabled(false);}});return()=>controller.abort();},[reload]);
+  const outreachReady=outreachEnabled&&!!outreachConfig?.template.trim()&&!!outreachConfig.accountIds.length;
   const generation = useRef(0);
   const operationController = useRef<AbortController | null>(null);
   const confirming = useRef(false);
@@ -99,6 +110,7 @@ export default function ContactsImport() {
   function invalidatePreview() {
     generation.current += 1;
     operationController.current?.abort();
+    confirmIntent.current=null;
     setOperation(null); setPreview(null); setResult(null); setConfirmationUncertain(false); setError(""); setPreviewPage(0); setExpired(false);
   }
   function begin(kind: Exclude<Operation, null>) {
@@ -150,17 +162,19 @@ export default function ContactsImport() {
   async function confirm() {
     if (!preview || result || confirming.current || operation) return;
     if (!confirmationUncertain && (expired || Date.parse(preview.expiresAt) <= Date.now())) return;
+    confirmIntent.current??={startOutreach,...(startOutreach?{revision:outreachConfig?.revision}:{})};
     confirming.current = true;
     const task = begin("confirm");
     try {
       const data = await request<Confirmation>(`/api/ai/contact-imports/${encodeURIComponent(preview.previewId)}/confirm`, {
-        method: "POST", signal: task.controller.signal,
+        method: "POST", headers:{"content-type":"application/json"},body:JSON.stringify(confirmIntent.current), signal: task.controller.signal,
       });
       if (!task.isCurrent()) return;
       setResult(data); setConfirmationUncertain(false); setOffset(0); setReload(value => value + 1);
     } catch (reason) {
       if (task.isCurrent()) {
-        setConfirmationUncertain(true);
+        const definite=typeof reason==='object'&&reason!==null&&'status' in reason&&Number(reason.status)<500;
+        setConfirmationUncertain(!definite);if(definite)confirmIntent.current=null;
         setError(`${message(reason)}. Если ответ потерян, повторите подтверждение этого же предпросмотра — оно не должно создавать дубли.`);
       }
     } finally { confirming.current = false; if (task.isCurrent()) setOperation(null); }
@@ -173,7 +187,11 @@ export default function ContactsImport() {
   return <div className="contacts-import workflow-page clients-page">
     <details className="workflow-disclosure workflow-card import-disclosure"><summary>Импортировать клиентов из файла</summary>    <section className="card contact-import-card" aria-labelledby="contact-import-title">
       <h2 id="contact-import-title">Импорт контактов</h2>
-      <p className="contact-import-safety">Импорт только добавляет контакты. Сообщения не отправляются, автоматические сценарии не запускаются.</p>
+      <p className="contact-import-safety">Загрузите файл, проверьте номера и подтвердите импорт. Бот может найти клиентов в MAX или WhatsApp и отправить первое сообщение с выбранного рабочего аккаунта.</p>
+      <details className="workflow-disclosure"><summary>Настроить первое сообщение и рабочие аккаунты</summary><OutreachPanel settingsOnly onSaved={()=>setReload(v=>v+1)}/></details>
+      <label><input type="checkbox" checked={startOutreach} disabled={!!operation||!!result||confirmationUncertain} onChange={e=>setStartOutreach(e.target.checked)}/> Найти клиентов и начать общение после импорта</label>
+      {startOutreach&&<p>{outreachReady?'После подтверждения начнётся поиск. Повторное обращение к уже обработанному контакту исключено.':!outreachEnabled?'Автоматическое обращение сейчас недоступно. Можно сохранить контакты без отправки, сняв галочку.':'Сначала сохраните текст первого сообщения и выберите рабочие аккаунты в настройках выше.'}</p>}
+      {startOutreach&&testOnly&&<p><small>Сейчас включён тестовый режим: поиск и отправка доступны только для разрешённых тестовых контактов.</small></p>}
       <form onSubmit={event => void inspect(event)}>
         <fieldset disabled={operation === "confirm"}>
           <label htmlFor="contact-file">Файл CSV или XLSX, до 5 МиБ</label>
@@ -244,17 +262,18 @@ export default function ContactsImport() {
         {expired && !result && <p className="contact-import-error" role="status">{confirmationUncertain
           ? "Срок предпросмотра истёк, но ответ предыдущего подтверждения не получен. Можно повторно запросить результат того же импорта."
           : "Срок предпросмотра истёк. Выполните проверку файла заново."}</p>}
-        {!result && <button className="primary" type="button" disabled={Boolean(operation) || expired && !confirmationUncertain} onClick={() => void confirm()}>
-          {operation === "confirm" ? "Сохраняем контакты…" : confirmationUncertain ? "Повторить подтверждение этого импорта" : "Подтвердить импорт контактов"}
+        {!result && <button className="primary" type="button" disabled={Boolean(operation) || !confirmationUncertain&&(expired||startOutreach&&!outreachReady)} onClick={() => void confirm()}>
+          {operation === "confirm" ? "Сохраняем контакты…" : confirmationUncertain ? "Повторить подтверждение этого импорта" : startOutreach?"Импортировать и начать обращение":"Импортировать без отправки"}
         </button>}
       </div>}
       {result && <div className="contact-import-success" role="status">
         <h3>{result.replayed ? "Этот импорт уже был подтверждён" : "Импорт завершён"}</h3>
         <Counters summary={result.summary}/>
-        <p>Сообщения не отправлялись. Новые контакты доступны в базе ниже.</p>
+        <p>{result.outreach?`В очередь обращения добавлено: ${result.outreach.queued}. Это ещё не подтверждение доставки — ход обработки показан ниже.`:"Контакты сохранены без отправки сообщений."}</p>
       </div>}
     </section>
     </details>
+    <ImportOutreachStatus reload={reload}/>
     <section className="card contact-import-card" aria-labelledby="contact-list-title" aria-busy={listLoading}>
       <div className="contact-import-list-heading"><h2 id="contact-list-title">Клиенты <span>({total})</span></h2>
         <button type="button" disabled={listLoading} onClick={() => setReload(value => value + 1)}>Обновить</button>
@@ -273,6 +292,6 @@ export default function ContactsImport() {
         <button type="button" disabled={listLoading || offset + pageSize >= total} onClick={() => setOffset(value => value + pageSize)}>Следующие контакты</button>
       </div>}
     </section>
-    <details className="workflow-disclosure workflow-card"><summary>Первое обращение и запуски</summary><OutreachPanel/></details>
+
   </div>;
 }

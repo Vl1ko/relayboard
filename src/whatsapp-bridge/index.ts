@@ -83,7 +83,7 @@ async function readGroupHistory(requestAccount:string,chatId:string):Promise<Wha
 }
 async function phoneProof(phone:string){
  if(!(await probeClientReady()))throw Error('wa_session_not_ready');
- const number=await client.getNumberId(phone.slice(1)),expected=phone.slice(1)+'@c.us';if(!number||number._serialized!==expected)throw Error('wa_phone_unverified');
+ const number=await client.getNumberId(phone.slice(1)),expected=phone.slice(1)+'@c.us';if(!number)throw Error('wa_phone_not_found');if(number._serialized!==expected)throw Error('wa_phone_unverified');
  const aliases=await recipientAliases(expected),self=await selfAliases(),chat=await client.getChatById(expected);
  if(chat.isGroup||!aliases.includes(chat.id._serialized))throw Error('wa_private_target_unverified');
  return{phone,pn:expected,aliases,selfAliases:self,privateId:chat.id._serialized};
@@ -314,6 +314,12 @@ app.get("/groups", async (_request, response) => {
     lastError = errorMessage(error);
     response.status(503).json({ error: "Не удалось загрузить группы WhatsApp", details: lastError });
   }
+});
+
+app.post('/ai/contacts/:id/lookup',async(request,response)=>{
+ if(config.AI_SEND_MODE!=='live')return response.status(409).json({error:'Live WhatsApp disabled'});
+ try{const route=await resolveWhatsAppContactRoute(pool,scope,{accountId,contactId:z.string().uuid().parse(request.params.id)},phoneProof);response.json({found:true,route});}
+ catch(e){if(e instanceof Error&&e.message==='wa_phone_not_found')return response.json({found:false});throw e;}
 });
 
 app.post('/ai/contacts/:id/resolve',async(request,response)=>{

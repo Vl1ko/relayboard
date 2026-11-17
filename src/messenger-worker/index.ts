@@ -39,6 +39,11 @@ async function owned(signal:AbortSignal){
   const accountId=z.string().uuid().optional().parse(req.body?.accountId);
   res.json(await resolveMaxSourceRoute(pool,connections,scope,{leadId:z.string().uuid().parse(req.params.id),accountId}));
  });
+ app.post('/contacts/:id/lookup',async(req,res)=>{
+  if(config.AI_SEND_MODE!=='live')return res.status(409).json({error:'Live MAX disabled'});
+  try {const route=await resolveMaxContactRoute(pool,connections,scope,{contactId:z.string().uuid().parse(req.params.id),accountId:z.string().uuid().parse(req.body.accountId)});res.json({found:true,route});}
+  catch(e){if(e instanceof Error&&e.message==='max_phone_not_found')return res.json({found:false});throw e;}
+ });
  app.post('/contacts/:id/resolve',async(req,res)=>{
   const accountId=z.string().uuid().parse(req.body?.accountId);
   res.json(await resolveMaxContactRoute(pool,connections,scope,{contactId:z.string().uuid().parse(req.params.id),accountId}));

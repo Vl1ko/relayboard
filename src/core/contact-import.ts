@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
+import {aiSettingsSchema} from "./ai-engine.js";
 import { ContactImportError, mapContactRows, summarize, type ColumnMapping, type ContactFile, type ImportRow } from "./contact-file.js";
 
 const uuid = z.string().uuid();
@@ -63,10 +64,21 @@ export class ContactImportService {
       return { previewId: session.id, expiresAt: session.expires_at, summary: summarize(rows), rows };
     });
   }
-  async confirm(owner: string, previewId: string) {
+  async confirm(owner: string, previewId: string, options: {startOutreach?: boolean; revision?: number} = {}) {
     return this.tx(async client => {
       const session = await this.session(client, previewId, owner, "preview", true);
       if (session.result) return { ...session.result, replayed: true };
+      let outreachSettings;
+      if (options.startOutreach) {
+        outreachSettings = (await client.query('SELECT * FROM ai_outreach_settings WHERE id=1 FOR SHARE')).rows[0];
+        if (outreachSettings.revision !== options.revision) throw new ContactImportError('outreach_settings_changed',409);
+        if (!outreachSettings.template.trim() || !outreachSettings.account_ids.length) throw new ContactImportError('outreach_settings_required',409);
+        for (const platform of outreachSettings.platforms) {
+          if (!(await client.query('SELECT 1 FROM integrations WHERE id=ANY($1::uuid[]) AND platform::text=$2 AND enabled',[outreachSettings.account_ids,platform])).rowCount) throw new ContactImportError('outreach_settings_required',409);
+        }
+        const qualification=aiSettingsSchema.safeParse((await client.query('SELECT settings FROM ai_engine_settings ORDER BY version DESC LIMIT 1')).rows[0]?.settings);
+        if(!qualification.success||!qualification.data.qualificationEnabled)throw new ContactImportError('outreach_qualification_required',409);
+      }
       const rows = session.payload as ImportRow[];
       const unique = new Map<string, ImportRow>();
       for (const row of rows) if (row.phone && row.outcome !== "invalid" && !unique.has(row.phone)) unique.set(row.phone, row);
@@ -78,7 +90,15 @@ export class ContactImportService {
       const previous = summarize(rows);
       const summary = { total: previous.total, new: inserted.rowCount || 0,
         duplicate: previous.total - previous.invalid - (inserted.rowCount || 0), invalid: previous.invalid };
-      const result = { importId: session.id, summary };
+      let outreach: {queued: number} | undefined;
+      if (outreachSettings) {
+        await client.query('INSERT INTO ai_import_outreach_batches(id,platforms,account_ids) VALUES($1,$2,$3)',[session.id,outreachSettings.platforms,outreachSettings.account_ids]);
+        const jobs=await client.query(`INSERT INTO ai_import_outreach_jobs(batch_id,contact_id)
+          SELECT $1,id FROM ai_contacts WHERE phone_e164=ANY($2::text[]) ORDER BY id
+          ON CONFLICT(contact_id) DO NOTHING RETURNING id`,[session.id,[...unique.keys()]]);
+        outreach={queued:jobs.rowCount||0};
+      }
+      const result = { importId: session.id, summary, ...(outreach ? {outreach} : {}) };
       await client.query("UPDATE ai_contact_import_sessions SET result=$2::jsonb,payload=NULL WHERE id=$1", [session.id, JSON.stringify(result)]);
       return { ...result, replayed: false };
     });

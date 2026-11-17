@@ -16,3 +16,5 @@ test('opening a private dialog checks raw metadata rather than trusting a client
  await assert.rejects(openVerifiedMaxPrivate(c,'202','-456'),/target_unverified/);
  await assert.rejects(openVerifiedMaxPrivate(c,'101','-456'),/route_unavailable/);
 });
+
+test('only an empty MAX result is definitive absence; unverifiable profiles cannot trigger fallback',async()=>{await assert.rejects(resolveMaxPhone(connection({result:[]}),'+79991234567'),/max_phone_not_found/);await assert.rejects(resolveMaxPhone(connection({result:[{id:202}]}),'+79991234567'),/uniquely_verified/);});
