@@ -15,6 +15,12 @@ export async function beginConfiguredQualification(pool:Pool,conversationId:stri
   await c.query("UPDATE ai_outbox SET state='cancelled',cancellation_requested=true,updated_at=now() WHERE conversation_id=$1 AND state='pending'",[conversationId]);
   await c.query("UPDATE ai_followup_jobs SET state='cancelled',cancellation_reason='new_qualification_phase',updated_at=now() WHERE conversation_id=$1 AND state IN ('pending','enqueued')",[conversationId]);
   const state=(await c.query('SELECT * FROM ai_engine_state WHERE conversation_id=$1 FOR UPDATE',[conversationId])).rows[0];
+  if(!conversation.active_phase_id){
+   const request=(await c.query('INSERT INTO ai_requests(id,contact_id) VALUES(gen_random_uuid(),$1) RETURNING id',[target.contact_id])).rows[0];
+   const first=(await c.query('SELECT coalesce(max(ingest_sequence),0)::bigint+1 AS n FROM ai_inbox WHERE conversation_id=$1',[conversationId])).rows[0].n;
+   const phase=(await c.query('INSERT INTO ai_request_phases(request_id,conversation_id,first_ingest_sequence,settings_version) VALUES($1,$2,$3,$4) RETURNING id',[request.id,conversationId,first,settings.version])).rows[0];
+   await c.query('UPDATE ai_conversations SET active_phase_id=$2 WHERE id=$1',[conversationId,phase.id]);
+  }
   if(conversation.active_phase_id&&state.settings_version!==settings.version){
    const old=(await c.query('UPDATE ai_request_phases SET closed_at=now(),fields_snapshot=$2,reply_count_snapshot=$3 WHERE id=$1 RETURNING *',[conversation.active_phase_id,state.fields,state.reply_count])).rows[0];
    const phase=(await c.query('INSERT INTO ai_request_phases(request_id,conversation_id,first_ingest_sequence,settings_version) VALUES($1,$2,$3,$4) RETURNING id',[old.request_id,conversationId,old.first_ingest_sequence,settings.version])).rows[0];

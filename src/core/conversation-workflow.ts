@@ -289,6 +289,7 @@ export class ConversationWorkflow {
     return this.tx(async (client) => {
       const c = await this.lock(client, input.conversationId);
       await this.guardCommand(client,c,input);
+      if(input.action==='takeover')await client.query("UPDATE ai_qualification_reviews SET state='taken',manager_reason='Менеджер взял диалог в работу',decided_at=now() WHERE conversation_id=ANY($1::uuid[]) AND state='pending'",[c.conversations.map(v=>v.id)]);
       if (input.action === "resume") {
         if (
           c.contact.opted_out_at || ['closed','refused'].includes(c.conversation.business_status) ||
@@ -463,6 +464,7 @@ export class ConversationWorkflow {
     reason:
       | "qualified"
       | "human_requested"
+      | "qualification_review"
       | "insufficient_data"
       | "reply_limit";
     summary: string;
@@ -481,6 +483,7 @@ export class ConversationWorkflow {
         reason: z.enum([
           "qualified",
           "human_requested",
+          "qualification_review",
           "insufficient_data",
           "reply_limit",
         ]),
@@ -543,6 +546,11 @@ export class ConversationWorkflow {
         const proof=(await client.query("SELECT i.ingest_sequence FROM ai_engine_decisions d JOIN ai_inbox i ON i.event_key=d.event_key WHERE d.id::text=$1 AND d.conversation_id=$2 AND d.disposition='handoff' AND d.automation_epoch=$3",[data.key.slice(11),data.conversationId,c.conversation.automation_epoch])).rows[0];
         if(!proof||BigInt(await latestRequestCustomerSequence(client,data.conversationId))>BigInt(proof.ingest_sequence))throw new WorkflowError('superseded_customer_event');
       }
+      if(data.resultStatus==='unqualified'){
+        const d=(await client.query("SELECT id,request_phase_id FROM ai_engine_decisions WHERE id::text=$1 AND conversation_id=$2 AND business_status='unqualified' AND disposition='handoff' AND request_phase_id=$3",[data.key.slice(11),data.conversationId,c.conversation.active_phase_id])).rows[0];
+        if(!data.key.startsWith('ai-handoff:')||!d||data.reason!=='qualification_review')throw new WorkflowError('negative_review_proof_required');
+        await client.query('INSERT INTO ai_qualification_reviews(decision_id,conversation_id,request_phase_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[d.id,data.conversationId,d.request_phase_id]);
+      }
       await this.invalidate(client, c.conversations, "paused", "handoff");
       if (!["closed", "refused"].includes(c.conversation.business_status))
         await this.history(
@@ -550,10 +558,11 @@ export class ConversationWorkflow {
           c.conversation,
           data.reason === "qualified"
             ? "qualified"
-            : (data.resultStatus ?? "manager_required"),
+            : (data.resultStatus==='unqualified'?"manager_required":data.resultStatus ?? "manager_required"),
           "handoff:" + data.reason,
         );
       if(data.reason==='qualified')await client.query('UPDATE ai_conversations SET manager_hold=true WHERE id=$1',[data.conversationId]);
+      if(data.resultStatus==='unqualified')await client.query("UPDATE ai_conversations SET manager_hold=true WHERE contact_id=$1 AND business_status NOT IN ('closed','refused')",[c.contact.id]);
       const target = (
         await client.query("SELECT * FROM ai_manager_target WHERE id=1")
       ).rows[0];
@@ -582,11 +591,34 @@ export class ConversationWorkflow {
             },
             target?.account_id ?? null,
             target?.external_id ?? null,
-            data.resultStatus==='unqualified'&&data.reason==='insufficient_data'?'rejected':'pending',
-            data.resultStatus==='unqualified'&&data.reason==='insufficient_data'?'qualification_not_passed':null,
+            'pending',
+            null,
           ],
         )
       ).rows[0];
+    });
+  }
+  async decideQualification(input:{conversationId:string;decisionId:string;action:'reject'|'takeover';reason:string}&CommandContext){
+    uuid.parse(input.decisionId);z.enum(['reject','takeover']).parse(input.action);text.parse(input.reason);
+    return this.tx(async client=>{
+      const c=await this.lock(client,input.conversationId);
+      const review=(await client.query('SELECT * FROM ai_qualification_reviews WHERE decision_id=$1 AND conversation_id=$2 FOR UPDATE',[input.decisionId,input.conversationId])).rows[0];
+      if(!review)throw new WorkflowError('qualification_review_not_found',404);
+      const state=input.action==='reject'?'rejected':'taken';
+      if(review.state!=='pending'){if(review.state===state)return review;throw new WorkflowError('qualification_review_already_decided');}
+      await this.guardCommand(client,c,input);
+      const proof=(await client.query("SELECT 1 FROM ai_engine_decisions d JOIN ai_request_phases p ON p.id=d.request_phase_id JOIN ai_requests r ON r.id=p.request_id WHERE d.id=$1 AND p.id=$2 AND p.closed_at IS NULL AND r.lifecycle='open' AND d.automation_epoch+1=$3",[input.decisionId,c.conversation.active_phase_id,c.conversation.automation_epoch])).rowCount;
+      if(!proof||c.conversation.automation_mode!=='paused'||c.conversation.business_status!=='manager_required'||!c.conversation.manager_hold)throw new WorkflowError('stale_request_context');
+      if(input.action==='reject'){
+        if(c.contact.opted_out_at||(await client.query("SELECT 1 FROM ai_outbox WHERE contact_id=$1 AND state IN ('unknown','dispatching')",[c.contact.id])).rowCount)throw new WorkflowError('automation_forbidden');
+        await this.history(client,c.conversation,'unqualified','manager_confirmed_rejection: '+input.reason);
+        await client.query('UPDATE ai_conversations SET manager_hold=false WHERE active_phase_id IN(SELECT id FROM ai_request_phases WHERE request_id=(SELECT request_id FROM ai_request_phases WHERE id=$1))',[review.request_phase_id]);
+      }else{
+        await this.invalidate(client,c.conversations,'manual','manager_rejected_ai_suggestion');
+        for(const v of c.conversations)if(!['closed','refused'].includes(v.business_status))await this.history(client,v,'manager_working','manager_rejected_ai_suggestion');
+      }
+      await client.query("UPDATE ai_handoff_notifications SET state='rejected',outcome_code='qualification_review_decided',updated_at=now() WHERE logical_key=$1 AND reason='qualification_review' AND state='pending'",['ai-handoff:'+input.decisionId]);
+      return(await client.query('UPDATE ai_qualification_reviews SET state=$2,manager_reason=$3,decided_at=now() WHERE decision_id=$1 RETURNING *',[input.decisionId,state,input.reason])).rows[0];
     });
   }
   /** Internal sender boundary only. Missing target/auth keeps an honest pending record. */

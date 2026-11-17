@@ -40,6 +40,11 @@ try{
  await store.ingest({version:1,platform:'whatsapp',accountId:waAccount,conversationId:'200@c.us',messageId:'synthetic-wa-answer',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'Тестовое уточнение в WhatsApp:12 тонн'});
  await db.query('UPDATE ai_engine_state SET fields=$2 WHERE conversation_id=$1',[wa.id,{volume:{value:12,evidenceMessageId:'synthetic-wa-answer',evidenceQuote:'12 тонн'}}]);
 for(const [scenario,label]of Object.entries({no_reply:'Ответ клиента',not_booked:'Согласование объёма',not_completed:'Подтверждение поставки',requested_later:'Связаться позже'}))await workflow.saveFollowupRule({scenario,label,enabled:false,channel:'current',timezone:'Europe/Moscow',weekdays:[1,2,3,4,5],startMinute:540,endMinute:1080,steps:[{delaySeconds:3600,text:'Тестовый дожим'}],maxSends:1});
+ if(process.env.SYNTHETIC_REVIEW_UI==='true'){
+  const {AiOrchestrator}=await import('../dist-node/core/ai-orchestrator.js');
+  const e=await store.ingest({version:1,platform:'max',accountId:account,conversationId:'200',messageId:'synthetic-negative-answer',occurredAt:new Date().toISOString(),direction:'inbound',origin:'customer',text:'Для новой поставки нужно только 5 тонн'});
+  await new AiOrchestrator(db).process(conversation.id,e.event.event_key,{kind:'fixture',async complete(){return{replyDraft:'',extracted:[{field:'volume',value:5,evidenceMessageId:e.event.event_key,evidenceQuote:'5 тонн'}],replyKind:'none',askFields:[],knowledgeKeys:[],proposedStatus:'unqualified',handoffReason:null};}});
+ }
  const redisPort=await port(),apiPort=await port();const redis=child('redis-server',['--bind','127.0.0.1','--port',String(redisPort),'--save','','--appendonly','no','--dir',temp],env);
  const waitUntil=async(check,label)=>{const deadline=Date.now()+15000;while(Date.now()<deadline){if(await check())return;await delay(50);}throw Error(label);};
  await waitUntil(()=>redis.output.includes('Ready to accept connections'),'isolated Redis did not start');

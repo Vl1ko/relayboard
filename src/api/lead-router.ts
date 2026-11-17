@@ -1,3 +1,4 @@
+import {ChatCriteriaStore} from '../core/chat-criteria.js';
 import {sourceRuntimeReady} from '../core/source-runtime-health.js';
 import {SourceMonitorSettings} from '../core/source-monitor-settings.js';
 import {activateSource} from '../core/source-activation.js';
@@ -31,6 +32,9 @@ export function createLeadRouter(options: {
         .json({ error: "Источники заявок пока не включены" });
     next();
   });
+  const chatCriteria=new ChatCriteriaStore(options.pool);
+  router.get('/chat-criteria',async(req,res)=>res.json(await chatCriteria.get(z.enum(['max','whatsapp']).parse(req.query.platform),z.string().min(1).max(512).parse(req.query.chatId))));
+  router.put('/chat-criteria',async(req,res)=>res.json(await chatCriteria.save(req.body)));
   const monitor=new SourceMonitorSettings(options.pool);
   router.get('/monitor',async(_req,res)=>res.json({...await monitor.get(),runtimeEnabled:!!options.runtimeEnabled&&await sourceRuntimeReady(options.pool,(await options.pool.query('SELECT DISTINCT platform FROM ai_search_sources')).rows.map(r=>r.platform)),lastReadAt:(await options.pool.query('SELECT max(last_completed_at) AS at FROM ai_source_cursors')).rows[0].at,sourceErrorCount:Number((await options.pool.query('SELECT count(*) AS n FROM ai_source_cursors c JOIN ai_search_sources s ON s.platform=c.platform AND s.chat_id=c.chat_id WHERE c.last_error IS NOT NULL')).rows[0].n)}));
   router.put('/monitor',async(req,res)=>res.json(await monitor.save(req.body)));
@@ -71,6 +75,7 @@ export function createLeadRouter(options: {
     res.json(await store.review({ ...req.body, leadId: req.params.id }));
   });
   router.use(((e, _req, res, _next) => {
+    if(e instanceof Error&&['chat_criteria_changed','chat_not_selected'].includes(e.message))return res.status(409).json({error:e.message==='chat_not_selected'?'Сначала сохраните чат в списке источников':'Критерии изменились. Загрузите сохранённые настройки'});
     if(e instanceof Error&&/^monitor_[a-z_]+$/.test(e.message))return res.status(409).json({code:e.message,error:({monitor_settings_changed:'Настройки изменились. Обновите страницу',monitor_instructions_required:'Опишите, какие заявки нужно искать',monitor_sources_required:'Выберите чаты MAX или WhatsApp',monitor_sources_unavailable:'Проверьте подключение выбранных аккаунтов',monitor_source_limit:'Выберите не более пяти чатов в каждом мессенджере',monitor_duplicate_reader:'Для одного чата выберите один аккаунт чтения',monitor_ai_required:'Подключите GigaChat в настройках ИИ',monitor_qualification_required:'Настройте и включите квалификацию',monitor_sender_required:'Выберите аккаунты отправителей',monitor_not_started:'Сначала запустите поиск'} as Record<string,string>)[e.message]??'Проверьте настройки поиска'});
     if(e instanceof Error&&/^(source_|wa_source_|max_source_|verified_|outside_runtime_scope)/.test(e.message))return res.status(409).json({error:'Не удалось подтвердить источник. Обновите заявку и проверьте выбранные аккаунты'});
     if (e instanceof SearchSourceError)

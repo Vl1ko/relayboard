@@ -612,23 +612,12 @@ test(
   },
 );
 test(
-  "internal AI handoff preserves an unqualified/insufficient status rather than reporting qualified",
+  "unproved negative status cannot bypass manager review",
   { skip },
   async () => {
     const f = await fixture();
-    await service.handoff({
-      conversationId: f.conversations[0].id,
-      key: "ai-unqualified",
-      reason: "insufficient_data",
-      summary: "Synthetic nonmatch",
-      resultStatus: "unqualified",
-      expectedEpoch: "0",
-    });
-    assert.equal(
-      (await service.detail(f.conversations[0].id)).conversation
-        .business_status,
-      "unqualified",
-    );
+    await assert.rejects(service.handoff({conversationId:f.conversations[0].id,key:'ai-unqualified',reason:'insufficient_data',summary:'Synthetic nonmatch',resultStatus:'unqualified',expectedEpoch:'0'}),/negative_review_proof_required/);
+    assert.notEqual((await service.detail(f.conversations[0].id)).conversation.business_status,'unqualified');
   },
 );
 test(

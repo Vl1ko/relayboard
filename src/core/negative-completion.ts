@@ -5,6 +5,7 @@ export async function finalizeNegativeCompletion(c:PoolClient,actionId:string){
   WHERE a.id=$1 AND a.kind='qualification_notice' AND a.state='confirmed' AND a.external_message_id IS NOT NULL AND d.disposition='handoff' AND d.business_status='unqualified'
    AND d.request_phase_id=a.request_phase_id AND v.active_phase_id=p.id AND p.closed_at IS NULL AND r.lifecycle='open' AND v.business_status='unqualified' AND v.automation_mode='paused' AND NOT v.manager_hold
    AND a.automation_epoch=v.automation_epoch AND d.automation_epoch+1=v.automation_epoch
+   AND EXISTS(SELECT 1 FROM ai_qualification_reviews qr WHERE qr.decision_id=d.id AND qr.state='rejected')
    AND EXISTS(SELECT 1 FROM ai_handoff_notifications n WHERE n.conversation_id=v.id AND n.logical_key='ai-handoff:'||d.id::text)
    AND NOT EXISTS(SELECT 1 FROM ai_request_phases other JOIN ai_conversations ov ON ov.active_phase_id=other.id WHERE other.request_id=p.request_id AND ov.manager_hold)
    AND NOT EXISTS(SELECT 1 FROM ai_outbox other JOIN ai_request_phases op ON op.id=other.request_phase_id WHERE op.request_id=p.request_id AND other.state IN ('pending','dispatching','unknown'))`,[actionId])).rows[0];

@@ -8,7 +8,7 @@
 
 `setStatus({conversationId,status,reason,proof?,expectedEpoch?})` реализует переходы всех девяти статусов. Qualified требует server-only callback `verifyQualification(client,conversationId,proof)`; без него статус запрещён. Публичный UI не вправе передавать доказательство собственной квалификации. Refused — устойчивый opt-out на всех связанных каналах. Остальные смены статуса приостанавливают автоматику и отменяют устаревшие действия; только отдельное resume может включить auto. История переходов сохраняется. ExpectedEpoch сравнивается под блокировками и защищает от применения задержанного ИИ-результата, в том числе старого отказа.
 
-Порядок блокировок во всех транзакциях: контакт → все его диалоги по ID → outbox/jobs/notification. Применение ИИ-решения выполняет orchestrator root; `handoff` поддерживает internal-only `resultStatus:unqualified|insufficient_data`, чтобы передача не превращала неподходящего в подходящего. Это поле и proof не должны приниматься как команды браузера.
+Порядок блокировок во всех транзакциях: контакт → все его диалоги по ID → outbox/jobs/notification. Применение ИИ-решения выполняет orchestrator root; `handoff` поддерживает internal-only `resultStatus:unqualified|insufficient_data`, для исходов квалификации. С17 ноября2026 отрицательный исход создаёт manager_required/paused и ручную проверку, без автоматического прощания. Менеджер подтверждает отказ или берёт диалог в работу; см. [chat-cards-review.md](chat-cards-review.md). Это поле и proof не должны приниматься как команды браузера.
 
 ## Передача менеджеру
 

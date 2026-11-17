@@ -23,7 +23,7 @@ export class AiOrchestrator {
    const action=await this.messages.enqueueAiReply(decision.id);
    return {decision,action};
   }
-  const reason=decision.business_status==='qualified'?'qualified':decision.reason==='reply_limit'?'reply_limit':decision.reason==='requested_human'?'human_requested':'insufficient_data';
+  const reason=decision.business_status==='unqualified'?'qualification_review':decision.business_status==='qualified'?'qualified':decision.reason==='reply_limit'?'reply_limit':decision.reason==='requested_human'?'human_requested':'insufficient_data';
   const notification=await this.workflow.handoff({conversationId,key:'ai-handoff:'+decision.id,reason,...(await handoffContext(this.pool,decision,this.options.publicAppUrl)),proof:decision.id,expectedEpoch:decision.automation_epoch,resultStatus:decision.business_status==='unqualified'?'unqualified':decision.business_status==='insufficient_data'?'insufficient_data':undefined});
   return {decision,notification};
  }

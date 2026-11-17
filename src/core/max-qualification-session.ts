@@ -57,7 +57,7 @@ export class MaxQualificationSession{
       }finally{this.sending=false;}
      }
      if(result.decision.disposition==='handoff'){
-      if(['qualified','unqualified'].includes(result.decision.business_status)){
+      if(result.decision.business_status==='qualified'){
        const notice=await this.store.enqueueQualificationNotice(result.decision.id);this.sending=true;
        try{const prepared=prepareMaxAiText({socket:this.o.socket,accountId:this.o.accountId,chatId:this.o.dialogId,allowedChatId:this.o.dialogId});await this.store.dispatch(notice.id,{target:prepared.target,start:a=>this.active?prepared.start(a):{acknowledgement:Promise.resolve({operationId:a.operationId,outcome:'rejected',dispatchState:'not_started',code:'local_session_stopped',retryCondition:'never'})}});}finally{this.sending=false;}
       }

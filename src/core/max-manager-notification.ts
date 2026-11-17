@@ -5,7 +5,7 @@ import {decryptCredentials} from './crypto.js';
 import {ConversationWorkflow} from './conversation-workflow.js';
 import {prepareMaxAiText,type ConnectedMaxTextSocket} from './adapters/max-ai-text.js';
 export function formatManagerNotification(text:string){
- const n=JSON.parse(text),titles:Record<string,string>={qualified:'Заявка прошла квалификацию',human_requested:'Клиент просит подключить менеджера',insufficient_data:'Требуется помощь менеджера: недостаточно данных',reply_limit:'Достигнут лимит ответов: требуется менеджер'};
+ const n=JSON.parse(text),titles:Record<string,string>={qualification_review:'ИИ предлагает отказ: требуется решение менеджера',qualified:'Заявка прошла квалификацию',human_requested:'Клиент просит подключить менеджера',insufficient_data:'Требуется помощь менеджера: недостаточно данных',reply_limit:'Достигнут лимит ответов: требуется менеджер'};
  let labels:Record<string,unknown>={};try{const value=JSON.parse(n.source?.fieldLabelsJson??'{}');if(value&&typeof value==='object'&&!Array.isArray(value))labels=value;}catch{}
  const lines=[titles[n.reason]??'Требуется менеджер','Клиент: '+singleLine(n.contact?.name||'Без имени'),...(n.contact?.phone?['Телефон: '+singleLine(n.contact.phone)]:[]),'Аккаунт: '+singleLine(n.channel?.accountName||'Не указан'),'Канал: '+(n.channel?.platform==='whatsapp'?'WhatsApp':'MAX')];
  if(n.source?.cardLink)lines.push('Открыть заявку: '+singleLine(n.source.cardLink,1000));else lines.push('Личный диалог: '+singleLine(n.channel?.externalId));

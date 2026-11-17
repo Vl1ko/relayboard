@@ -21,3 +21,8 @@ Activation держит lead lock и в одной транзакции выпо
 UI: Sources + MonitorControls, человеческие поля/цитаты и sender выбора для monitored lead. Ручной legacy approve с произвольным contact/request запрещён для monitored source: подтверждение проходит через verified source route. HTTP approved replay возвращает существующую заявку до нового network lookup. Source first action не отправляется самим браузером: он создаёт durable input для worker.
 
 Проверки: source-monitor.test.ts, lead-router.test.ts, gigachat-source-scorer.test.ts, а также прежний transport/lifecycle regression. outputs/res05-sources-2026-11-14 содержит313 PASS и browser proof на fake данных. Реальные MAX/WhatsApp/GigaChat,10 аккаунтов, media/publishing prepared boundary, коммерческий scope, хранение/backup и полный выпуск ещё требуют остальных RES.
+
+
+## Критерии отдельных чатов,17 ноября2026
+
+Поддерживаются наследование общих, обязательное дополнение и полная замена критериев для каждой пары мессенджер/чат. Эффективная политика участвует в capture, classify, activation и проверке до первой отправки. Подробности и проверки — [chat-cards-review.md](chat-cards-review.md).

@@ -1,3 +1,4 @@
+import ContactCard from './ContactCard';
 import ManagerNotificationSettings from './ManagerNotificationSettings';
 import RequestHistory from './RequestHistory';
 import ContactPriority,{priorityLabels} from './ContactPriority';
@@ -100,6 +101,7 @@ type List = {
   counterRule: string;
 };
 type Workflow = {
+  qualificationReview?:{decisionId:string;state:string;reason:string|null}|null;
   business?: BusinessDetail;
   stageLabels?: {scenario:string;label:string}[];
   notifications?: Record<string, unknown>[];
@@ -558,6 +560,7 @@ export default function ConversationWorkspace() {
                   ))}
                 </select>
               </label>) : <p className="conversation-channel">{conversation?.platform==='whatsapp'?'WhatsApp':'MAX'} · {conversation?.accountName||'Аккаунт не выбран'}</p>}
+              <ContactCard key={detail.contact.id} contactId={detail.contact.id}/>
               {conversation && (
                 <>
                   <details className="conversation-secondary"><summary>О клиенте и заявке</summary><ContactPriority key={detail.contact.id} contact={detail.contact} onChange={()=>setRevision(v=>v+1)}/>
@@ -584,6 +587,7 @@ export default function ConversationWorkspace() {
                       : ""}
                   </p>
 
+                  {!historyView&&workflow?.qualificationReview?.state==='pending'&&conversation.mode==='paused'&&conversation.status==='manager_required'&&<section className="workflow-card qualification-review" role="region" aria-label="Решение по квалификации"><h3>ИИ предлагает отказ — нужно ваше решение</h3><p>Клиенту не отправлено прощание. Проверьте переписку и собранные параметры.</p><button disabled={operation} onClick={()=>void act('/conversations/'+conversation.id+'/qualification-review',{decisionId:workflow.qualificationReview!.decisionId,action:'takeover',reason:'Менеджер не согласен с отказом и берёт диалог в работу'})}>Не отклонять — взять в работу</button><button disabled={operation} onClick={()=>void act('/conversations/'+conversation.id+'/qualification-review',{decisionId:workflow.qualificationReview!.decisionId,action:'reject',reason:'Менеджер подтвердил несоответствие критериям'})}>Подтвердить отказ и отправить прощание</button><small>После подтверждения отказа заявка закроется только при подтверждённой доставке настроенного прощания.</small></section>}
                   {!historyView&&conversation.status!=='closed'&&<fieldset className="conversation-request-actions" disabled={detailLoading}>
                   <div className="conversation-primary-actions">
                     <button disabled={operation||conversation.mode==='manual'} onClick={()=>void act('/conversations/'+conversation.id+'/mode',{mode:'manual'})}>Взять в работу</button>

@@ -119,8 +119,9 @@ export class AiManagerStore {
       else if (event.origin === "human" || event.origin === "unresolved") {
         const linked=await client.query("SELECT id FROM ai_conversations WHERE contact_id=$1 AND business_status NOT IN ('closed','refused') ORDER BY id FOR UPDATE",[conversation.contact_id]);
         for(const row of linked.rows)await this.invalidate(client,row.id,event.origin==='human'?'manual':'paused',event.origin==='human'?'manager_working':undefined);
+        if(event.origin==='human')await client.query("UPDATE ai_qualification_reviews SET state='taken',manager_reason='Менеджер ответил в мессенджере',decided_at=now() WHERE conversation_id=ANY($1::uuid[]) AND state='pending'",[linked.rows.map(r=>r.id)]);
       }
-      else if (event.origin === "customer" && !(conversation.automation_mode==='paused' && ['qualified','unqualified'].includes(conversation.business_status))) await this.invalidate(client, conversation.id, conversation.automation_mode);
+      else if (event.origin === "customer" && !(conversation.automation_mode==='paused' && (['qualified','unqualified'].includes(conversation.business_status)||conversation.manager_hold))) await this.invalidate(client, conversation.id, conversation.automation_mode);
       return { duplicate: false, event: inserted.rows[0] };
     });
   }
@@ -205,10 +206,12 @@ export class AiManagerStore {
       const decision=(await client.query("SELECT * FROM ai_engine_decisions WHERE id=$1 AND disposition='handoff' AND business_status IN ('qualified','unqualified')",[decisionId])).rows[0];
       if(!decision)throw new AiStateError('qualification_notice_proof_required');
       const {contact,conversation}=await this.lockConversation(client,decision.conversation_id);
+      if(decision.business_status==='unqualified'&&!(await client.query("SELECT 1 FROM ai_qualification_reviews WHERE decision_id=$1 AND state='rejected'",[decision.id])).rowCount)throw new AiStateError('manager_rejection_required');
       const logicalKey='qualification-notice:'+decisionId;
-      const old=(await client.query("SELECT * FROM ai_outbox WHERE kind='qualification_notice' AND logical_key=$1",[logicalKey])).rows[0];if(old)return old;
+      const old=(await client.query("SELECT * FROM ai_outbox WHERE kind='qualification_notice' AND logical_key=$1",[logicalKey])).rows[0];if(old&&!(old.state==='cancelled'&&old.outcome_code==='manager_review_required'))return old;
       const handoff=(await client.query('SELECT 1 FROM ai_handoff_notifications WHERE conversation_id=$1 AND logical_key=$2',[conversation.id,'ai-handoff:'+decisionId])).rowCount;
       if(!handoff||contact.opted_out_at||conversation.automation_mode!=='paused'||conversation.business_status!==decision.business_status||BigInt(conversation.automation_epoch)!==BigInt(decision.automation_epoch)+1n)throw new AiStateError('qualification_notice_forbidden');
+      if(old)return(await client.query("UPDATE ai_outbox SET state='pending',cancellation_requested=false,outcome_code=NULL,updated_at=now() WHERE id=$1 RETURNING *",[old.id])).rows[0];
       const savedSettings=(await client.query('SELECT settings FROM ai_engine_settings WHERE version=$1',[decision.settings_version])).rows[0].settings;
       const prior=await requestHasOutgoing(client,conversation.id);
       const noticeText=(prior?'':(savedSettings.greetingMessage??DEFAULT_GREETING)+'\n\n')+completionTemplate(savedSettings,decision.business_status);
@@ -235,6 +238,7 @@ export class AiManagerStore {
     if (!account) return "cancel";
     if (!account.enabled || account.auth_error) return "wait";
     if(action.kind==='qualification_notice'){
+      if(conversation.business_status==='unqualified'&&!(await client.query("SELECT 1 FROM ai_qualification_reviews r JOIN ai_engine_decisions d ON d.id=r.decision_id JOIN ai_outbox a ON a.logical_key='qualification-notice:'||d.id::text JOIN ai_conversations v ON v.id=a.conversation_id WHERE r.state='rejected' AND a.id=$1 AND r.request_phase_id=v.active_phase_id AND v.id=$2",[action.id,conversation.id])).rowCount)return 'cancel';
       const proof=await client.query(`SELECT 1 FROM ai_outbox a JOIN ai_engine_decisions d ON a.logical_key='qualification-notice:'||d.id::text AND a.conversation_id=d.conversation_id JOIN ai_engine_settings k ON k.version=d.settings_version JOIN ai_handoff_notifications n ON n.conversation_id=d.conversation_id AND n.logical_key='ai-handoff:'||d.id::text WHERE a.id=$1 AND d.disposition='handoff' AND d.business_status=$2 AND d.business_status IN ('qualified','unqualified') AND d.automation_epoch+1=$3 AND a.text IN (CASE WHEN d.business_status='qualified' THEN coalesce(k.settings->>'qualifiedMessage',$4) ELSE coalesce(k.settings->>'unqualifiedMessage',$5) END,coalesce(k.settings->>'greetingMessage',$6)||E'\\n\\n'||CASE WHEN d.business_status='qualified' THEN coalesce(k.settings->>'qualifiedMessage',$4) ELSE coalesce(k.settings->>'unqualifiedMessage',$5) END)`,[action.id,conversation.business_status,conversation.automation_epoch,completionTemplate({},'qualified'),completionTemplate({},'unqualified'),DEFAULT_GREETING]);
       if(!proof.rowCount)return 'cancel';
       if((await client.query("SELECT 1 FROM ai_outbox WHERE conversation_id=$1 AND id<>$2 AND state IN ('unknown','dispatching')",[conversation.id,action.id])).rowCount)return 'wait';

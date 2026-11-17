@@ -28,6 +28,7 @@ const querySchema = z.object({
   offset: z.coerce.number().int().min(0).max(1000000).default(0),
 });
 export interface WorkspaceWorkflow {
+  decideQualification?(input:any):Promise<unknown>;
   control(input: {
     conversationId: string;
     action: "takeover" | "stop" | "resume";
@@ -301,12 +302,18 @@ export function createConversationRouter(options: {
         followups,
         statusHistory,
         business: await business.detail(id,client,requestId),
+        qualificationReview:(await client.query('SELECT decision_id AS "decisionId",state,manager_reason AS reason,created_at FROM ai_qualification_reviews WHERE conversation_id=$1 AND ($2::uuid IS NULL OR request_phase_id IN(SELECT id FROM ai_request_phases WHERE request_id=$2)) ORDER BY created_at DESC LIMIT 1',[id,requestId??null])).rows[0]??null,
         stageLabels: (await client.query("SELECT scenario,label FROM ai_followup_rules")).rows,
         limits: { notifications: 20, followups: 50, statusHistory: 100 },
       };
     });
     if (!data) return res.status(404).json({ error: "Диалог не найден" });
     res.json(data);
+  });
+  router.post('/conversations/:id/qualification-review',async(req,res)=>{
+    if(!options.workflow?.decideQualification)return res.status(503).json({error:'Проверка квалификации недоступна'});
+    const d=z.object({decisionId:z.string().uuid(),action:z.enum(['reject','takeover']),reason:z.string().trim().min(1).max(4000)}).strict().parse(req.body);
+    res.json(await options.workflow.decideQualification({...d,conversationId:z.string().uuid().parse(req.params.id),...res.locals.commandContext}));
   });
   router.post("/conversations/:id/business-events", async (req,res)=>{
     const conversationId=z.string().uuid().parse(req.params.id);

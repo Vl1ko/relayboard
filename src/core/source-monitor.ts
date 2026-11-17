@@ -1,3 +1,4 @@
+import {readChatCriteria} from './chat-criteria.js';
 import {createHash,randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
 import {z} from 'zod';
@@ -27,9 +28,9 @@ export class SourceMonitor{
    if(!(await c.query(`SELECT 1 FROM ai_search_sources s JOIN integrations i ON i.id=s.account_id WHERE s.account_id=$1 AND s.chat_id=$2 AND s.platform=$3 AND i.enabled AND i.auth_error IS NULL FOR SHARE OF s,i`,[s.accountId,s.chatId,s.platform])).rowCount){await c.query('COMMIT');return{captured:false,reason:'source_not_selected'};}
    const cutoff=new Date(policy.started_at).getTime(),occurred=new Date(s.occurredAt).getTime();
    if(occurred<(s.platform==='whatsapp'?Math.floor(cutoff/1000)*1000:cutoff)){await c.query('COMMIT');return{captured:false,reason:'before_monitor_start'};}
-   const settings=monitorSettingsSchema.parse(policy.settings),text=s.text.toLocaleLowerCase();
-   let reason:string|null=settings.excludeTerms.some(t=>text.includes(t.toLocaleLowerCase()))?'excluded_term':settings.includeTerms.length&&!settings.includeTerms.some(t=>text.includes(t.toLocaleLowerCase()))?'no_included_term':null;
-   if(!this.scope.testOnly&&(await c.query(`SELECT 1 FROM integrations WHERE platform::text=$1 AND (CASE WHEN platform='max' THEN max_self_id ELSE whatsapp_self_id END=$2 OR platform='whatsapp' AND whatsapp_self_aliases ? $2)`,[s.platform,s.authorId])).rowCount)reason='owned_account';
+   const effective=await readChatCriteria(c,s.platform,s.chatId,monitorSettingsSchema.parse(policy.settings)),settings=effective.settings,text=s.text.toLocaleLowerCase();
+   let reason:string|null=settings.excludeTerms.some(t=>text.includes(t.toLocaleLowerCase()))?'excluded_term':effective.includeGroups.some(group=>!group.some(t=>text.includes(t.toLocaleLowerCase())))?'no_included_term':null;
+   if(!this.scope.testOnly&&(await c.query(`SELECT 1 FROM integrations WHERE platform::text=$1 AND (CASE WHEN platform='max' THEN max_self_id::text ELSE whatsapp_self_id END=$2 OR platform='whatsapp' AND whatsapp_self_aliases ? $2)`,[s.platform,s.authorId])).rowCount)reason='owned_account';
    if((await c.query(`SELECT 1 FROM ai_remote_identities i JOIN ai_contacts p ON p.id=i.contact_id WHERE i.platform=$1 AND i.remote_user_id=$2 AND i.namespace IN ('global',$3) AND p.opted_out_at IS NOT NULL`,[s.platform,s.authorId,'account:'+s.accountId])).rowCount)reason='contact_opted_out';
    const fingerprint=hash([s.platform,s.chatId,s.messageId,s.authorId,new Date(s.occurredAt).toISOString(),s.text]);
    if(!reason)await c.query("SELECT pg_advisory_xact_lock(hashtextextended('source-capture-capacity',0))");
@@ -56,7 +57,9 @@ export class SourceMonitor{
     if((await this.pool.query(`SELECT 1 FROM ai_remote_identities i JOIN ai_contacts c ON c.id=i.contact_id WHERE i.platform=$1 AND i.remote_user_id=$2 AND i.namespace IN ('global',$3) AND c.opted_out_at IS NOT NULL`,[source.platform,source.author_id,'account:'+source.account_id])).rowCount){
      await this.pool.query("UPDATE ai_source_messages SET state='ignored',original_text=NULL,reason='contact_opted_out',scoring_token=NULL,lease_until=NULL,classified_at=now() WHERE id=$1 AND state='pending'",[id]);return{classified:false};
     }
-    const settings=monitorSettingsSchema.parse(source.settings);if(!settings.instructions)return{classified:false};
+    const effective=await readChatCriteria(this.pool,source.platform,source.chat_id,monitorSettingsSchema.parse(source.settings)),settings=effective.settings;if(!settings.instructions)return{classified:false};
+    const lower=source.original_text.toLocaleLowerCase(),keywordReason=settings.excludeTerms.some(t=>lower.includes(t.toLocaleLowerCase()))?'excluded_term':effective.includeGroups.some(group=>!group.some(t=>lower.includes(t.toLocaleLowerCase())))?'no_included_term':null;
+    if(keywordReason){await this.pool.query("UPDATE ai_source_messages s SET state='ignored',original_text=NULL,reason=$2,classified_at=now() FROM ai_monitor_settings p WHERE s.id=$1 AND s.state='pending' AND p.id=1 AND p.mode='active' AND p.revision=$3 AND p.epoch=s.monitor_epoch",[id,keywordReason,source.revision]);return{classified:false};}
     const owned=await this.pool.query(`UPDATE ai_source_messages SET scoring_token=$2,lease_until=clock_timestamp()+interval '2 minutes' WHERE id=$1 AND state='pending' AND (lease_until IS NULL OR lease_until<=clock_timestamp()) AND (retry_after IS NULL OR retry_after<=clock_timestamp()) RETURNING id`,[id,token]);
     if(!owned.rowCount)return{classified:false};claimed=true;
     const engine=(await this.pool.query('SELECT version,settings FROM ai_engine_settings ORDER BY version DESC LIMIT 1')).rows[0],fields=(engine.settings.fields??[]) as {key:string;question:string}[];
@@ -81,7 +84,7 @@ export class SourceMonitor{
       const key='lead:v1:'+hash([source.platform,source.account_id,source.chat_id,source.message_id]);
       const fingerprint=hash([source.platform,source.account_id,source.chat_id,source.author_id,source.message_id,new Date(source.occurred_at).toISOString(),null,source.original_text]);
       const created=await c.query(`INSERT INTO ai_leads(source_key,source_fingerprint,platform,account_id,chat_id,author_id,message_id,occurred_at,original_text,source_kind,params,confidence,source_message_id,classification)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'monitor',$10,$11,$12,$13) ON CONFLICT(source_key) DO UPDATE SET source_key=ai_leads.source_key WHERE ai_leads.source_fingerprint=excluded.source_fingerprint AND (ai_leads.source_message_id IS NULL OR ai_leads.source_message_id=excluded.source_message_id) RETURNING id`,[key,fingerprint,source.platform,source.account_id,source.chat_id,source.author_id,source.message_id,source.occurred_at,source.original_text,JSON.stringify(result.params),result.confidence,id,JSON.stringify({...result,params:undefined,monitorRevision:policy.revision,criteriaFingerprint:monitorCriteriaFingerprint(settings),engineSettingsVersion:engine.version})]);
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'monitor',$10,$11,$12,$13) ON CONFLICT(source_key) DO UPDATE SET source_key=ai_leads.source_key WHERE ai_leads.source_fingerprint=excluded.source_fingerprint AND (ai_leads.source_message_id IS NULL OR ai_leads.source_message_id=excluded.source_message_id) RETURNING id`,[key,fingerprint,source.platform,source.account_id,source.chat_id,source.author_id,source.message_id,source.occurred_at,source.original_text,JSON.stringify(result.params),result.confidence,id,JSON.stringify({...result,params:undefined,monitorRevision:policy.revision,criteriaFingerprint:effective.fingerprint,engineSettingsVersion:engine.version})]);
       if(!created.rowCount)throw Error('source_lead_conflict');leadId=created.rows[0].id;
      }
      await c.query(`UPDATE ai_source_messages SET state=$2,original_text=NULL,reason=$3,scoring_token=NULL,lease_until=NULL,classified_at=now(),monitor_revision=$4 WHERE id=$1`,[id,candidate?'classified':'ignored',result.intent,policy.revision]);

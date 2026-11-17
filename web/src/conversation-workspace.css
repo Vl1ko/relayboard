@@ -358,3 +358,10 @@
  .conversation-workspace .conversation-back{display:inline-flex;border:0;padding:5px 0;margin:0 0 16px;color:#315be8;background:transparent}
  .conversation-detail{scroll-margin-top:72px}.conversation-primary-actions button{min-height:42px}
 }
+
+.contact-personal-card .workflow-stack > fieldset { display:grid;gap:12px;border:0;padding:0;min-width:0; }
+.contact-personal-card button { justify-self:start;margin-right:8px; }
+.contact-personal-card .workflow-card a { overflow-wrap:anywhere; }
+.qualification-review { display:grid;gap:10px;padding:16px;border:1px solid #e9d3a6;border-radius:14px;background:#fffbf2;margin:14px 0; }
+.qualification-review h3,.qualification-review p { margin:0; }
+.qualification-review button { justify-self:start;max-width:100%;white-space:normal; }

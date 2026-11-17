@@ -1,3 +1,5 @@
+import {readChatCriteria} from './chat-criteria.js';
+import {monitorSettingsSchema,monitorCriteriaFingerprint} from './source-monitor-settings.js';
 import {sourceRuntimeReady} from './source-runtime-health.js';
 import {createHash} from 'node:crypto';
 import type {PoolClient} from 'pg';
@@ -10,11 +12,14 @@ export const firstOutreachSql=`(EXISTS(SELECT 1 FROM ai_outreach_items WHERE act
 ))`;
 /** Called with contact/conversation/action locks already held; never awaits transport. */
 export async function outreachGuard(client:PoolClient,action:{id:string;text:string;kind:string},conversation:{account_id:string;platform:string;contact_id:string},reserve:boolean):Promise<'ready'|'wait'|'cancel'> {
+ // A manager-confirmed rejection is an explicit client completion, independent of source monitoring.
+ if(action.kind==='qualification_notice'&&(await client.query("SELECT 1 FROM ai_qualification_reviews r JOIN ai_outbox a ON a.logical_key='qualification-notice:'||r.decision_id::text WHERE a.id=$1 AND r.state='rejected' AND a.request_phase_id=r.request_phase_id",[action.id])).rowCount)return 'ready';
  const item=(await client.query(`SELECT r.id,r.state FROM ai_outreach_items i JOIN ai_outreach_runs r ON r.id=i.run_id WHERE i.action_id=$1 ORDER BY r.id LIMIT 1 FOR SHARE OF r`,[action.id])).rows[0];
  if(!item){
   if(action.kind==='manual_reply'||!(await client.query(`SELECT 1 FROM ai_outbox a WHERE a.id=$1 AND ${firstOutreachSql}`,[action.id])).rowCount)return 'ready';
-  const source=(await client.query(`SELECT s.*,l.status,m.mode,m.epoch AS current_epoch,r.monitor_epoch FROM ai_outbox a JOIN ai_request_phases p ON p.id=a.request_phase_id JOIN ai_request_sources s ON s.request_id=p.request_id AND s.conversation_id=a.conversation_id JOIN ai_leads l ON l.id=s.lead_id JOIN ai_source_messages r ON r.id=l.source_message_id CROSS JOIN ai_monitor_settings m WHERE a.id=$1 AND s.initial_contact AND m.id=1 ORDER BY s.created_at LIMIT 1 FOR SHARE OF l,m`,[action.id])).rows[0];
+  const source=(await client.query(`SELECT s.*,l.status,l.review_reason,l.classification,l.confidence,m.settings,m.mode,m.epoch AS current_epoch,r.monitor_epoch FROM ai_outbox a JOIN ai_request_phases p ON p.id=a.request_phase_id JOIN ai_request_sources s ON s.request_id=p.request_id AND s.conversation_id=a.conversation_id JOIN ai_leads l ON l.id=s.lead_id JOIN ai_source_messages r ON r.id=l.source_message_id CROSS JOIN ai_monitor_settings m WHERE a.id=$1 AND s.initial_contact AND m.id=1 ORDER BY s.created_at LIMIT 1 FOR SHARE OF l,m`,[action.id])).rows[0];
   if(!source||source.status!=='approved'||source.mode==='stopped'||source.current_epoch!==source.monitor_epoch)return 'cancel';
+  if(source.review_reason==='automatic_threshold'){const {settings,fingerprint}=await readChatCriteria(client,source.platform,source.external_chat_id,monitorSettingsSchema.parse(source.settings));if(!settings.autoContact||source.confidence<settings.confidenceThreshold||source.classification?.criteriaFingerprint!==fingerprint)return 'cancel';}
   if(source.mode!=='active'||!await sourceRuntimeReady(client,[source.platform]))return 'wait';
   if(!(await client.query('SELECT 1 FROM ai_search_sources WHERE account_id=$1 AND platform=$2 AND chat_id=$3 FOR SHARE',[source.reader_account_id,source.platform,source.external_chat_id])).rowCount)return 'cancel';
  }else{

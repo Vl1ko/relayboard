@@ -1,3 +1,4 @@
+import ChatCriteria from './ChatCriteria';
 import MonitorControls from './MonitorControls';
 import { useEffect, useState } from "react";
 type Source = { accountId: string; chatId: string; platform: string };
@@ -34,6 +35,7 @@ export default function SearchSourcesPanel() {
   useEffect(() => {
     void load();
   }, []);
+  const [criteria,setCriteria]=useState<Source|null>(null),[criteriaRevision,setCriteriaRevision]=useState(0);
   return (
     <><details className="workflow-disclosure workflow-card"><summary>Чаты для поиска{state?' · '+state.sources.length:''}</summary><section className="card contact-import-card">
       <h2>Чаты для поиска заявок</h2>
@@ -89,6 +91,8 @@ export default function SearchSourcesPanel() {
               </label>
             );
           })}</div>
+          <p>Сначала сохраните выбранные чаты. Затем настройте критерии каждого источника:</p>
+          {state.sources.map(s=><button key={s.platform+':'+s.chatId} type="button" onClick={()=>setCriteria(s)}>{state.choices.find(c=>c.accountId===s.accountId&&c.chatId===s.chatId)?.title||s.platform+' · чат'} · критерии</button>)}
           <button
             onClick={() =>
               void (async () => {
@@ -117,6 +121,7 @@ export default function SearchSourcesPanel() {
           </button>
         </fieldset>
       )}
-    </section></details><MonitorControls/></>
+      {criteria&&<ChatCriteria onSaved={()=>setCriteriaRevision(v=>v+1)} key={criteria.platform+':'+criteria.chatId} platform={criteria.platform} chatId={criteria.chatId} title={state?.choices.find(c=>c.platform===criteria.platform&&c.chatId===criteria.chatId)?.title||'Выбранный чат'}/>}
+    </section></details><MonitorControls refreshToken={criteriaRevision}/></>
   );
 }

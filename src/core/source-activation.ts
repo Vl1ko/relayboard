@@ -1,3 +1,4 @@
+import {readChatCriteria} from './chat-criteria.js';
 import type {Pool} from 'pg';
 import {z} from 'zod';
 import {bindSourceRequestInTransaction} from './request-lifecycle.js';
@@ -23,11 +24,11 @@ export async function activateSource(pool:Pool,scope:RuntimeScope,input:Verified
   if(lead.status!=='pending'||lead.revision!==route.revision)throw Error('source_lead_changed');
   if(lead.platform!==route.sourcePlatform||lead.account_id!==route.sourceAccountId||lead.chat_id!==route.sourceChatId||lead.message_id!==route.messageId||lead.author_id!==route.authorId||lead.original_text!==route.text)throw Error('source_route_changed');
   if(!runtimeAllows(scope,route.sourceAccountId,route.authorId)||!runtimeAllows(scope,route.accountId,route.recipientId))throw Error('outside_runtime_scope');
-  const policy=(await c.query('SELECT * FROM ai_monitor_settings WHERE id=1 FOR SHARE')).rows[0],settings=monitorSettingsSchema.parse(policy.settings);
+  const policy=(await c.query('SELECT * FROM ai_monitor_settings WHERE id=1 FOR SHARE')).rows[0],{settings,fingerprint}=await readChatCriteria(c,lead.platform,lead.chat_id,monitorSettingsSchema.parse(policy.settings));
   if(policy.mode==='stopped'||mode==='automatic'&&policy.mode!=='active')throw Error('source_monitor_inactive');
   const source=(await c.query('SELECT * FROM ai_source_messages WHERE id=$1',[lead.source_message_id])).rows[0];
   if(!source||source.state!=='classified'||source.monitor_epoch!==policy.epoch||source.platform!==lead.platform||source.account_id!==lead.account_id||source.chat_id!==lead.chat_id||source.message_id!==lead.message_id||source.author_id!==lead.author_id)throw Error('source_monitor_generation_changed');
-  if(mode==='automatic'&&(lead.revision!==0||!settings.autoContact||lead.classification?.intent!=='demand'||lead.classification?.criteriaFingerprint!==monitorCriteriaFingerprint(settings)||lead.confidence<settings.confidenceThreshold))throw Error('source_requires_review');
+  if(mode==='automatic'&&(lead.revision!==0||!settings.autoContact||lead.classification?.intent!=='demand'||lead.classification?.criteriaFingerprint!==fingerprint||lead.confidence<settings.confidenceThreshold))throw Error('source_requires_review');
   if(!(await c.query('SELECT 1 FROM ai_search_sources WHERE account_id=$1 AND platform=$2 AND chat_id=$3 FOR SHARE',[lead.account_id,lead.platform,lead.chat_id])).rowCount)throw Error('source_not_selected');
   const outreach=(await c.query('SELECT * FROM ai_outreach_settings WHERE id=1 FOR SHARE')).rows[0];
   if(!outreach.platforms.includes(route.platform)||!outreach.account_ids.includes(route.accountId))throw Error('source_sender_not_allowed');

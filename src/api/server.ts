@@ -1,3 +1,4 @@
+import {createContactCardRouter} from './contact-card-router.js';
 import {persistUploadedAttachments} from '../core/uploaded-attachments.js';
 import {startDialogueMaintenance} from '../core/dialogue-retention.js';
 import {maxWorkerRequest} from '../core/max-worker-client.js';
@@ -135,6 +136,8 @@ app.use("/api/ai/workspace", createConversationRouter({pool,authorize:requireAdm
 app.use("/api/ai/leads", createLeadRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,runtimeEnabled:config.SOURCE_MONITOR_ENABLED&&config.AI_SEND_MODE==='live'&&!!config.MAX_WORKER_URL,scope:{testOnly:config.AI_TEST_ONLY,accountIds:config.AI_TEST_ACCOUNT_IDS,authorIds:config.AI_TEST_AUTHOR_IDS}}));
 app.use("/api/ai/engine", createAiEngineRouter({pool, authorize:requireAdmin, enabled:config.CONTACT_IMPORT_ENABLED}));
 app.use("/api/ai/outreach", createOutreachRouter({pool, authorize:requireAdmin, enabled:config.CONTACT_IMPORT_ENABLED, syntheticEnabled:config.AI_SEND_MODE === "synthetic",liveEnabled:config.AI_SEND_MODE==='live'&&!!config.MAX_WORKER_URL}));
+const contactCards=createContactCardRouter({pool,authorize:requireAdmin,uploadRoot,enabled:config.CONTACT_IMPORT_ENABLED});
+app.use('/api/ai',contactCards.router);
 app.use("/api/ai", createContactImportRouter({ pool, authorize: requireAdmin, enabled: config.CONTACT_IMPORT_ENABLED, ownerScope: "workspace-admin", outreachEnabled: config.AI_SEND_MODE === "live", testOnly: config.AI_TEST_ONLY }));
 app.use("/api", requireAdmin);
 
@@ -518,6 +521,7 @@ const stopAttachmentMaintenance = startAttachmentMaintenance(
 const server = app.listen(config.PORT, config.HOST, () => console.log(`Relayboard API listening on http://localhost:${config.PORT}`));
 const stopDialogueMaintenance=startDialogueMaintenance(pool,config.CONTACT_IMPORT_ENABLED,config.STORAGE_MAINTENANCE_INTERVAL_MS);
 const stopContactImportCleanup = startContactImportCleanup(pool, config.CONTACT_IMPORT_ENABLED);
-async function shutdown() { server.close(); await localMaxTestRouter.stopQualification(); await stopAttachmentMaintenance(); await stopDialogueMaintenance(); await stopContactImportCleanup(); await publishingQueue.close(); await pool.end(); process.exit(0); }
+async function shutdown() { server.close(); await localMaxTestRouter.stopQualification(); await stopAttachmentMaintenance(); await stopDialogueMaintenance(); await stopContactImportCleanup(); await publishingQueue.close(); await contactCards.close();
+  await pool.end(); process.exit(0); }
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);

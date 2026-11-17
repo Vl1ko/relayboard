@@ -40,6 +40,7 @@ export class DialogueRetention{
    await c.query('SELECT id FROM ai_conversations WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE',[phases.map(p=>p.conversation_id)]);
    for(const table of ['ai_inbox','ai_outbox','ai_followup_jobs'])await c.query(`UPDATE ${table} SET text=$2 WHERE request_phase_id=ANY($1::uuid[])`,[ids,EXPIRED_TEXT]);
    await c.query("UPDATE ai_engine_decisions SET reply=CASE WHEN reply IS NULL THEN NULL ELSE $2 END,fields='{}' WHERE request_phase_id=ANY($1::uuid[])",[ids,EXPIRED_TEXT]);
+   await c.query('UPDATE ai_qualification_reviews SET manager_reason=$2 WHERE request_phase_id=ANY($1::uuid[])',[ids,EXPIRED_TEXT]);
    await c.query("UPDATE ai_request_phases SET fields_snapshot='{}' WHERE id=ANY($1::uuid[])",[ids]);
    await c.query("UPDATE ai_engine_state s SET fields='{}' FROM ai_conversations v WHERE s.conversation_id=v.id AND v.active_phase_id=ANY($1::uuid[])",[ids]);
    await c.query("UPDATE ai_handoff_notifications SET summary=$2,parameters='{}',source='{}',contact_snapshot='{}',channel_snapshot='{}' WHERE request_phase_id=ANY($1::uuid[])",[ids,EXPIRED_TEXT]);

@@ -11,7 +11,7 @@ export class SourceMonitorSettings{
  async get(){return(await this.pool.query('SELECT * FROM ai_monitor_settings WHERE id=1')).rows[0];}
  async save(input:{expectedRevision:number;settings:MonitorSettings}){
   const d=z.object({expectedRevision:z.number().int().nonnegative(),settings:monitorSettingsSchema}).strict().parse(input);
-  const result=await this.pool.query(`UPDATE ai_monitor_settings SET settings=$2::jsonb,mode=CASE WHEN mode='active' AND coalesce($2::jsonb->>'instructions','')='' THEN 'paused' ELSE mode END,revision=revision+1,updated_at=now() WHERE id=1 AND revision=$1 RETURNING *`,[d.expectedRevision,JSON.stringify(d.settings)]);
+  const result=await this.pool.query(`UPDATE ai_monitor_settings SET settings=$2::jsonb,mode=CASE WHEN mode='active' AND coalesce($2::jsonb->>'instructions','')='' AND EXISTS(SELECT 1 FROM ai_search_sources s LEFT JOIN ai_chat_criteria p ON p.platform=s.platform AND p.chat_id=s.chat_id WHERE p.mode IS NULL OR p.mode='inherit' OR coalesce(p.settings->>'instructions','')='') THEN 'paused' ELSE mode END,revision=revision+1,updated_at=now() WHERE id=1 AND revision=$1 RETURNING *`,[d.expectedRevision,JSON.stringify(d.settings)]);
   if(!result.rowCount)throw Error('monitor_settings_changed');return result.rows[0];
  }
  async control(input:{expectedRevision:number;action:'start'|'pause'|'stop'}){
@@ -20,10 +20,10 @@ export class SourceMonitorSettings{
    await c.query('BEGIN');await c.query("SET LOCAL lock_timeout='5s'");
    const current=(await c.query('SELECT * FROM ai_monitor_settings WHERE id=1 FOR UPDATE')).rows[0];if(current.revision!==d.expectedRevision)throw Error('monitor_settings_changed');
    if(d.action==='start'){
-    if(!monitorSettingsSchema.parse(current.settings).instructions)throw Error('monitor_instructions_required');
+    if(!monitorSettingsSchema.parse(current.settings).instructions&&(await c.query("SELECT 1 FROM ai_search_sources s LEFT JOIN ai_chat_criteria p ON p.platform=s.platform AND p.chat_id=s.chat_id WHERE p.mode IS NULL OR p.mode='inherit' OR coalesce(p.settings->>'instructions','')='' LIMIT 1")).rowCount)throw Error('monitor_instructions_required');
     const engine=(await c.query('SELECT settings FROM ai_engine_settings ORDER BY version DESC LIMIT 1')).rows[0]?.settings;
     if(engine?.provider!=='gigachat'||!/^GigaChat(?:-[A-Za-z0-9]+)*$/.test(engine?.model??''))throw Error('monitor_ai_required');
-    if(current.settings.autoContact){
+    if((await c.query("SELECT 1 FROM ai_search_sources s LEFT JOIN ai_chat_criteria p ON p.platform=s.platform AND p.chat_id=s.chat_id WHERE CASE WHEN p.mode='replace' THEN (p.settings->>'autoContact')::boolean WHEN p.mode='extend' THEN $1::boolean AND (p.settings->>'autoContact')::boolean ELSE $1::boolean END LIMIT 1",[current.settings.autoContact])).rowCount){
      if(!engine?.qualificationEnabled)throw Error('monitor_qualification_required');
      const outreach=(await c.query('SELECT account_ids FROM ai_outreach_settings WHERE id=1')).rows[0];
      if(!outreach?.account_ids?.length)throw Error('monitor_sender_required');

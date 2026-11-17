@@ -36,7 +36,7 @@ export class AiExecutionRuntime{
     const result=await this.orchestrator.process(event.conversation_id,event.event_key,provider);
     if('action'in result&&result.action)await this.deliver(result.action.id);
     if('notification'in result&&result.notification){
-     if(['qualified','unqualified'].includes(result.decision.business_status)){
+     if(result.decision.business_status==='qualified'){
       const notice=await this.messages.enqueueQualificationNotice(result.decision.id);await this.deliver(notice.id);
      }
      this.signal.throwIfAborted();if(result.notification.state==='pending')await this.transport.dispatchNotification(result.notification.id);
