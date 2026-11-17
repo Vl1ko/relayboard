@@ -1,5 +1,6 @@
 // Run inside the disposable RC container only. No real model or messenger calls.
 import assert from 'node:assert/strict';
+import {loadAiManagerMigrations} from '../dist-node/core/ai-manager-migration.js';
 import pg from 'pg';import {setTimeout as delay} from 'node:timers/promises';
 import {AiManagerStore} from '../dist-node/core/ai-manager.js';
 import {bindSourceRequest} from '../dist-node/core/request-lifecycle.js';
@@ -33,6 +34,6 @@ try{
  const internal=await call('/api/attachments/not-a-uuid');assert.equal(internal.status,500);const error=await internal.json();assert.ok(error.incidentId);assert.equal(JSON.stringify(error).includes('invalid input syntax'),false);
  assert.equal((await fetch(base+'/api/auth/logout',{method:'POST',headers:{cookie}})).status,200);assert.equal((await fetch(base+'/api/auth/session',{headers:{cookie}})).status,401);
  for(let i=0;i<5;i++)assert.equal((await fetch(base+'/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:'{"username":"admin","password":"wrong-synthetic-password"}'})).status,401);assert.equal((await fetch(base+'/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:'{"username":"admin","password":"wrong-synthetic-password"}'})).status,429);
- assert.equal((await db.query('SELECT max(version)::int n FROM ai_schema_migrations')).rows[0].n,23);
- console.log(JSON.stringify({result:'PASS',platform:process.platform,node:process.version,migrations:23,authAndCookie:true,foreignOriginRejected:true,malformedCookieRejected:true,rateLimit:true,redactedErrors:true,sourceRequestHistory:true,staleManagerRejected:true,syntheticManagerNotice:true,syntheticManualReceipt:true,uploadDownloadAuth:true,legacyPublication:true,scheduledPauseResumeStop:true,externalRequests:false}));
+ assert.equal((await db.query('SELECT max(version)::int n FROM ai_schema_migrations')).rows[0].n,(await loadAiManagerMigrations()).length);
+ console.log(JSON.stringify({result:'PASS',platform:process.platform,node:process.version,migrations:(await loadAiManagerMigrations()).length,authAndCookie:true,foreignOriginRejected:true,malformedCookieRejected:true,rateLimit:true,redactedErrors:true,sourceRequestHistory:true,staleManagerRejected:true,syntheticManagerNotice:true,syntheticManualReceipt:true,uploadDownloadAuth:true,legacyPublication:true,scheduledPauseResumeStop:true,externalRequests:false}));
 }finally{await db.end();}
