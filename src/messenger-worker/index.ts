@@ -1,3 +1,4 @@
+import {dispatchSourceNotification} from '../core/source-notification.js';
 import {SourceReadBatch} from '../core/source-read-batch.js';
 import {startSourceHeartbeat} from '../core/source-runtime-health.js';
 import {MaxSourcePoller} from '../core/max-source-poller.js';
@@ -21,6 +22,7 @@ const stop=new AbortController();process.once('SIGTERM',()=>stop.abort());proces
 async function owned(signal:AbortSignal){
  signal.throwIfAborted();
  await recoverOwnedMax(pool);signal.throwIfAborted();
+ await pool.query("UPDATE ai_source_notifications SET state='unknown',outcome_code='owner_restarted',updated_at=now() WHERE state='dispatching'");
  const heartbeat=await startSourceHeartbeat(pool,'max-reader',config.SOURCE_MONITOR_ENABLED&&config.AI_SEND_MODE==='live',signal);
  const connections=new MaxConnections(pool,signal),app=express();
  const scope={testOnly:config.AI_TEST_ONLY,accountIds:config.AI_TEST_ACCOUNT_IDS,authorIds:config.AI_TEST_AUTHOR_IDS};
@@ -58,6 +60,7 @@ async function owned(signal:AbortSignal){
   if(!(await poller.poll(action.conversation_id)).complete)throw new DeliveryError('Личка ожидает синхронизации или разрешения тестового адресата','waiting');
   res.json(await dispatchOwnedMax(pool,connections,id,signal));
  });
+ app.post('/source-notifications/:id/dispatch',async(req,res)=>res.json(await dispatchSourceNotification(pool,z.string().uuid().parse(req.params.id),scope,async account=>(await connections.get(account)).socket)));
  app.post('/notifications/:id/dispatch',async(req,res)=>{
   const id=z.string().uuid().parse(req.params.id);
   const source=(await pool.query(`SELECT v.account_id,s.recipient_id,s.reader_account_id,s.author_id FROM ai_handoff_notifications n JOIN ai_conversations v ON v.id=n.conversation_id JOIN ai_request_phases p ON p.id=n.request_phase_id JOIN ai_request_sources s ON s.request_id=p.request_id AND s.conversation_id=v.id WHERE n.id=$1 ORDER BY s.created_at DESC LIMIT 1`,[id])).rows[0];

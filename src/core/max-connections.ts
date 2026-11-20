@@ -7,12 +7,19 @@ import type {ConnectedMaxTextSocket} from './adapters/max-ai-text.js';
 
 export type MaxConnection={socket:ConnectedMaxTextSocket;selfId:number;groups:Array<{id:string;title:string;participantsCount:number}>;openDialog?:(authorId:number)=>Promise<string>;close:()=>void};
 export type MaxConnectionFactory=(token:string,signal:AbortSignal)=>Promise<MaxConnection>;
+export async function awaitMaxConnect(connect:Promise<void>,signal:AbortSignal,timeoutMs=12000){
+ const deadline=AbortSignal.any([signal,AbortSignal.timeout(timeoutMs)]);
+ deadline.throwIfAborted();
+ let onAbort:()=>void=()=>{};
+ try{await Promise.race([connect,new Promise<never>((_,reject)=>{onAbort=()=>reject(Error('max_connection_timeout_or_cancelled'));deadline.addEventListener('abort',onAbort,{once:true});if(deadline.aborted)onAbort();})]);}
+ finally{deadline.removeEventListener('abort',onAbort);}
+}
 export const connectMax:MaxConnectionFactory=async(token,signal)=>{
  const client=new UMax(token);
  (client.chats as unknown as {subscribe_all:()=>void}).subscribe_all=()=>{};
  const close=()=>closeMaxClient(client as unknown as Parameters<typeof closeMaxClient>[0]);signal.addEventListener('abort',close,{once:true});
  try{
-  signal.throwIfAborted();await client.connect();signal.throwIfAborted();
+  signal.throwIfAborted();await awaitMaxConnect(client.connect(),signal);signal.throwIfAborted();
   const socket=(client as unknown as{ws:ConnectedMaxTextSocket}).ws;
   if(!client.account?.id||!socket.connected)throw Error('max_connection_unverified');
   return {socket,selfId:client.account.id,async openDialog(authorId){signal.throwIfAborted();const chat=await client.chats.new(authorId);signal.throwIfAborted();return String(chat.id);},groups:client.chats.list.filter(c=>c.type==='CHAT').map(c=>({id:String(c.id),title:c.title,participantsCount:c.participants_count})),close(){signal.removeEventListener('abort',close);close();}};

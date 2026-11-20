@@ -24,9 +24,10 @@ export class SourceMonitorSettings{
     const engine=(await c.query('SELECT settings FROM ai_engine_settings ORDER BY version DESC LIMIT 1')).rows[0]?.settings;
     if(engine?.provider!=='gigachat'||!/^GigaChat(?:-[A-Za-z0-9]+)*$/.test(engine?.model??''))throw Error('monitor_ai_required');
     if((await c.query("SELECT 1 FROM ai_search_sources s LEFT JOIN ai_chat_criteria p ON p.platform=s.platform AND p.chat_id=s.chat_id WHERE CASE WHEN p.mode='replace' THEN (p.settings->>'autoContact')::boolean WHEN p.mode='extend' THEN $1::boolean AND (p.settings->>'autoContact')::boolean ELSE $1::boolean END LIMIT 1",[current.settings.autoContact])).rowCount){
-     if(!engine?.qualificationEnabled)throw Error('monitor_qualification_required');
+     if(engine?.qualificationEnabled){
      const outreach=(await c.query('SELECT account_ids FROM ai_outreach_settings WHERE id=1')).rows[0];
      if(!outreach?.account_ids?.length)throw Error('monitor_sender_required');
+     }
     }
     const sources=(await c.query('SELECT platform,chat_id FROM ai_search_sources')).rows;
     if((await c.query("SELECT 1 FROM ai_search_sources s LEFT JOIN integrations i ON i.id=s.account_id WHERE i.id IS NULL OR NOT i.enabled OR i.auth_error IS NOT NULL LIMIT 1")).rowCount)throw Error('monitor_sources_unavailable');

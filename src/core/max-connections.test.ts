@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {Pool} from 'pg';
-import {MaxConnections,type MaxConnection,type MaxConnectionFactory} from './max-connections.js';
+import {MaxConnections,awaitMaxConnect,type MaxConnection,type MaxConnectionFactory} from './max-connections.js';
 import {encryptCredentials} from './crypto.js';
 function fixture(){
  const rows=new Map<string,{credential_ciphertext:string;max_self_id?:number}>(Array.from({length:6},(_,i)=>['account-'+i,{credential_ciphertext:encryptCredentials({token:'synthetic-'+i})}]));
@@ -55,4 +55,10 @@ test('a rotated token cannot silently substitute a different MAX account identit
   await assert.rejects(f.manager.get('account-0'),/identity_changed/);
   assert.equal(f.made.at(-1)?.socket.connected,false);
  }finally{f.stop.abort();}
+});
+
+test('unresponsive MAX login has a bounded wait and responds to shutdown',async()=>{
+ const held=new Promise<void>(()=>{});
+ await assert.rejects(awaitMaxConnect(held,new AbortController().signal,20),/timeout_or_cancelled/);
+ const stop=new AbortController();const pending=awaitMaxConnect(held,stop.signal,10000);stop.abort();await assert.rejects(pending,/timeout_or_cancelled/);
 });

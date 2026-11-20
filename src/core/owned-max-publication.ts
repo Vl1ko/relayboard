@@ -1,7 +1,7 @@
 import type {Pool} from 'pg';
 import type {MaxConnections} from './max-connections.js';
 import {prepareMaxMediaMessage} from './adapters/max-photo.js';
-import {DeliveryError} from './delivery-policy.js';
+import {DeliveryError,isAuthorizationError} from './delivery-policy.js';
 
 /** Publication content and destination come from the database, never the RPC body. */
 export async function dispatchOwnedMaxPublication(pool:Pool,connections:MaxConnections,deliveryId:string,signal:AbortSignal,timeoutMs:number){
@@ -16,7 +16,8 @@ export async function dispatchOwnedMaxPublication(pool:Pool,connections:MaxConne
   throw new DeliveryError('Результат предыдущей отправки MAX требует проверки','ambiguous');
  }
  if(row.status!=='sending')throw new DeliveryError('Публикация не захвачена worker','waiting');
- const connection=await connections.get(row.account_id);
+ let connection:Awaited<ReturnType<MaxConnections['get']>>;
+ try{connection=await connections.get(row.account_id);}catch(error){throw new DeliveryError(isAuthorizationError(error)?'MAX: требуется повторный вход':'MAX временно недоступен; отправка ожидает подключения',isAuthorizationError(error)?'auth_required':'waiting');}
  const claimed=await pool.query("INSERT INTO max_send_receipts(delivery_id,account_id,destination_id,status) VALUES($1,$2,$3,'sending') ON CONFLICT DO NOTHING RETURNING delivery_id",[deliveryId,row.account_id,row.external_id]);
  if(!claimed.rowCount)throw new DeliveryError('Отправка MAX уже началась','ambiguous');
  let started=false;

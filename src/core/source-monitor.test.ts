@@ -168,3 +168,27 @@ test('manager-confirmed rejection sends its farewell even when source monitoring
  await settings.control({expectedRevision:(await settings.get()).revision,action:'pause'});const {ConversationWorkflow}=await import('./conversation-workflow.js');await new ConversationWorkflow(pool).decideQualification({conversationId:route.conversationId,decisionId:result.decision.id,action:'reject',reason:'Проверил менеджер'});const store=new AiManagerStore(pool),notice=await store.enqueueQualificationNotice(result.decision.id);let starts=0;
  await store.dispatch(notice.id,{target:{accountId:f.accountId,platform:'max',externalConversationId:route.dialogId},start:a=>{starts++;return{acknowledgement:Promise.resolve({operationId:a.operationId,outcome:'confirmed',externalMessageId:'human-approved-farewell',code:'synthetic',retryCondition:'never'})};}});assert.equal(starts,1);assert.equal((await pool.query('SELECT business_status FROM ai_conversations WHERE id=$1',[route.conversationId])).rows[0].business_status,'closed');
 });
+
+test('notification-only mode queues matching demand once without contacting the author',{skip},async()=>{
+ const {SourceRuntime}=await import('./source-runtime.js');
+ const {dispatchSourceNotification}=await import('./source-notification.js');
+ const f=await fixture();
+ await pool.query("UPDATE ai_engine_settings SET settings=settings||'{\"qualificationEnabled\":false}'::jsonb");
+ await pool.query('INSERT INTO ai_manager_target(id,account_id,external_id) VALUES(1,$1,$2) ON CONFLICT(id) DO UPDATE SET account_id=excluded.account_id,external_id=excluded.external_id',[f.accountId,'-99']);
+ const captured=await f.monitor.capture(f.event);await f.monitor.classify(captured.id!,scorer,new AbortController().signal);
+ const n=(await pool.query('SELECT * FROM ai_source_notifications')).rows[0];assert.ok(n);
+ let routes=0;await new SourceRuntime(pool,f.scope,scorer,async()=>{routes++;throw Error('must not contact author');},new AbortController().signal).tick();assert.equal(routes,0);
+ let sends=0;const socket={connected:true,async send(op:number,body:Record<string,unknown>){if(op===48)return{chats:[{id:-99,type:'CHAT'}]};assert.equal(op,64);assert.equal(body.chatId,-99);assert.match((body.message as {text:string}).text,/Нужно 12 тонн щебня/);sends++;return{message:{id:'receipt'}};}};
+ await Promise.all([dispatchSourceNotification(pool,n.id,f.scope,async()=>socket),dispatchSourceNotification(pool,n.id,f.scope,async()=>socket)]);
+ assert.equal(sends,1);assert.equal((await pool.query('SELECT state FROM ai_source_notifications WHERE id=$1',[n.id])).rows[0].state,'confirmed');assert.equal((await pool.query('SELECT count(*)::int n FROM ai_outbox')).rows[0].n,0);
+});
+test('notification-only mode ignores low confidence and retains uncertain delivery without retry',{skip},async()=>{
+ const {dispatchSourceNotification}=await import('./source-notification.js');const f=await fixture();
+ await pool.query("UPDATE ai_engine_settings SET settings=settings||'{\"qualificationEnabled\":false}'::jsonb");
+ await pool.query('INSERT INTO ai_manager_target(id,account_id,external_id) VALUES(1,$1,$2) ON CONFLICT(id) DO UPDATE SET account_id=excluded.account_id,external_id=excluded.external_id',[f.accountId,'-99']);
+ for(const [i,confidence] of [0.7,0.95].entries()){const c=await f.monitor.capture({...f.event,messageId:String(i)});await f.monitor.classify(c.id!,{async complete(){return {...demand,confidence};}},new AbortController().signal);}
+ const rows=(await pool.query('SELECT * FROM ai_source_notifications')).rows;assert.equal(rows.length,1);let sends=0;
+ const socket={connected:true,async send(op:number){if(op===48)return{chats:[{id:-99,type:'CHAT'}]};sends++;throw Error('connection lost');}};
+ await dispatchSourceNotification(pool,rows[0].id,f.scope,async()=>socket);await dispatchSourceNotification(pool,rows[0].id,f.scope,async()=>socket);
+ assert.equal(sends,1);assert.equal((await pool.query('SELECT state FROM ai_source_notifications WHERE id=$1',[rows[0].id])).rows[0].state,'unknown');
+});

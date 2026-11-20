@@ -74,8 +74,9 @@ export class SourceMonitor{
      await c.query('BEGIN');await c.query("SET LOCAL lock_timeout='5s'");
      const policy=(await c.query('SELECT * FROM ai_monitor_settings WHERE id=1 FOR SHARE')).rows[0];
      const current=(await c.query('SELECT * FROM ai_source_messages WHERE id=$1 FOR UPDATE',[id])).rows[0];
+     const latestEngine=(await c.query('SELECT version FROM ai_engine_settings ORDER BY version DESC LIMIT 1')).rows[0];
      const selected=(await c.query('SELECT 1 FROM ai_search_sources s JOIN integrations i ON i.id=s.account_id WHERE s.account_id=$1 AND s.chat_id=$2 AND s.platform=$3 AND i.enabled AND i.auth_error IS NULL FOR SHARE OF s,i',[source.account_id,source.chat_id,source.platform])).rowCount;
-     if(current.state!=='pending'||current.scoring_token!==token||policy.mode!=='active'||policy.epoch!==source.monitor_epoch||policy.revision!==source.revision||!selected){
+     if(current.state!=='pending'||current.scoring_token!==token||policy.mode!=='active'||policy.epoch!==source.monitor_epoch||policy.revision!==source.revision||latestEngine?.version!==engine.version||!selected){
       await c.query('UPDATE ai_source_messages SET scoring_token=NULL,lease_until=NULL WHERE id=$1 AND scoring_token=$2',[id,token]);await c.query('COMMIT');return{classified:false,reason:'source_policy_changed'};
      }
      const candidate=['demand','ambiguous'].includes(result.intent);
@@ -86,6 +87,12 @@ export class SourceMonitor{
       const created=await c.query(`INSERT INTO ai_leads(source_key,source_fingerprint,platform,account_id,chat_id,author_id,message_id,occurred_at,original_text,source_kind,params,confidence,source_message_id,classification)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'monitor',$10,$11,$12,$13) ON CONFLICT(source_key) DO UPDATE SET source_key=ai_leads.source_key WHERE ai_leads.source_fingerprint=excluded.source_fingerprint AND (ai_leads.source_message_id IS NULL OR ai_leads.source_message_id=excluded.source_message_id) RETURNING id`,[key,fingerprint,source.platform,source.account_id,source.chat_id,source.author_id,source.message_id,source.occurred_at,source.original_text,JSON.stringify(result.params),result.confidence,id,JSON.stringify({...result,params:undefined,monitorRevision:policy.revision,criteriaFingerprint:effective.fingerprint,engineSettingsVersion:engine.version})]);
       if(!created.rowCount)throw Error('source_lead_conflict');leadId=created.rows[0].id;
+      // Only newly classified, sufficiently certain demand is forwarded in notification-only mode.
+      // Snapshot the explicitly configured manager group; never choose a destination from model output.
+      if(!engine.settings.qualificationEnabled && result.intent==='demand' && result.confidence>=settings.confidenceThreshold){
+       await c.query(`INSERT INTO ai_source_notifications(lead_id,target_account_id,target_external_id)
+        SELECT $1,t.account_id,t.external_id FROM (SELECT 1) x LEFT JOIN ai_manager_target t ON t.id=1 ON CONFLICT(lead_id) DO NOTHING`,[leadId]);
+      }
      }
      await c.query(`UPDATE ai_source_messages SET state=$2,original_text=NULL,reason=$3,scoring_token=NULL,lease_until=NULL,classified_at=now(),monitor_revision=$4 WHERE id=$1`,[id,candidate?'classified':'ignored',result.intent,policy.revision]);
      await c.query('COMMIT');return{classified:true,leadId,autoEligible:result.intent==='demand'&&result.confidence>=settings.confidenceThreshold&&settings.autoContact};

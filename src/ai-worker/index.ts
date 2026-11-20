@@ -50,7 +50,7 @@ async function run(signal:AbortSignal){
  console.log(live?'AI worker: owned live MAX/WhatsApp transport':'AI worker: synthetic transport');
  while(!signal.aborted){
   if(imports&&!importTick)importTick=imports.tick().catch(()=>console.error('Import outreach deferred')).finally(()=>{importTick=undefined;});
-  try{await runtime.tick();if(sources)await sources.tick();}catch{if(!signal.aborted)console.error('AI iteration deferred; durable state retained');}
+  try{await runtime.tick();if(sources){await sources.tick();for(const n of (await pool.query("SELECT id FROM ai_source_notifications WHERE state='pending' ORDER BY created_at,id LIMIT 10")).rows){try{await maxWorkerRequest(`/source-notifications/${n.id}/dispatch`,'POST');}catch{console.error('Source notification deferred');}}}}catch{if(!signal.aborted)console.error('AI iteration deferred; durable state retained');}
   try{await delay(1000,undefined,{signal});}catch{break;}
  }
  await importTick;
@@ -64,7 +64,6 @@ async function main(){
   if(config.AI_SEND_MODE==='live'){
    if(config.AI_PROVIDER_MODE!=='gigachat'||!config.MAX_WORKER_URL||!config.MAX_WORKER_SECRET)throw Error('Live AI requires GigaChat and owned MAX transport');
    if(config.AI_TEST_ONLY&&(!config.AI_TEST_ACCOUNT_IDS.length||!config.AI_TEST_AUTHOR_IDS.length))throw Error('Test account and author allowlists required');
-   if(config.NODE_ENV==='production'&&!config.AI_TEST_ONLY&&config.GIGACHAT_SCOPE==='GIGACHAT_API_PERS')throw Error('Commercial GigaChat access required');
   }
   await withExecutionSlot(pool,'worker:ai-execution',run,stop.signal);
  }catch(error){if(!stop.signal.aborted){console.error(error instanceof Error&&/required|requires/.test(error.message)?error.message:'AI owner stopped');process.exitCode=1;}}
