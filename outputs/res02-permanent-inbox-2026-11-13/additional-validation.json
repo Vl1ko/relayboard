@@ -1,0 +1,14 @@
+{
+  "fullSuite": {
+    "pass": 247,
+    "fail": 0,
+    "skip": 0
+  },
+  "additionalCidRegression": {
+    "command": "node --import tsx --test src/core/max-ai-text.test.ts",
+    "pass": 3,
+    "fail": 0,
+    "skip": 0
+  },
+  "realMessengerAcceptance": "not performed in this stage"
+}

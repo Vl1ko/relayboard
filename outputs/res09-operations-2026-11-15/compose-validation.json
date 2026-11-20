@@ -1,0 +1,32 @@
+{
+  "result": "PASS",
+  "synthetic": {
+    "services": [
+      "ai-worker",
+      "api",
+      "postgres",
+      "redis",
+      "telegram",
+      "uploads-init",
+      "whatsapp",
+      "worker"
+    ],
+    "logLimit": "3 x 10 MB per service",
+    "containersStarted": 0
+  },
+  "live": {
+    "services": [
+      "ai-worker",
+      "api",
+      "max-worker",
+      "postgres",
+      "redis",
+      "telegram",
+      "uploads-init",
+      "whatsapp",
+      "worker"
+    ],
+    "logLimit": "3 x 10 MB per service",
+    "containersStarted": 0
+  }
+}

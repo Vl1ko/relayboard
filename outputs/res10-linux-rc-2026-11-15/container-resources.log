@@ -1,0 +1,6 @@
+relayboard-rc-test-20261115-api-1 30.70% 227.2MiB / 7.655GiB 23
+relayboard-rc-test-20261115-ai-worker-1 0.72% 26.02MiB / 7.655GiB 11
+relayboard-rc-test-20261115-max-owner-1 0.00% 32.94MiB / 7.655GiB 11
+relayboard-rc-test-20261115-publishing-worker-1 0.00% 32.75MiB / 7.655GiB 11
+relayboard-rc-test-20261115-postgres-1 93.62% 488.1MiB / 7.655GiB 33
+relayboard-rc-test-20261115-redis-1 5.86% 9.414MiB / 7.655GiB 6

@@ -1,21 +1,37 @@
-import cors from "cors";
+import {createContactCardRouter} from './contact-card-router.js';
+import {persistUploadedAttachments} from '../core/uploaded-attachments.js';
+import {startDialogueMaintenance} from '../core/dialogue-retention.js';
+import {maxWorkerRequest} from '../core/max-worker-client.js';
+import { createLocalMaxTestRouter } from './local-max-test-router.js';
+import { createGigaChatProvider } from '../core/gigachat-provider.js';
+import {browserOriginGuard} from "./browser-origin.js";
 import express, { type ErrorRequestHandler, type RequestHandler } from "express";
 import { createHash, randomBytes, timingSafeEqual, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
-import { unlink } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import multer from "multer";
 import { z, ZodError } from "zod";
 import { config } from "../core/config.js";
+import { createProtocolRouter } from "./protocol-router.js";
+import { createConversationRouter } from "./conversation-router.js";
+import { createLeadRouter } from "./lead-router.js";
+import { ConversationWorkflow } from "../core/conversation-workflow.js";
+import { verifyAiQualification } from "../core/ai-engine.js";
+import { createAiEngineRouter } from "./ai-engine-router.js";
+import { createOutreachRouter } from "./outreach-router.js";
+import { createContactImportRouter, startContactImportCleanup } from "./contact-import-router.js";
 import { isMaxTransportError, listMaxGroups } from "../core/adapters/max.js";
 import { decryptCredentials, encryptCredentials } from "../core/crypto.js";
 import { pool } from "../core/db.js";
+import { startAttachmentMaintenance } from "../core/attachment-retention.js";
+import { isAuthorizationError, deliveryErrorMessage } from "../core/delivery-policy.js";
 import { publishingQueue, schedulerKey } from "../core/queue.js";
 import { destinationInput, integrationInput, postDestinationsInput, postInput } from "./schemas.js";
 
 const app = express();
-app.use(cors({ origin: true, credentials: true }));
+app.use('/api',browserOriginGuard({publicAppUrl:config.PUBLIC_APP_URL,development:config.NODE_ENV==='development'}));
+app.disable('x-powered-by');
 app.use(express.json({ limit: "1mb" }));
 
 const uploadRoot = resolve(config.UPLOAD_DIR);
@@ -28,7 +44,7 @@ const upload = multer({
   limits: { files: 10, fileSize: config.MAX_UPLOAD_BYTES },
 });
 
-const SESSION_COOKIE = "relayboard_session";
+const SESSION_COOKIE = config.SESSION_COOKIE_NAME;
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 
@@ -46,7 +62,7 @@ function cookieValue(request: express.Request, name: string) {
   const header = request.header("cookie") || "";
   for (const part of header.split(";")) {
     const [key, ...value] = part.trim().split("=");
-    if (key === name) return decodeURIComponent(value.join("="));
+    if (key === name) {try{return decodeURIComponent(value.join("="));}catch{return "";}}
   }
   return "";
 }
@@ -66,6 +82,8 @@ app.post("/api/auth/login", async (request, response) => {
   if (!parsed.success) return response.status(400).json({ error: "Введите логин и пароль" });
   const key = request.ip || "unknown";
   const now = Date.now();
+  for(const [address,attempt] of loginAttempts)if(attempt.resetAt<=now)loginAttempts.delete(address);
+  if(!loginAttempts.has(key)&&loginAttempts.size>=10000)return response.status(429).json({error:"Слишком много попыток. Повторите позднее"});
   const current = loginAttempts.get(key);
   if (current && current.resetAt > now && current.count >= 5) {
     return response.status(429).json({ error: "Слишком много попыток. Повторите через несколько минут" });
@@ -89,7 +107,7 @@ app.post("/api/auth/login", async (request, response) => {
 
 const requireAdmin: RequestHandler = async (request, response, next) => {
   try {
-    if (request.header("x-admin-key") === config.ADMIN_API_KEY) return next();
+    if (sameSecret(request.header("x-admin-key")??"", config.ADMIN_API_KEY)) return next();
     const token = cookieValue(request, SESSION_COOKIE);
     if (!token) return response.status(401).json({ error: "Требуется вход" });
     const session = await pool.query(
@@ -108,6 +126,19 @@ app.get("/api/health", async (_request, response) => {
   const result = await pool.query("SELECT now() AS database_time");
   response.json({ ok: true, databaseTime: result.rows[0].database_time, version: "1.0.0" });
 });
+const localMaxTestRouter=createLocalMaxTestRouter({pool,authorize:requireAdmin,
+  enabled:!config.MAX_WORKER_URL && config.HOST==='127.0.0.1' && new URL(config.DATABASE_URL).pathname==='/relayboard_local_max' && !!config.LOCAL_MAX_TEST_CHAT_ID,
+  chatId:config.LOCAL_MAX_TEST_CHAT_ID??'',
+  provider:config.AI_ALLOW_EXTERNAL_REQUESTS&&config.GIGACHAT_AUTH_KEY?createGigaChatProvider({pool,authKey:config.GIGACHAT_AUTH_KEY,scope:config.GIGACHAT_SCOPE}):undefined});
+app.use("/api/local-max-test",localMaxTestRouter);
+app.use("/api/ai/protocol", createProtocolRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,syntheticEnabled:config.AI_SEND_MODE === "synthetic",liveManualScope:config.AI_SEND_MODE==='live'?{testOnly:config.AI_TEST_ONLY,accountIds:config.AI_TEST_ACCOUNT_IDS,authorIds:config.AI_TEST_AUTHOR_IDS}:undefined}));
+app.use("/api/ai/workspace", createConversationRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,workflow:new ConversationWorkflow(pool,{verifyQualification:verifyAiQualification,requireRequestContext:true,requireSettingsRevision:true})}));
+app.use("/api/ai/leads", createLeadRouter({pool,authorize:requireAdmin,enabled:config.CONTACT_IMPORT_ENABLED,runtimeEnabled:config.SOURCE_MONITOR_ENABLED&&config.AI_SEND_MODE==='live'&&!!config.MAX_WORKER_URL,scope:{testOnly:config.AI_TEST_ONLY,accountIds:config.AI_TEST_ACCOUNT_IDS,authorIds:config.AI_TEST_AUTHOR_IDS}}));
+app.use("/api/ai/engine", createAiEngineRouter({pool, authorize:requireAdmin, enabled:config.CONTACT_IMPORT_ENABLED}));
+app.use("/api/ai/outreach", createOutreachRouter({pool, authorize:requireAdmin, enabled:config.CONTACT_IMPORT_ENABLED, syntheticEnabled:config.AI_SEND_MODE === "synthetic",liveEnabled:config.AI_SEND_MODE==='live'&&!!config.MAX_WORKER_URL}));
+const contactCards=createContactCardRouter({pool,authorize:requireAdmin,uploadRoot,enabled:config.CONTACT_IMPORT_ENABLED});
+app.use('/api/ai',contactCards.router);
+app.use("/api/ai", createContactImportRouter({ pool, authorize: requireAdmin, enabled: config.CONTACT_IMPORT_ENABLED, ownerScope: "workspace-admin", outreachEnabled: config.AI_SEND_MODE === "live", testOnly: config.AI_TEST_ONLY }));
 app.use("/api", requireAdmin);
 
 app.get("/api/auth/session", (_request, response) => response.json({ authenticated: true, username: config.ADMIN_USERNAME }));
@@ -139,7 +170,7 @@ app.get("/api/dashboard", async (_request, response) => {
       (SELECT count(*)::int FROM deliveries WHERE status = 'sent') AS sent,
       (SELECT count(*)::int FROM deliveries WHERE status IN ('failed','unknown')) AS failed`),
     pool.query(`SELECT d.id, d.post_id, d.status, d.attempt_count, d.last_error, d.last_error_kind, d.sent_at, d.queued_at,
-      p.text, dst.title AS destination_title, i.platform
+      p.text, p.media_expired_at, dst.title AS destination_title, i.platform
       FROM deliveries d JOIN posts p ON p.id=d.post_id JOIN destinations dst ON dst.id=d.destination_id
       JOIN integrations i ON i.id=dst.integration_id ORDER BY d.queued_at DESC LIMIT 100`),
   ]);
@@ -147,7 +178,7 @@ app.get("/api/dashboard", async (_request, response) => {
 });
 
 app.get("/api/integrations", async (_request, response) => {
-  const result = await pool.query(`SELECT i.id, i.platform, i.name, i.enabled, i.created_at, count(d.id)::int AS destination_count
+  const result = await pool.query(`SELECT i.id, i.platform, i.name, i.enabled, i.auth_error, i.created_at, count(d.id)::int AS destination_count
     FROM integrations i LEFT JOIN destinations d ON d.integration_id=i.id
     GROUP BY i.id ORDER BY i.created_at ASC`);
   response.json(result.rows);
@@ -159,7 +190,7 @@ app.post("/api/integrations", async (request, response) => {
     const token = normalizeMaxToken(input.credentials.token);
     if (!token) return response.status(400).json({ error: "Нужен токен личной web-сессии MAX" });
     input.credentials.token = token;
-    try { await listMaxGroups(token); }
+    try { if(!config.MAX_WORKER_URL)await listMaxGroups(token); }
     catch (error) { return response.status(400).json({ error: `MAX не принял токен: ${error instanceof Error ? error.message : "ошибка входа"}` }); }
   }
   const result = await pool.query(
@@ -167,6 +198,10 @@ app.post("/api/integrations", async (request, response) => {
      RETURNING id, platform, name, enabled, created_at`,
     [input.platform, input.name, encryptCredentials(input.credentials)],
   );
+  if(input.platform==='max'&&config.MAX_WORKER_URL){
+    try{await maxWorkerRequest(`/accounts/${result.rows[0].id}/groups`);}
+    catch{await pool.query('DELETE FROM integrations WHERE id=$1',[result.rows[0].id]);return response.status(400).json({error:'MAX не подтвердил новый аккаунт. Проверьте токен и отсутствие дублирующего подключения.'});}
+  }
   response.status(201).json(result.rows[0]);
 });
 
@@ -174,6 +209,25 @@ app.patch("/api/integrations/:id/toggle", async (request, response) => {
   const result = await pool.query("UPDATE integrations SET enabled=NOT enabled, updated_at=now() WHERE id=$1 RETURNING id,platform,name,enabled", [request.params.id]);
   if (!result.rowCount) return response.status(404).json({ error: "Подключение не найдено" });
   response.json(result.rows[0]);
+});
+app.patch("/api/integrations/:id/credentials", async (request, response) => {
+  const id=z.string().uuid().parse(request.params.id);
+  const input=z.object({token:z.string().min(1)}).parse(request.body);
+  const token=normalizeMaxToken(input.token);
+  const account=await pool.query("SELECT id,credential_ciphertext,auth_error FROM integrations WHERE id=$1 AND platform='max'",[id]);
+  if (!account.rowCount) return response.status(404).json({error:"Аккаунт MAX не найден"});
+  const cipher=encryptCredentials({token});
+  if(config.MAX_WORKER_URL){
+    await pool.query("UPDATE integrations SET credential_ciphertext=$2,auth_error=NULL,updated_at=now() WHERE id=$1",[id,cipher]);
+    try{await maxWorkerRequest(`/accounts/${id}/groups`);}
+    catch{await pool.query('UPDATE integrations SET credential_ciphertext=$3,auth_error=$4 WHERE id=$1 AND credential_ciphertext=$2',[id,cipher,account.rows[0].credential_ciphertext,account.rows[0].auth_error]);return response.status(400).json({error:'MAX не подтвердил этот аккаунт. Предыдущие настройки подключения сохранены.'});}
+  }else{
+    try{await listMaxGroups(token);}catch(error){return response.status(400).json({error:`MAX не принял токен: ${deliveryErrorMessage(error)}`});}
+    await pool.query("UPDATE integrations SET credential_ciphertext=$2,auth_error=NULL,updated_at=now() WHERE id=$1",[id,cipher]);
+  }
+  await pool.query(`UPDATE deliveries d SET next_attempt_at=now(),last_error=NULL,last_error_kind=NULL
+    FROM destinations dst WHERE d.destination_id=dst.id AND dst.integration_id=$1 AND d.status='queued'`,[id]);
+  response.json({updated:true});
 });
 app.delete("/api/integrations/:id", async (request, response) => {
   const id = z.string().uuid().safeParse(request.params.id);
@@ -209,48 +263,58 @@ app.get("/api/max/groups/:integrationId", async (request, response) => {
   if (!result.rowCount) return response.status(404).json({ error: "Подключение не найдено" });
   if (result.rows[0].platform !== "max") return response.status(400).json({ error: "Это не подключение MAX" });
   const credentials = decryptCredentials(result.rows[0].credential_ciphertext);
-  try { response.json(await listMaxGroups(credentials.token)); }
+  try { response.json(config.MAX_WORKER_URL?await maxWorkerRequest(`/accounts/${id.data}/groups`):await listMaxGroups(credentials.token)); }
   catch (error) {
+    if (isAuthorizationError(error)) await pool.query("UPDATE integrations SET auth_error=$2 WHERE id=$1 AND credential_ciphertext=$3",[id.data,deliveryErrorMessage(error),result.rows[0].credential_ciphertext]);
     if (isMaxTransportError(error)) {
       return response.status(503).json({ error: "MAX временно не отвечает. Сохранённый токен будет использован повторно — менять его не нужно" });
     }
-    response.status(401).json({ error: `MAX отклонил авторизацию: ${error instanceof Error ? error.message : "авторизуйтесь снова"}` });
+    response.status(401).json({ error: "MAX отклонил авторизацию. Подключите аккаунт заново." });
   }
 });
 
 app.post("/api/uploads", upload.array("files", 10), async (request, response) => {
   const files = (request.files || []) as Express.Multer.File[];
   if (!files.length) return response.status(400).json({ error: "Выберите хотя бы один файл" });
-  const saved = [];
-  for (const file of files) {
-    const result = await pool.query(`INSERT INTO attachments (original_name,stored_name,mime_type,size_bytes,storage_path)
-      VALUES ($1,$2,$3,$4,$5) RETURNING id,original_name,mime_type,size_bytes::int`,
-      [file.originalname.slice(0, 255),file.filename,file.mimetype || "application/octet-stream",file.size,file.path]);
-    saved.push(result.rows[0]);
-  }
+  const saved=await persistUploadedAttachments(pool,files,uploadRoot);
   response.status(201).json(saved);
 });
 app.get("/api/attachments/:id", async (request, response) => {
-  const result = await pool.query("SELECT original_name,mime_type,storage_path FROM attachments WHERE id=$1", [request.params.id]);
-  if (!result.rowCount || !existsSync(result.rows[0].storage_path)) return response.status(404).json({ error: "Файл не найден" });
+  const result = await pool.query("SELECT original_name,mime_type,storage_path,expired_at FROM attachments WHERE id=$1", [request.params.id]);
+  if (!result.rowCount) return response.status(404).json({ error: "Файл не найден" });
+  if (result.rows[0].expired_at) return response.status(410).json({ error: "Срок хранения файла истёк" });
+  if (!existsSync(result.rows[0].storage_path)) return response.status(404).json({ error: "Файл не найден" });
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.type(result.rows[0].mime_type).download(result.rows[0].storage_path, result.rows[0].original_name);
 });
 app.delete("/api/attachments/:id", async (request, response) => {
   const result = await pool.query("DELETE FROM attachments WHERE id=$1 AND post_id IS NULL RETURNING storage_path", [request.params.id]);
   if (!result.rowCount) return response.status(404).json({ error: "Свободный файл не найден" });
-  await unlink(result.rows[0].storage_path).catch(() => undefined);
   response.json({ deleted: true });
 });
 
 app.get("/api/posts", async (_request, response) => {
-  const result = await pool.query(`SELECT p.*, count(DISTINCT pd.destination_id)::int AS destination_count,
-    count(DISTINCT a.id)::int AS attachment_count,
-    count(DISTINCT d.id) FILTER (WHERE d.status='sent')::int AS sent_count,
-    count(DISTINCT d.id) FILTER (WHERE d.status IN ('failed','unknown'))::int AS failed_count,
-    coalesce(array_agg(DISTINCT pd.destination_id) FILTER (WHERE pd.destination_id IS NOT NULL), '{}') AS destination_ids
-    FROM posts p LEFT JOIN post_destinations pd ON pd.post_id=p.id LEFT JOIN attachments a ON a.post_id=p.id
-    LEFT JOIN deliveries d ON d.post_id=p.id GROUP BY p.id ORDER BY p.created_at DESC LIMIT 50`);
+  // Limit posts before reading their children; joining all three child tables
+  // first multiplies rows and can spill DISTINCT aggregates to disk.
+  const result = await pool.query(`SELECT p.*, $1::int AS attachment_retention_days, dst.destination_count, att.attachment_count, att.expired_attachment_count,
+    delivery.sent_count, delivery.failed_count, dst.destination_ids
+    FROM (SELECT * FROM posts ORDER BY created_at DESC LIMIT 50) p
+    CROSS JOIN LATERAL (
+      SELECT count(*)::int AS destination_count,
+        coalesce(array_agg(pd.destination_id ORDER BY pd.destination_id), '{}') AS destination_ids
+      FROM post_destinations pd WHERE pd.post_id=p.id
+    ) dst
+    CROSS JOIN LATERAL (
+      SELECT count(*) FILTER (WHERE a.expired_at IS NULL)::int AS attachment_count,
+        count(*) FILTER (WHERE a.expired_at IS NOT NULL)::int AS expired_attachment_count
+      FROM attachments a WHERE a.post_id=p.id
+    ) att
+    CROSS JOIN LATERAL (
+      SELECT count(*) FILTER (WHERE d.status='sent')::int AS sent_count,
+        count(*) FILTER (WHERE d.status IN ('failed','unknown'))::int AS failed_count
+      FROM deliveries d WHERE d.post_id=p.id
+    ) delivery
+    ORDER BY p.created_at DESC`, [config.ATTACHMENT_RETENTION_DAYS]);
   response.json(result.rows);
 });
 
@@ -272,7 +336,7 @@ app.post("/api/posts", async (request, response) => {
   const input = postInput.parse(request.body);
   const [targets, files] = await Promise.all([
     pool.query("SELECT d.id,i.platform FROM destinations d JOIN integrations i ON i.id=d.integration_id WHERE d.id=ANY($1::uuid[]) AND d.enabled AND i.enabled", [input.destinationIds]),
-    input.attachmentIds.length ? pool.query("SELECT id,size_bytes FROM attachments WHERE id=ANY($1::uuid[]) AND post_id IS NULL", [input.attachmentIds]) : Promise.resolve({ rows: [], rowCount: 0 }),
+    input.attachmentIds.length ? pool.query("SELECT id,size_bytes FROM attachments WHERE id=ANY($1::uuid[]) AND post_id IS NULL AND expired_at IS NULL", [input.attachmentIds]) : Promise.resolve({ rows: [], rowCount: 0 }),
   ]);
   if (targets.rowCount !== input.destinationIds.length) return response.status(400).json({ error: "Одна или несколько бесед недоступны" });
   if ((files.rowCount || 0) !== input.attachmentIds.length) return response.status(400).json({ error: "Один или несколько файлов недоступны или уже использованы" });
@@ -289,7 +353,10 @@ app.post("/api/posts", async (request, response) => {
     const createdPost = result.rows[0] as Record<string, unknown>;
     post = createdPost;
     await client.query("INSERT INTO post_destinations (post_id,destination_id) SELECT $1,unnest($2::uuid[])", [createdPost.id,input.destinationIds]);
-    if (input.attachmentIds.length) await client.query("UPDATE attachments SET post_id=$1 WHERE id=ANY($2::uuid[]) AND post_id IS NULL", [createdPost.id,input.attachmentIds]);
+    if (input.attachmentIds.length) {
+      const attached = await client.query("UPDATE attachments SET post_id=$1 WHERE id=ANY($2::uuid[]) AND post_id IS NULL AND expired_at IS NULL", [createdPost.id,input.attachmentIds]);
+      if (attached.rowCount !== input.attachmentIds.length) throw new Error("Один из файлов уже использован или удалён");
+    }
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -298,9 +365,7 @@ app.post("/api/posts", async (request, response) => {
   try {
     await schedulePost(post!);
   } catch (error) {
-    const storedFiles = await pool.query("SELECT storage_path FROM attachments WHERE post_id=$1", [post!.id]);
     await pool.query("DELETE FROM posts WHERE id=$1", [post!.id]);
-    await Promise.all(storedFiles.rows.map((file) => unlink(file.storage_path).catch(() => undefined)));
     throw error;
   }
   response.status(201).json(post);
@@ -394,14 +459,16 @@ app.delete("/api/posts/:id", async (request, response) => {
   const post = await pool.query("SELECT status FROM posts WHERE id=$1", [request.params.id]);
   if (!post.rowCount) return response.status(404).json({ error: "Задание не найдено" });
   if (!["stopped", "completed"].includes(post.rows[0].status)) return response.status(409).json({ error: "Сначала остановите задание" });
-  const files = await pool.query("SELECT storage_path FROM attachments WHERE post_id=$1", [request.params.id]);
   await publishingQueue.removeJobScheduler(schedulerKey(request.params.id));
   await removeOneOffJob(request.params.id);
   await pool.query("DELETE FROM posts WHERE id=$1", [request.params.id]);
-  await Promise.all(files.rows.map((file) => unlink(file.storage_path).catch(() => undefined)));
   response.json({ deleted: true });
 });
 app.post("/api/deliveries/:id/retry", async (request, response) => {
+  const receipt=await pool.query("SELECT status FROM whatsapp_send_receipts WHERE delivery_id=$1 UNION ALL SELECT status FROM max_send_receipts WHERE delivery_id=$1",[request.params.id]);
+  if (receipt.rowCount) return response.status(409).json({error:receipt.rows[0].status === "sent"
+    ? "Отправка уже подтверждена. Обновите журнал."
+    : "Отправка уже началась. Проверьте доставку в WhatsApp; повтор может создать дубль."});
   const result = await pool.query(`UPDATE deliveries SET status='queued',attempt_count=0,last_error=NULL,last_error_kind=NULL
     WHERE id=$1 AND status IN ('failed','unknown') RETURNING id,post_id,occurrence_key`, [request.params.id]);
   if (!result.rowCount) return response.status(409).json({ error: "Эту отправку нельзя повторить" });
@@ -433,15 +500,28 @@ if (config.NODE_ENV === "production" && existsSync(webRoot)) {
 }
 
 const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
+  if(error instanceof Error&&error.message==='upload_empty_file')return response.status(400).json({error:'Пустой файл нельзя загрузить'});
   if (error instanceof ZodError) return response.status(400).json({ error: "Проверьте данные формы", details: error.flatten() });
   if (error instanceof multer.MulterError) return response.status(error.code === "LIMIT_FILE_SIZE" ? 413 : 400).json({ error: error.code === "LIMIT_FILE_SIZE" ? "Файл слишком большой" : "Ошибка загрузки файлов" });
+  if (error && typeof error === "object" && "constraint" in error && error.constraint === "post_in_flight") {
+    return response.status(409).json({ error: "Отправка выполняется или результат неизвестен. Сначала проверьте доставку" });
+  }
+  if (error && typeof error === "object" && "constraint" in error && error.constraint === "media_not_expired") {
+    return response.status(409).json({ error: "Срок хранения вложений истёк. Создайте новую публикацию и загрузите файлы заново" });
+  }
   if (error && typeof error === "object" && "code" in error && error.code === "23505") return response.status(409).json({ error: "Такая запись уже существует" });
-  console.error(error);
-  response.status(500).json({ error: error instanceof Error ? error.message : "Внутренняя ошибка" });
+  const incidentId=randomUUID();console.error('API internal failure',incidentId);
+  response.status(500).json({ error: 'Внутренняя ошибка. Повторите позднее или сообщите номер ошибки.',incidentId });
 };
 app.use(errorHandler);
 
-const server = app.listen(config.PORT, () => console.log(`Relayboard API listening on http://localhost:${config.PORT}`));
-async function shutdown() { server.close(); await publishingQueue.close(); await pool.end(); process.exit(0); }
+const stopAttachmentMaintenance = startAttachmentMaintenance(
+  pool, uploadRoot, config.ATTACHMENT_RETENTION_DAYS, config.STORAGE_MAINTENANCE_INTERVAL_MS,config.UNATTACHED_UPLOAD_TTL_HOURS,
+);
+const server = app.listen(config.PORT, config.HOST, () => console.log(`Relayboard API listening on http://localhost:${config.PORT}`));
+const stopDialogueMaintenance=startDialogueMaintenance(pool,config.CONTACT_IMPORT_ENABLED,config.STORAGE_MAINTENANCE_INTERVAL_MS);
+const stopContactImportCleanup = startContactImportCleanup(pool, config.CONTACT_IMPORT_ENABLED);
+async function shutdown() { server.close(); await localMaxTestRouter.stopQualification(); await stopAttachmentMaintenance(); await stopDialogueMaintenance(); await stopContactImportCleanup(); await publishingQueue.close(); await contactCards.close();
+  await pool.end(); process.exit(0); }
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);

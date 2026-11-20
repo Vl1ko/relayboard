@@ -1,0 +1,1 @@
+PASS: WhatsApp CommonJS SDK consumes Puppeteer, LocalAuth/RemoteAuth constructors and scoped glob/archive/extraction round-trip remain compatible; no browser login, profile access or network

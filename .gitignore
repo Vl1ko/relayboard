@@ -5,3 +5,20 @@ dist-web
 data/whatsapp-session/*
 !data/whatsapp-session/.gitkeep
 npm-debug.log*
+
+.tools/
+.secrets/
+data/backups/
+
+# Generated for the actual platform during npm ci.
+docs/licenses/runtime-dependencies.json
+
+# Local UI proof includes the authorized test contact; do not ship personal details.
+outputs/ui-dialogs-simple-2026-11-16/desktop.jpg
+outputs/ui-dialogs-simple-2026-11-16/mobile.jpg
+.wwebjs_cache/
+.wwebjs_auth/
+
+# UI proof stays local except the synthetic settings round-trip.
+outputs/ui-workspace-pages-2026-11-16/*.jpg
+!outputs/ui-workspace-pages-2026-11-16/settings-synthetic-saved.jpg

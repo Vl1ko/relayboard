@@ -1,0 +1,8 @@
+import {useEffect,useRef,useState} from 'react';
+export const priorityLabels={high:'Высокий',normal:'Обычный',low:'Низкий'};
+export default function ContactPriority({contact,onChange}:{contact:{id:string;priority:keyof typeof priorityLabels;priorityRevision:number};onChange:()=>void}){
+ const [value,setValue]=useState(contact.priority),[busy,setBusy]=useState(false),[error,setError]=useState('');const active=useRef(false),mounted=useRef(true);
+ useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);useEffect(()=>{setValue(contact.priority);},[contact.priority,contact.priorityRevision]);
+ async function save(){if(active.current)return;active.current=true;setBusy(true);setError('');try{const response=await fetch('/api/ai/workspace/contacts/'+contact.id+'/priority',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({priority:value,expectedRevision:contact.priorityRevision})});const result=await response.json();if(!response.ok)throw Error(result.error||'Не удалось сохранить приоритет');if(mounted.current)onChange();}catch(e){if(mounted.current)setError(e instanceof Error?e.message:'Не удалось сохранить приоритет');}finally{active.current=false;if(mounted.current)setBusy(false);}}
+ return <div className="conversation-operation"><label>Приоритет контакта<select value={value} disabled={busy} onChange={e=>setValue(e.target.value as keyof typeof priorityLabels)}>{Object.entries(priorityLabels).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label><button disabled={busy||value===contact.priority} onClick={()=>void save()}>Сохранить приоритет</button>{error&&<p role="alert">{error}</p>}</div>;
+}

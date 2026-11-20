@@ -1,0 +1,63 @@
+.contacts-import { display: grid; gap: 22px; }
+.contact-import-card { padding: 24px; min-width: 0; }
+.contact-import-card h2 { margin: 0 0 12px; font-size: 20px; }
+.contact-import-card h3 { font-size: 17px; margin-top: 22px; }
+.contact-import-card p { line-height: 1.6; }
+.contact-import-card fieldset { border: 0; padding: 0; margin: 20px 0; min-width: 0; }
+.contact-import-card legend { font-weight: 700; margin-bottom: 14px; }
+.contact-import-card label { display: grid; gap: 7px; font-size: 14px; font-weight: 600; }
+.contact-import-card small { color: #68758a; font-weight: 400; line-height: 1.5; }
+.contact-import-card input, .contact-import-card select { min-height: 42px; width: 100%; border: 1px solid #d6dfec; border-radius: 9px; padding: 9px 11px; background: white; color: #24324b; }
+.contact-import-card input[type=file] { padding: 8px; }
+.contact-import-card button { min-height: 40px; padding: 9px 14px; border: 1px solid #d4dfec; border-radius: 9px; background: #fff; color: #263a59; cursor: pointer; font-weight: 600; }
+.contact-import-card button.primary { background: #2464eb; color: #fff; border-color: #2464eb; }
+.contact-import-card button:disabled { opacity: .5; cursor: not-allowed; }
+.contact-import-card :is(input, select, button):focus-visible { outline: 3px solid #9fc1ff; outline-offset: 2px; }
+.contact-import-file { display: flex; gap: 12px; align-items: center; margin-top: 8px; }
+.contact-import-file input { flex: 1; min-width: 0; }
+.contact-import-file button { flex-shrink: 0; }
+.contact-import-safety { padding: 12px 15px; border-radius: 10px; background: #edf5ff; color: #244e81; }
+.contact-import-mapping { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 18px; }
+.contact-import-scroll { overflow: auto; border: 1px solid #e1e7ef; border-radius: 10px; margin-top: 16px; }
+.contact-import-table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 13px; }
+.contact-import-table caption { text-align: left; padding: 12px; font-weight: 600; background: #f8fafc; color: #506078; }
+.contact-import-table th, .contact-import-table td { text-align: left; vertical-align: top; border-bottom: 1px solid #e8edf4; padding: 11px 12px; max-width: 260px; overflow-wrap: anywhere; }
+.contact-import-table th { background: #f4f7fb; color: #4d5e77; font-weight: 650; white-space: nowrap; }
+.contact-import-table td { min-width: 110px; }
+.contact-import-table td.contact-import-phone { white-space: nowrap; }
+.contact-import-preview .contact-import-table td:first-child { min-width: 55px; }
+.contact-import-table tbody tr:last-child td { border-bottom: 0; }
+.contact-import-row-invalid { background: #fff7f5; }
+.contact-import-row-duplicate { background: #fffcf1; }
+.contact-import-counters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 14px 0; }
+.contact-import-counters div { border-radius: 10px; padding: 12px; background: #f3f6fb; }
+.contact-import-counters dt { color: #60718a; font-size: 12px; }
+.contact-import-counters dd { margin: 6px 0 0; font-size: 23px; font-weight: 750; color: #263a59; }
+.contact-import-filter { max-width: 270px; margin-top: 18px; }
+.contact-import-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 16px 0; color: #65758b; font-size: 13px; }
+.contact-import-error { color: #a42b2b; background: #fff0ee; border-radius: 9px; padding: 12px; }
+.contact-import-success { border-radius: 12px; border: 1px solid #b8e2cb; background: #f1fbf5; padding: 16px; margin-top: 18px; }
+.contact-import-success h3 { margin-top: 0; color: #256442; }
+.contact-import-excluded { display: inline-block; border-radius: 7px; background: #fff0ee; color: #a42b2b; padding: 5px 8px; font-weight: 600; }
+.contact-import-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.contact-import-list-heading h2 { margin: 0; }
+.contact-import-list-heading h2 span { color: #78869a; font-size: 16px; }
+@media (max-width: 850px) {
+  .contact-import-mapping { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .contact-import-card { padding: 16px; }
+  .contact-import-mapping { grid-template-columns: 1fr; }
+  .contact-import-file { flex-direction: column; align-items: stretch; }
+  .contact-import-counters { grid-template-columns: repeat(2, 1fr); }
+  .contact-import-pagination { flex-wrap: wrap; }
+  .contact-import-pagination span { width: 100%; order: -1; text-align: center; }
+}
+/* Compact choice controls share a form with full-width text fields. */
+.contact-import-card input:is([type=checkbox],[type=radio]) { width: 18px; height: 18px; min-height: 18px; padding: 0; margin: 0; flex: 0 0 18px; accent-color: #2464eb; }
+.contact-import-card label:has(> input:is([type=checkbox],[type=radio])) { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 0; overflow-wrap: anywhere; }
+.contact-import-card textarea { width: 100%; min-height: 90px; border: 1px solid #d6dfec; border-radius: 9px; padding: 10px 12px; background: white; color: #24324b; resize: vertical; }
+.contact-import-card textarea:focus-visible { outline: 3px solid #9fc1ff; outline-offset: 2px; }
+.search-source-options { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(280px,100%),1fr)); gap: 6px 18px; margin-bottom: 16px; }
+.monitor-controls fieldset { display: grid; gap: 16px; }
+.monitor-actions { display: flex; gap: 8px; flex-wrap: wrap; }

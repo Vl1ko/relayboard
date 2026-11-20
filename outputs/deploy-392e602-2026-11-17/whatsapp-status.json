@@ -1,0 +1,11 @@
+{
+  "accounts": 2,
+  "states": {
+    "qr": 1,
+    "disconnected": 1
+  },
+  "disconnectedError": "Waiting failed: 30000ms exceeded",
+  "staleLocksRemoved": 6,
+  "profileDataPreserved": true,
+  "messagesSentByDeploymentChecks": 0
+}

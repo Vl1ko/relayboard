@@ -1,13 +1,18 @@
+import LocalMaxTestPanel from "./LocalMaxTestPanel";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import LeadReview from "./LeadReview";
+import AiSettingsPanel from "./AiSettingsPanel";
+import ConversationWorkspace from "./ConversationWorkspace";
+import ContactsImport from "./ContactsImport";
 
 type Platform = "telegram" | "max" | "whatsapp";
-type View = "compose" | "connections" | "campaigns" | "history";
-type Integration = { id: string; platform: Platform; name: string; enabled: boolean; destination_count: number };
+type View = "compose" | "leads" | "dialogs" | "contacts" | "qualification" | "connections" | "campaigns" | "history";
+type Integration = { id: string; platform: Platform; name: string; enabled: boolean; auth_error?: string | null; destination_count: number };
 type Destination = { id: string; integration_id: string; external_id: string; title: string; kind: string; platform: Platform; integration_name: string };
 type DeliveryStatus = "queued" | "sending" | "sent" | "failed" | "paused" | "stopped" | "skipped" | "unknown";
-type Delivery = { id: string; post_id: string; status: DeliveryStatus; attempt_count: number; last_error: string | null; last_error_kind: string | null; sent_at: string | null; queued_at: string; text: string; destination_title: string; platform: Platform };
+type Delivery = { media_expired_at?: string | null; id: string; post_id: string; status: DeliveryStatus; attempt_count: number; last_error: string | null; last_error_kind: string | null; sent_at: string | null; queued_at: string; text: string; destination_title: string; platform: Platform };
 type Dashboard = { counts: { integrations: number; destinations: number; sent: number; failed: number }; recent: Delivery[] };
-type Campaign = { id: string; text: string; mode: "now" | "scheduled" | "recurring"; status: string; scheduled_at: string | null; cron_pattern: string | null; timezone: string; interval_seconds: number; max_attempts: number; retry_delay_seconds: number; scheduler_enabled: boolean; destination_count: number; destination_ids: string[]; attachment_count: number; sent_count: number; failed_count: number; created_at: string };
+type Campaign = { attachment_retention_days?: number; media_expired_at?: string | null; expired_attachment_count?: number; id: string; text: string; mode: "now" | "scheduled" | "recurring"; status: string; scheduled_at: string | null; cron_pattern: string | null; timezone: string; interval_seconds: number; max_attempts: number; retry_delay_seconds: number; scheduler_enabled: boolean; auth_error?: string | null; destination_count: number; destination_ids: string[]; attachment_count: number; sent_count: number; failed_count: number; created_at: string };
 type RemoteGroup = { id: string; title: string; kind?: string; participantsCount?: number };
 type TelegramStatus = { status: string; configured?: boolean; qr?: string | null; qrExpiresAt?: number | null; error?: string | null; profile?: { name: string; username?: string | null } | null };
 type WhatsAppStatus = { status: string; qr?: string | null; error?: string | null };
@@ -38,9 +43,11 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T;
 }
 
-function AppIcon({ name }: { name: "plus" | "connections" | "jobs" | "history" | "bell" | "upload" | "clock" | "search" }) {
+function AppIcon({ name }: { name: "plus" | "contacts" | "sparkles" | "connections" | "jobs" | "history" | "bell" | "upload" | "clock" | "search" }) {
   const paths = {
     plus: <><path d="M12 5v14"/><path d="M5 12h14"/></>,
+    contacts: <><path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M16 11h6"/></>,
+    sparkles: <><path d="m12 3 1.2 3.8L17 8l-3.8 1.2L12 13l-1.2-3.8L7 8l3.8-1.2L12 3Z"/><path d="m19 14 .8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14ZM5 13l.8 2.2L8 16l-2.2.8L5 19l-.8-2.2L2 16l2.2-.8L5 13Z"/></>,
     connections: <><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 12h8"/><path d="M12 8v8"/></>,
     jobs: <><path d="M5 5h14v14H5z"/><path d="M8 9h8M8 13h8M8 17h5"/></>,
     history: <><path d="M4 12a8 8 0 1 0 2.3-5.7L4 8"/><path d="M4 4v4h4M12 8v5l3 2"/></>,
@@ -109,7 +116,8 @@ function describeCronPattern(pattern: string | null) {
 
 function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
-  const [view, setView] = useState<View>("compose");
+  const [view, setView] = useState<View>(()=>{const requested=new URLSearchParams(window.location.search).get('view');return (['compose','leads','dialogs','contacts','qualification','connections','campaigns','history'] as string[]).includes(requested??'')?requested as View:'compose';});
+  useEffect(()=>{const url=new URL(window.location.href);url.searchParams.set('view',view);if(view!=='dialogs')for(const key of ['contact','conversation','request'])url.searchParams.delete(key);window.history.replaceState(null,'',url);},[view]);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [destinations, setDestinations] = useState<Destination[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
@@ -148,12 +156,20 @@ function App() {
   async function logout() { await api("/api/auth/logout", { method: "POST" }).catch(() => undefined); setAuthenticated(false); }
   const pageMeta: Record<View, { title: string; description: string }> = {
     compose: { title: "Новая публикация", description: "Одно сообщение для нужных бесед — отправьте сейчас или запланируйте повторение." },
+    leads: { title: "Заявки", description: "Найденные обращения и очередь проверки." },
+    dialogs: { title: "Диалоги", description: "Переписка с клиентами и работа с заявками." },
+    contacts: { title: "Клиенты", description: "Клиентская база, контакты и ограничения сообщений." },
+    qualification: { title: "ИИ-квалификация", description: "Вопросы, условия отбора и готовые ответы клиентам." },
     connections: { title: "Подключения", description: "Личные аккаунты и беседы, доступные для рассылки." },
     campaigns: { title: "Задания", description: "Активные, запланированные и завершённые публикации." },
     history: { title: "История доставки", description: "Результат каждой отправки по мессенджерам и беседам." },
   };
-  const navigation: Array<{ view: View; label: string; icon: "plus" | "connections" | "jobs" | "history" }> = [
+  const navigation: Array<{ view: View; label: string; icon: "plus" | "contacts" | "sparkles" | "connections" | "jobs" | "history" }> = [
     { view: "compose", label: "Новая публикация", icon: "plus" },
+    { view: "leads", label: "Заявки", icon: "contacts" },
+    { view: "dialogs", label: "Диалоги", icon: "contacts" },
+    { view: "contacts", label: "Клиенты", icon: "contacts" },
+    { view: "qualification", label: "ИИ-квалификация", icon: "sparkles" },
     { view: "connections", label: "Подключения", icon: "connections" },
     { view: "campaigns", label: "Задания", icon: "jobs" },
     { view: "history", label: "История", icon: "history" },
@@ -163,7 +179,7 @@ function App() {
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark small">R</div><div><strong>Relayboard</strong><small>единая рассылка</small></div></div>
       <nav>{navigation.map((item) => <button key={item.view} aria-label={item.label} className={view === item.view ? "active" : ""} onClick={() => setView(item.view)}><AppIcon name={item.icon}/><span>{item.label}</span></button>)}</nav>
-      <div className="system-health"><div><i/><b>Система работает</b></div><p>{integrations.filter((item) => item.enabled).length} из 3 аккаунтов подключено</p></div>
+      <div className="system-health"><div><i/><b>Система работает</b></div><p>{integrations.filter((item) => item.enabled).length} из {integrations.length} аккаунтов включено</p></div>
       <button className="signout" onClick={logout}><span className="user-avatar">ВФ</span><span>Выйти</span></button>
     </aside>
     <main className="workspace">
@@ -172,12 +188,16 @@ function App() {
       {notice && <div className="alert success">{notice}</div>}{loading && <div className="loading-line"/>}
       <div className="content-shell"><div className="page-heading"><div><h1>{pageMeta[view].title}</h1><p>{pageMeta[view].description}</p></div>{view === "compose" && <span className="ready-chip"><i/>{integrations.filter((item) => item.enabled).length} канала готовы</span>}</div>
         {view === "compose" && <Composer destinations={destinations} onDone={() => { showNotice("Публикация поставлена в очередь"); void refresh(); setView("campaigns"); }}/>} 
+        {view === "leads" && <LeadReview accounts={integrations} destinations={destinations}/>}
+        {view === "dialogs" && <ConversationWorkspace/>}
+        {view === "contacts" && <ContactsImport/>}
+        {view === "qualification" && <AiSettingsPanel/>}
         {view === "connections" && <AccountConnections integrations={integrations} destinations={destinations} onDone={() => void refresh()} notify={showNotice}/>} 
         {view === "campaigns" && <Campaigns campaigns={campaigns} destinations={destinations} onDone={() => void refresh()} notify={showNotice}/>} 
         {view === "history" && <History deliveries={dashboard?.recent ?? []} onDone={() => void refresh()} notify={showNotice}/>} 
       </div>
     </main>
-    <nav className="mobile-nav">{navigation.map((item) => <button key={item.view} className={view === item.view ? "active" : ""} onClick={() => setView(item.view)}><AppIcon name={item.icon}/><span>{item.label === "Новая публикация" ? "Создать" : item.label}</span></button>)}</nav>
+    <nav className="mobile-nav">{navigation.map((item) => <button key={item.view} aria-label={item.label} className={view === item.view ? "active" : ""} onClick={() => setView(item.view)}><AppIcon name={item.icon}/><span>{{ compose: "Создать", leads: "Заявки", dialogs: "Диалоги", contacts: "Клиенты", qualification: "ИИ", connections: "Связи", campaigns: "Задачи", history: "История" }[item.view]}</span></button>)}</nav>
   </div>;
 }
 
@@ -230,6 +250,7 @@ function AccountConnections(props: { integrations: Integration[]; destinations: 
   return <div className="connections-layout">
     <div className="section-heading"><h2>Мои аккаунты</h2><button className="primary" onClick={()=>setAdding(true)}>Добавить аккаунт</button></div>
     <div className="connection-grid">{props.integrations.map(item=><button key={item.id} className="connection-card" aria-pressed={!adding && selected?.id===item.id} onClick={()=>{setSelectedId(item.id);setAdding(false);}}><div className="connection-title"><PlatformBadge platform={item.platform}/><div><h3>{item.name}</h3><p>{platformInfo[item.platform].label} · {item.destination_count} бесед</p></div></div></button>)}</div>
+    <LocalMaxTestPanel accounts={props.integrations}/>
     <Connections key={adding ? "new" : selected?.id || "new"} {...props} integrations={adding || !selected ? [] : [selected]} destinations={adding || !selected ? [] : props.destinations.filter(item=>item.integration_id===selected.id)}/>
   </div>;
 }
@@ -273,7 +294,7 @@ function Connections({ integrations, destinations, onDone, notify }: { integrati
   async function loadMax() { const connection = byPlatform("max"); if (!connection) return; try { setMaxGroups(await api<RemoteGroup[]>(`/api/max/groups/${connection.id}`)); } catch (reason) { setError(reason instanceof Error ? reason.message : "MAX недоступен"); } }
   async function copyMaxTokenCommand() { try { await navigator.clipboard.writeText(maxTokenCommand); notify("Команда получения MAX-токена скопирована"); } catch { setError("Не удалось скопировать команду. Выделите её вручную."); } }
   useEffect(() => { const active = telegram?.status; if (!active || !["starting","qr","password_required"].includes(active)) return; const timer = window.setInterval(() => void loadTelegram(), 1800); return () => window.clearInterval(timer); }, [telegram?.status]);
-  useEffect(() => { const active = whatsapp?.status; if (!active || !["starting","authenticated"].includes(active)) return; const timer = window.setInterval(() => void loadWhatsapp(), 2500); return () => window.clearInterval(timer); }, [whatsapp?.status]);
+  useEffect(() => { const active = whatsapp?.status; if (!active || !["starting","authenticated","disconnected"].includes(active)) return; const timer = window.setInterval(() => void loadWhatsapp(), 2500); return () => window.clearInterval(timer); }, [whatsapp?.status]);
   const renderGroups = (groupPlatform: Platform, groups: RemoteGroup[], connection: Integration | undefined) => {
     if (!connection) return null;
     const query = groupQueries[groupPlatform].trim().toLocaleLowerCase("ru");
@@ -294,8 +315,8 @@ function Connections({ integrations, destinations, onDone, notify }: { integrati
     {error && <div className="alert error">{error}<button onClick={() => setError("")}>×</button></div>}
     {integrations.length === 0 && <form className="card settings-form account-setup" onSubmit={addIntegration}><div className="section-heading"><div><h2>Добавить личный аккаунт</h2><p>Каждый аккаунт имеет собственную сессию и беседы</p></div></div><label>Мессенджер<select value={platform} onChange={(event) => setPlatform(event.target.value as Platform)}>{(Object.keys(platformInfo) as Platform[]).map((item) => <option key={item} value={item}>{platformInfo[item].label}</option>)}</select></label><label>Название<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Рабочий аккаунт" required/></label>{platform === "max" && <><label>Токен web-сессии<input type="password" value={token} onChange={(event) => setToken(event.target.value)} required/></label><div className="token-source-card source-max"><div><span className="source-icon">MX</span><div><b>Получить токен в MAX Web</b><small>Войдите, откройте DevTools → Console и выполните команду</small></div></div><a href="https://web.max.ru" target="_blank" rel="noreferrer">Открыть MAX Web ↗</a><code>{maxTokenCommand}</code><button type="button" className="copy-command" onClick={() => void copyMaxTokenCommand()}>Скопировать команду</button></div><p className="form-hint warning">В MAX используется неофициальная web-сессия личного аккаунта. Выход из MAX Web может отозвать токен.</p></>}<button className="secondary" disabled={busy || Boolean(byPlatform(platform))}>{byPlatform(platform) ? "Уже подключён" : busy ? "Проверяю…" : "Сохранить подключение"}</button></form>}
     {byPlatform("telegram") && <section className="card settings-form"><div className="section-heading"><PlatformBadge platform="telegram"/><div><h2>Вход и группы Telegram</h2><p>QR-код личного аккаунта</p></div></div><button type="button" className="ghost" disabled={telegramGroupsLoading} onClick={() => void loadTelegram()}>{telegramGroupsLoading ? "Загружаем все беседы…" : telegram?.status === "ready" ? "Обновить группы" : "Проверить сессию"}</button>{telegram?.configured === false && telegram.status !== "ready" && <div className="parameter-grid"><label>API ID<input name="telegram-api-id" autoComplete="off" inputMode="numeric" value={telegramApiId} onChange={(event) => setTelegramApiId(event.target.value)}/></label><label>API Hash<input name="telegram-api-hash" autoComplete="new-password" type="password" value={telegramApiHash} onChange={(event) => setTelegramApiHash(event.target.value)}/></label></div>}{telegram?.configured === false && telegram.status !== "ready" && <p className="form-hint">Данные приложения Telegram: <a href="https://my.telegram.org/apps" target="_blank" rel="noreferrer">получить API ID и API Hash</a>. Это не логин и пароль от Relayboard.</p>}{telegram?.error && <p role="alert" className="alert error">{telegram.error}</p>}{telegram && telegram.status !== "ready" && <button type="button" className="secondary" onClick={() => void startTelegram()} disabled={busy || ["starting", "qr", "password_required"].includes(telegram.status)}>{busy || telegram.status === "starting" ? "Создаём QR-код…" : "Войти через QR"}</button>}{telegram?.qr && <div className="telegram-qr-card"><div className="qr-frame"><img src={telegram.qr} alt="QR-код Telegram"/></div><div><b>Отсканируйте в Telegram</b><small>Настройки → Устройства → Подключить устройство</small></div></div>}{telegram?.status === "password_required" && <div className="inline-auth"><input type="password" value={telegramPassword} onChange={(event) => setTelegramPassword(event.target.value)} placeholder="Пароль 2FA"/><button type="button" onClick={() => void sendTelegramPassword()}>Подтвердить</button></div>}{telegram?.status === "ready" && <p className="form-hint">{telegramGroupsLoading ? "Telegram подключён. Получаем полный список, включая архив…" : `Подключён: ${telegram.profile?.name} · найдено групп и каналов: ${telegramGroups.length}`}</p>}{renderGroups("telegram", telegramGroups, byPlatform("telegram"))}</section>}
-    {byPlatform("max") && <section className="card settings-form"><div className="section-heading"><PlatformBadge platform="max"/><div><h2>Группы MAX</h2><p>Получаем из активной web-сессии</p></div></div><button type="button" className="ghost" onClick={() => void loadMax()}>Обновить группы</button>{renderGroups("max", maxGroups, byPlatform("max"))}</section>}
-    {byPlatform("whatsapp") && <section className="card settings-form"><div className="section-heading"><PlatformBadge platform="whatsapp"/><div><h2>Вход и группы WhatsApp</h2><p>Связанное устройство личного аккаунта</p></div></div><button type="button" className="ghost" onClick={() => void loadWhatsapp()}>{whatsapp?.status === "ready" ? "Обновить группы" : "Проверить QR-сессию"}</button>{whatsapp?.qr && <div className="qr-panel"><img src={whatsapp.qr} alt="QR-код WhatsApp"/><b>Отсканируйте в разделе «Связанные устройства»</b></div>}{whatsapp?.status === "authenticated" && <p className="form-hint">Вход подтверждён, синхронизируем список бесед…</p>}{whatsapp?.status === "ready" && <p className="form-hint">WhatsApp подключён · найдено групп: {whatsappGroups.length}</p>}{renderGroups("whatsapp", whatsappGroups, byPlatform("whatsapp"))}</section>}
+    {byPlatform("max") && <section className="card settings-form"><div className="section-heading"><PlatformBadge platform="max"/><div><h2>Группы MAX</h2><p>Получаем из активной web-сессии</p></div></div><button type="button" className="ghost" onClick={() => void loadMax()}>Обновить группы</button><MaxSession connection={byPlatform("max")!} onDone={onDone}/>{renderGroups("max", maxGroups, byPlatform("max"))}</section>}
+    {byPlatform("whatsapp") && <section className="card settings-form"><div className="section-heading"><PlatformBadge platform="whatsapp"/><div><h2>Вход и группы WhatsApp</h2><p>Связанное устройство личного аккаунта</p></div></div><button type="button" className="ghost" onClick={() => void loadWhatsapp()}>{whatsapp?.status === "ready" ? "Обновить группы" : "Проверить QR-сессию"}</button>{whatsapp?.error && <p role="alert" className="failure-reason">{whatsapp.error}</p>}{whatsapp?.qr && <div className="qr-panel"><img src={whatsapp.qr} alt="QR-код WhatsApp"/><b>Отсканируйте в разделе «Связанные устройства»</b></div>}{whatsapp?.status === "authenticated" && <p className="form-hint">Вход подтверждён, синхронизируем список бесед…</p>}{whatsapp?.status === "ready" && <p className="form-hint">WhatsApp подключён · найдено групп: {whatsappGroups.length}</p>}{renderGroups("whatsapp", whatsappGroups, byPlatform("whatsapp"))}</section>}
     <section className="card destination-table"><div className="section-heading"><div><h2>Все беседы</h2><p>{destinations.length} адресов доставки</p></div></div>{destinations.length === 0 ? <div className="empty">Добавьте группы из подключённых аккаунтов.</div> : destinations.map((item) => <div className="destination-row" key={item.id}><PlatformBadge platform={item.platform}/><span><b>{item.title}</b><small>{item.external_id}</small></span><em>{item.integration_name}</em><button className="delete-connection" onClick={() => void removeDestination(item)}>Удалить</button></div>)}</section>
   </div>;
 }
@@ -343,15 +364,16 @@ function Campaigns({ campaigns, destinations, onDone, notify }: { campaigns: Cam
   return <>
     <div className="campaign-stats"><div><span>Активные</span><b>{activeCount}</b><small>работают по расписанию</small></div><div><span>Запланировано</span><b>{scheduledCount}</b><small>ожидают запуска</small></div><div><span>Доставлено</span><b>{deliveredCount}</b><small>во всех заданиях</small></div><div><span>Ошибки</span><b>{failedCount}</b><small>{failedCount ? "требуют внимания" : "все каналы в норме"}</small></div></div>
     <section className="card history-card">
-      <div className="section-heading"><div><h2>Все задания</h2><p>Управление очередью и повторениями</p></div><span className="live-dot">Обновляется</span></div>
+      <div className="section-heading"><div><h2>Все задания</h2><p>Управление очередью и повторениями. Вложения завершённых разовых публикаций хранятся {campaigns[0]?.attachment_retention_days ?? 30} дней; регулярные и приостановленные сохраняются.</p></div><span className="live-dot">Обновляется</span></div>
       {campaigns.length === 0 ? <div className="empty large">Заданий пока нет.</div> : <div className="campaign-list">{campaigns.map((item) => {
         const editing = editingId === item.id;
         return <article className={`campaign-row ${editing ? "is-editing" : ""}`} key={item.id}>
           <div className="campaign-main">
             <div>
               <span className={`status status-${item.status}`}>{campaignStatusLabels[item.status] || item.status}</span>
-              <h3>{item.text || `${item.attachment_count} вложений`}</h3>
+              <h3>{item.text || `${item.attachment_count + (item.expired_attachment_count || 0)} вложений`}</h3>
               <p>{item.destination_count} получателей · {item.attachment_count} файлов · интервал {item.interval_seconds} сек. · {item.sent_count} доставлено · {item.failed_count} ошибок</p>
+              {item.media_expired_at && <p role="status">Срок хранения вложений истёк, файлы недоступны. История отправок сохранена.</p>}
               <small>{item.mode === "recurring" ? `${describeCronPattern(item.cron_pattern)} · по Москве` : item.scheduled_at ? formatMoscow(item.scheduled_at) : formatMoscow(item.created_at)}</small>
             </div>
             <div className="campaign-actions">
@@ -390,10 +412,31 @@ function Campaigns({ campaigns, destinations, onDone, notify }: { campaigns: Cam
 }
 
 const statusLabels: Record<DeliveryStatus,string> = { queued:"В очереди", sending:"Отправляется", sent:"Доставлено", failed:"Ошибка", paused:"Пауза", stopped:"Остановлено", skipped:"Пропущено", unknown:"Исход неизвестен" };
-const errorKindLabels: Record<string,string> = { transient:"Временная ошибка", permanent:"Постоянная ошибка", ambiguous:"Исход неизвестен" };
+const errorKindLabels: Record<string,string> = { transient:"Временная ошибка", permanent:"Постоянная ошибка", ambiguous:"Исход неизвестен", waiting:"Ожидание подключения", auth_required:"Нужен повторный вход" };
 function History({ deliveries, onDone, notify }: { deliveries: Delivery[]; onDone: () => void; notify: (message: string) => void }) {
-  async function retry(id: string) { await api(`/api/deliveries/${id}/retry`, { method:"POST" }); notify("Повтор поставлен в очередь"); onDone(); }
-  return <section className="card history-card"><div className="section-heading"><div><h2>Последние отправки</h2><p>Неизвестный исход не повторяется автоматически</p></div><span className="live-dot">LIVE</span></div>{deliveries.length === 0 ? <div className="empty large">Отправок пока нет.</div> : <div className="history-list">{deliveries.map((item) => <div className="history-row" key={item.id}><PlatformBadge platform={item.platform}/><div className="history-message"><b>{item.destination_title}</b><p>{item.text || "Сообщение с вложениями"}</p>{item.last_error && <small className="failure-reason">{item.last_error_kind ? `${errorKindLabels[item.last_error_kind] || item.last_error_kind}: ` : ""}{item.last_error}</small>}</div><time>{formatMoscow(item.sent_at || item.queued_at)}</time><span className={`status status-${item.status}`}>{statusLabels[item.status]}</span>{["failed","unknown"].includes(item.status) && <button className="retry" onClick={() => void retry(item.id)}>Повторить вручную</button>}</div>)}</div>}</section>;
+  async function retry(id: string) { if (deliveries.find(item => item.id === id)?.status === "unknown" && !window.confirm("Доставка могла состояться. Вы проверили WhatsApp и готовы повторить сообщение с риском дубля?")) return; try { await api(`/api/deliveries/${id}/retry`, { method:"POST" }); notify("Повтор поставлен в очередь"); onDone(); } catch (error) { notify(error instanceof Error ? error.message : "Не удалось повторить отправку"); } }
+  return <section className="card history-card"><div className="section-heading"><div><h2>Последние отправки</h2><p>Неизвестный исход не повторяется автоматически</p></div><span className="live-dot">LIVE</span></div>{deliveries.length === 0 ? <div className="empty large">Отправок пока нет.</div> : <div className="history-list">{deliveries.map((item) => <div className="history-row" key={item.id}><PlatformBadge platform={item.platform}/><div className="history-message"><b>{item.destination_title}</b><p>{item.text || "Сообщение с вложениями"}</p>{item.last_error && <small className="failure-reason">{item.last_error_kind ? `${errorKindLabels[item.last_error_kind] || item.last_error_kind}: ` : ""}{item.last_error}</small>}</div><time>{formatMoscow(item.sent_at || item.queued_at)}</time><span className={`status status-${item.status}`}>{statusLabels[item.status]}</span>{["failed","unknown"].includes(item.status) && <button className="retry" disabled={Boolean(item.media_expired_at)} title={item.media_expired_at ? "Срок хранения вложений истёк. Создайте новую публикацию" : undefined} onClick={() => void retry(item.id)}>{item.media_expired_at ? "Срок хранения файлов истёк" : "Повторить вручную"}</button>}</div>)}</div>}</section>;
 }
 
 export default App;
+
+function MaxSession({ connection, onDone }: { connection: Integration; onDone: () => void }) {
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function save(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError("");
+    try {
+      await api(`/api/integrations/${connection.id}/credentials`, { method: "PATCH", body: JSON.stringify({ token: extractMaxToken(token) }) });
+      setToken(""); onDone();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось обновить токен"); }
+    finally { setBusy(false); }
+  }
+  return <form onSubmit={save}>
+    {connection.auth_error && <p role="alert" className="failure-reason">Нужно войти в MAX заново. Отправки ожидают авторизации.</p>}
+    <label>Новый токен MAX<input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} required placeholder="Токен из новой сессии MAX Web"/></label>
+    <p className="form-hint">После проверки токена ожидающие отправки продолжатся. Беседы и расписание сохранятся.</p>
+    {error && <p role="alert" className="failure-reason">{error}</p>}
+    <button type="submit" className="secondary" disabled={busy || !token.trim()}>{busy ? "Проверяем…" : "Обновить подключение MAX"}</button>
+  </form>;
+}

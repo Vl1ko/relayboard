@@ -1,22 +1,50 @@
 import "dotenv/config";
 import { z } from "zod";
+import { environmentBoolean } from "./environment-flags.js";
 
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  PUBLIC_APP_URL: z.string().url().max(500).optional().refine(value=>{if(!value)return true;const u=new URL(value);return !u.username&&!u.password&&(u.protocol==='https:'||u.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(u.hostname));},'Use an HTTPS public app URL without credentials'),
   PORT: z.coerce.number().default(3001),
+  LOCAL_MAX_TEST_CHAT_ID: z.string().regex(/^-?\d+$/).optional(),
+  HOST: z.enum(["127.0.0.1","0.0.0.0"]).default("0.0.0.0"),
+  AI_PROVIDER_MODE: z.enum(["fixture","yandex","gigachat"]).default("fixture"),
+  AI_ALLOW_EXTERNAL_REQUESTS: z.enum(["true","false"]).default("false").transform(v=>v==="true"),
+  GIGACHAT_AUTH_KEY: z.string().optional(),
+  GIGACHAT_SCOPE: z.enum(["GIGACHAT_API_PERS","GIGACHAT_API_B2B","GIGACHAT_API_CORP"]).default("GIGACHAT_API_PERS"),
+  YANDEX_API_KEY: z.string().optional(),
+  YANDEX_FOLDER_ID: z.string().optional(),
+  AI_TEST_ONLY: z.enum(['true','false']).default('true').transform(v=>v==='true'),
+  AI_TEST_ACCOUNT_IDS: z.string().default('').transform(v=>v.split(',').map(s=>s.trim()).filter(Boolean)).pipe(z.array(z.string().uuid())),
+  AI_TEST_AUTHOR_IDS: z.string().default('').transform(v=>v.split(',').map(s=>s.trim()).filter(Boolean)).pipe(z.array(z.string().min(1).max(512))),
+  MAX_WORKER_ENABLED: z.enum(['true','false']).default('false').transform(v=>v==='true'),
+  MAX_WORKER_HOST: z.enum(['127.0.0.1','0.0.0.0']).default('127.0.0.1'),
+  MAX_POLL_INTERVAL_MS: z.coerce.number().int().min(1000).max(60000).default(5000),
+  MAX_WORKER_PORT: z.coerce.number().int().min(1024).max(65535).default(3030),
+  MAX_WORKER_SECRET: z.string().min(24).optional(),
+  MAX_WORKER_URL: z.string().url().optional(),
+  AI_SEND_MODE: z.enum(["disabled", "synthetic", "live"]).default("disabled"),
+  SOURCE_MONITOR_ENABLED: z.enum(['true','false']).default('false').transform(v=>v==='true'),
+  CONTACT_IMPORT_ENABLED: z.enum(["true", "false"]).default("false").transform(value => value === "true"),
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
   ADMIN_API_KEY: z.string().min(12),
   ADMIN_USERNAME: z.string().trim().min(2).default("admin"),
   ADMIN_PASSWORD: z.string().min(8).optional(),
-  SESSION_COOKIE_SECURE: z.coerce.boolean().default(false),
+  SESSION_COOKIE_NAME: z.string().regex(/^[A-Za-z0-9_-]{1,80}$/).default("relayboard_session"),
+  SESSION_COOKIE_SECURE: environmentBoolean,
   APP_ENCRYPTION_KEY: z.string().min(16),
   UPLOAD_DIR: z.string().default("./data/uploads"),
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(100 * 1024 * 1024),
+  UNATTACHED_UPLOAD_TTL_HOURS:z.coerce.number().int().min(1).max(87600).default(24),
+  ATTACHMENT_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
+  STORAGE_MAINTENANCE_INTERVAL_MS: z.coerce.number().int().min(1000).max(86400000).default(60000),
   MESSENGER_SEND_MODE: z.enum(["live", "fake"]).default("live"),
   QUEUE_DELAY_SCALE: z.coerce.number().min(0).max(1).default(1),
   QUEUE_NAME: z.string().trim().min(1).default("publishing"),
   SEND_TIMEOUT_MS: z.coerce.number().int().min(5000).max(300000).default(60000),
+  WHATSAPP_BRIDGE_HOST: z.string().default("0.0.0.0"),
+  WHATSAPP_BRIDGE_PORT: z.coerce.number().int().min(1).max(65535).default(3010),
   WHATSAPP_BRIDGE_URL: z.string().url().default("http://localhost:3010"),
   WHATSAPP_BRIDGE_SECRET: z.string().min(12),
   WHATSAPP_SESSION_PATH: z.string().default("./data/whatsapp-session"),
@@ -34,4 +62,5 @@ const schema = z.object({
   ),
 });
 
+if(process.env.NODE_TLS_REJECT_UNAUTHORIZED==='0')throw new Error('TLS certificate verification cannot be disabled');
 export const config = schema.parse(process.env);

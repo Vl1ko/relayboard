@@ -1,3 +1,4 @@
+import {withExecutionSlot} from "../core/execution-slot.js";
 import { Worker, type Job } from "bullmq";
 import { createAdapter } from "../core/adapters/index.js";
 import { config } from "../core/config.js";
@@ -42,9 +43,9 @@ async function reconcilePostStatus(postId: string) {
 }
 
 async function fanout(job: Job<FanoutJob>) {
-  const postResult = await pool.query("SELECT id, mode, status, scheduler_enabled FROM posts WHERE id = $1", [job.data.postId]);
+  const postResult = await pool.query("SELECT id, mode, status, scheduler_enabled, media_expired_at FROM posts WHERE id = $1", [job.data.postId]);
   const post = postResult.rows[0];
-  if (!post || post.status === "stopped" || post.status === "paused" || (post.mode === "recurring" && !post.scheduler_enabled)) {
+  if (!post || post.media_expired_at || post.status === "completed" || post.status === "stopped" || post.status === "paused" || (post.mode === "recurring" && !post.scheduler_enabled)) {
     return { skipped: true };
   }
 
@@ -77,8 +78,8 @@ async function fanout(job: Job<FanoutJob>) {
 async function sendDelivery(deliveryId: string) {
   const result = await pool.query(
     `SELECT d.id, d.status, d.attempt_count, d.occurrence_key,
-            p.id AS post_id, p.text, p.status AS post_status, p.interval_seconds, p.max_attempts, p.retry_delay_seconds,
-            dst.external_id, i.platform, i.session_key, i.credential_ciphertext
+            p.id AS post_id, p.text, p.media_expired_at, p.status AS post_status, p.interval_seconds, p.max_attempts, p.retry_delay_seconds,
+            dst.external_id, i.id AS integration_id, i.enabled, i.auth_error, i.platform, i.session_key, i.credential_ciphertext
      FROM deliveries d
      JOIN posts p ON p.id = d.post_id
      JOIN destinations dst ON dst.id = d.destination_id
@@ -87,7 +88,7 @@ async function sendDelivery(deliveryId: string) {
     [deliveryId],
   );
   const row = result.rows[0];
-  if (!row) return { terminal: true, delay: 0 };
+  if (!row || row.media_expired_at) return { terminal: true, delay: 0 };
   if (row.post_status === "paused") {
     await pool.query("UPDATE deliveries SET status = 'paused' WHERE id = $1 AND status = 'queued'", [row.id]);
     return { terminal: true, delay: 0 };
@@ -97,6 +98,7 @@ async function sendDelivery(deliveryId: string) {
     return { terminal: true, delay: 0 };
   }
   if (row.status !== "queued") return { terminal: false, delay: 0 };
+  if (!row.enabled || row.auth_error) return { terminal: false, delay: 60_000 };
 
   const claimed = await pool.query(
     `UPDATE deliveries SET status = 'sending', attempt_count = attempt_count + 1
@@ -106,13 +108,13 @@ async function sendDelivery(deliveryId: string) {
   if (!claimed.rowCount) return { terminal: false, delay: 0 };
   const attachments = await pool.query(
     `SELECT storage_path AS path, original_name AS name, mime_type AS "mimeType", size_bytes::int AS "sizeBytes"
-     FROM attachments WHERE post_id = $1 ORDER BY created_at, id`,
+     FROM attachments WHERE post_id = $1 AND expired_at IS NULL ORDER BY created_at, id`,
     [row.post_id],
   );
 
   try {
     const adapter = createAdapter(row.platform, decryptCredentials(row.credential_ciphertext), row.session_key);
-    const sent = await withTimeout(adapter.send(row.external_id, { text: row.text, attachments: attachments.rows }), config.SEND_TIMEOUT_MS);
+    const sent = await withTimeout(adapter.send(row.external_id, { deliveryId: row.id, text: row.text, attachments: attachments.rows }), config.SEND_TIMEOUT_MS);
     await pool.query(
       `UPDATE deliveries SET status = 'sent', external_message_id = $2, last_error = NULL,
        last_error_kind = NULL, sent_at = now() WHERE id = $1`,
@@ -121,6 +123,16 @@ async function sendDelivery(deliveryId: string) {
     return { terminal: false, delay: Number(row.interval_seconds) * 1000 };
   } catch (error) {
     const kind = classifyDeliveryError(error);
+    if (kind === "waiting" || kind === "auth_required") {
+      const reason = deliveryErrorMessage(error);
+      if (kind === "auth_required" && row.platform === "max") {
+        // Do not let an old in-flight login failure block newly saved credentials.
+        await pool.query("UPDATE integrations SET auth_error=$2 WHERE id=$1 AND credential_ciphertext=$3", [row.integration_id, reason, row.credential_ciphertext]);
+      }
+      await pool.query(`UPDATE deliveries SET status='queued', attempt_count=GREATEST(0,attempt_count-1),
+        last_error=$2,last_error_kind=$3,next_attempt_at=now()+interval '60 seconds' WHERE id=$1`, [row.id,reason,kind]);
+      return { terminal: false, delay: 0 };
+    }
     const attempts = Number(claimed.rows[0].attempt_count);
     const canRetry = kind === "transient" && attempts < Number(row.max_attempts);
     const status = canRetry ? "queued" : kind === "ambiguous" ? "unknown" : "failed";
@@ -138,13 +150,21 @@ async function dispatch(job: Job<DispatchJob>) {
   if (!post || post.status === "paused" || post.status === "stopped") return { skipped: true };
 
   const next = await pool.query(
-    `SELECT id FROM deliveries WHERE post_id = $1 AND occurrence_key = $2 AND status = 'queued'
-     ORDER BY queued_at, id LIMIT 1`,
+    `SELECT d.id FROM deliveries d JOIN destinations dst ON dst.id=d.destination_id
+     JOIN integrations i ON i.id=dst.integration_id
+     WHERE d.post_id = $1 AND d.occurrence_key = $2 AND d.status = 'queued'
+       AND d.next_attempt_at <= now() AND i.enabled AND i.auth_error IS NULL
+     ORDER BY d.queued_at, d.id LIMIT 1`,
     [job.data.postId, job.data.occurrenceKey],
   );
   if (!next.rowCount) {
+    const waiting = await pool.query("SELECT 1 FROM deliveries WHERE post_id=$1 AND occurrence_key=$2 AND status='queued' LIMIT 1", [job.data.postId,job.data.occurrenceKey]);
+    if (waiting.rowCount) {
+      await scheduleDispatch(job.data.postId, job.data.occurrenceKey, 60_000);
+      return { waiting: true };
+    }
     if (post.mode !== "recurring") {
-      await pool.query("UPDATE posts SET status = 'completed', updated_at = now() WHERE id = $1 AND status = 'active'", [job.data.postId]);
+      await reconcilePostStatus(job.data.postId);
     }
     return { completed: true };
   }
@@ -161,11 +181,21 @@ async function dispatch(job: Job<DispatchJob>) {
 
 async function retryDelivery(job: Job<DeliveryJob>) {
   const outcome = await sendDelivery(job.data.deliveryId);
-  const delivery = await pool.query("SELECT post_id FROM deliveries WHERE id=$1", [job.data.deliveryId]);
-  if (delivery.rowCount) await reconcilePostStatus(delivery.rows[0].post_id);
+  const delivery = await pool.query("SELECT post_id,occurrence_key,status FROM deliveries WHERE id=$1", [job.data.deliveryId]);
+  if (delivery.rowCount) {
+    const row=delivery.rows[0];
+    if (row.status === "queued") await scheduleDispatch(row.post_id,row.occurrence_key,outcome.delay);
+    await reconcilePostStatus(row.post_id);
+  }
   return outcome;
 }
 
+const shutdownSignal=new AbortController();
+process.once('SIGTERM',()=>shutdownSignal.abort());
+process.once('SIGINT',()=>shutdownSignal.abort());
+
+async function runOwnedWorker(signal:AbortSignal){
+ signal.throwIfAborted();
 // Repair jobs left active by older workers after their final delivery.
 await pool.query(
   `UPDATE posts p SET status='completed', updated_at=now()
@@ -175,6 +205,23 @@ await pool.query(
        WHERE d.post_id=p.id AND d.status IN ('queued','sending','paused')
      )`,
 );
+
+// A late browser confirmation can resolve an HTTP timeout without sending again.
+async function reconcileReceipts() {
+  await pool.query(`UPDATE deliveries d SET status='sent',external_message_id=r.message_id,
+    sent_at=r.updated_at,last_error=NULL,last_error_kind=NULL
+    FROM whatsapp_send_receipts r WHERE r.delivery_id=d.id AND r.status='sent'
+      AND d.status IN ('unknown','sending')`);
+  await pool.query(`UPDATE deliveries d SET status='sent',external_message_id=r.message_id,
+    sent_at=r.updated_at,last_error=NULL,last_error_kind=NULL FROM max_send_receipts r
+    WHERE r.delivery_id=d.id AND r.status='sent' AND d.status IN ('unknown','sending')`);
+}
+// This recovery runs only under the exclusive publishing-worker slot.
+// A process exit after claiming a delivery does not prove it was never sent.
+await pool.query("UPDATE deliveries SET status='unknown',last_error='Отправка прервана перезапуском; результат требует проверки',last_error_kind='ambiguous' WHERE status='sending'");
+await reconcileReceipts();
+const receiptTimer=setInterval(()=>void reconcileReceipts().catch(error=>console.error("Receipt reconciliation failed",error.message)),15_000);
+receiptTimer.unref();
 
 const worker = new Worker(
   config.QUEUE_NAME,
@@ -191,11 +238,22 @@ worker.on("failed", (job, error) => console.error(`Failed ${job?.name} ${job?.id
 worker.on("error", (error) => console.error("Worker error", error));
 console.log("Relayboard publishing worker started");
 
-async function shutdown() {
-  await worker.close();
-  await publishingQueue.close();
-  await pool.end();
-  process.exit(0);
+await new Promise<void>((resolve,reject)=>{
+ let closing=false;
+ const shutdown=()=>{if(closing)return;closing=true;clearInterval(receiptTimer);void worker.close().then(()=>resolve(),reject);};
+ signal.addEventListener('abort',shutdown,{once:true});
+ if(signal.aborted)shutdown();
+});
 }
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
+async function main(){
+try{
+ await withExecutionSlot(pool,'worker:publishing',runOwnedWorker,shutdownSignal.signal);
+}catch(error){
+ if(!shutdownSignal.signal.aborted){console.error('Publishing ownership lost; worker stopped');process.exitCode=1;}
+}finally{
+ await publishingQueue.close();
+ await pool.end();
+}
+
+}
+void main();

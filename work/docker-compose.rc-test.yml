@@ -1,0 +1,84 @@
+# Disposable synthetic Linux acceptance. Never merge with production Compose.
+x-env: &environment
+  NODE_ENV: production
+  DATABASE_URL: postgresql://relayboard:synthetic-db-only@postgres:5432/relayboard_rc_test
+  REDIS_URL: redis://redis:6379
+  ADMIN_API_KEY: synthetic-rc-api-key-not-production
+  ADMIN_USERNAME: admin
+  ADMIN_PASSWORD: synthetic-rc-password
+  APP_ENCRYPTION_KEY: synthetic-rc-encryption-key-not-production
+  SESSION_COOKIE_NAME: relayboard_rc_test
+  SESSION_COOKIE_SECURE: 'false'
+  CONTACT_IMPORT_ENABLED: 'true'
+  AI_SEND_MODE: synthetic
+  AI_PROVIDER_MODE: fixture
+  AI_ALLOW_EXTERNAL_REQUESTS: 'false'
+  AI_TEST_ONLY: 'true'
+  SOURCE_MONITOR_ENABLED: 'false'
+  MESSENGER_SEND_MODE: fake
+  MAX_WORKER_ENABLED: 'true'
+  MAX_WORKER_HOST: 0.0.0.0
+  MAX_WORKER_SECRET: synthetic-max-owner-secret-not-production
+  MAX_WORKER_URL: http://max-owner:3030
+  WHATSAPP_BRIDGE_SECRET: synthetic-whatsapp-secret-not-production
+  TELEGRAM_BRIDGE_SECRET: synthetic-telegram-secret-not-production
+  UPLOAD_DIR: /app/data/uploads
+services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_DB: relayboard_rc_test
+      POSTGRES_USER: relayboard
+      POSTGRES_PASSWORD: synthetic-db-only
+    tmpfs: [/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U relayboard -d relayboard_rc_test]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  redis:
+    image: redis:7-bookworm
+    command: [redis-server, --save, '', --appendonly, 'no']
+    tmpfs: [/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  api:
+    image: relayboard:rc-20261115
+    environment: *environment
+    command: [sh, -c, 'node dist-node/api/migrate.js && node dist-node/api/migrate-ai-manager.js && node dist-node/api/server.js']
+    ports: ['127.0.0.1::3001']
+    tmpfs: ['/app/data/uploads:uid=1000,gid=1000,mode=0700']
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  ai-worker:
+    image: relayboard:rc-20261115
+    environment: *environment
+    command: [node, dist-node/ai-worker/index.js]
+    depends_on:
+      api: {condition: service_healthy}
+  publishing-worker:
+    image: relayboard:rc-20261115
+    environment: *environment
+    command: [node, dist-node/worker/index.js]
+    depends_on:
+      api: {condition: service_healthy}
+  max-owner:
+    image: relayboard:rc-20261115
+    environment:
+      <<: *environment
+      AI_SEND_MODE: disabled
+    command: [node, dist-node/messenger-worker/index.js]
+    depends_on:
+      api: {condition: service_healthy}
+networks:
+  default:
+    internal: true

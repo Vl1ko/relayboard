@@ -9,7 +9,14 @@ export const redisConnection = {
   password: redisUrl.password || undefined,
   ...(redisUrl.protocol === "rediss:" ? { tls: {} } : {}),
 };
-export const publishingQueue = new Queue(config.QUEUE_NAME, { connection: redisConnection });
+export const publishingQueue = new Queue(config.QUEUE_NAME, {
+  connection: redisConnection,
+  // Durable business history/receipts live in PostgreSQL; Redis retains bounded job diagnostics.
+  defaultJobOptions: {
+    removeOnComplete: { age: 86400, count: 2000 },
+    removeOnFail: { age: 7 * 86400, count: 2000 },
+  },
+});
 
 export type FanoutJob = { postId: string };
 export type DeliveryJob = { deliveryId: string };

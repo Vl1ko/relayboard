@@ -1,4 +1,8 @@
+import {maxWorkerRequest} from '../max-worker-client.js';
 import { UMax } from "@ounezz/umax";
+import { DeliveryError, isAuthorizationError } from "../delivery-policy.js";
+import { config } from "../config.js";
+import { sendMaxPhotoMessage, type MaxTransport } from "./max-photo.js";
 import type { MessengerAdapter, OutgoingMessage, SendResult } from "./types.js";
 
 const clients = new Map<string, Promise<UMax>>();
@@ -73,14 +77,19 @@ async function getClient(token: string): Promise<UMax> {
 }
 
 async function withConnectedClient<T>(token: string, action: (client: UMax) => Promise<T>) {
-  let client = await getClient(token);
+  let client: UMax;
+  try { client = await getClient(token); }
+  catch (error) {
+    if (isAuthorizationError(error)) throw error;
+    throw new DeliveryError("MAX временно недоступен; отправка ожидает подключения", "waiting");
+  }
   try {
     return await action(client);
   } catch (error) {
     if (!(error instanceof Error) || !/WebSocket (?:is not connected|disconnected)/i.test(error.message)) throw error;
     forgetClient(token, client);
-    client = await getClient(token);
-    return action(client);
+    // The action may already have reached MAX. Reconnecting must not replay it.
+    throw new DeliveryError("Соединение MAX прервано во время отправки; результат требует проверки", "ambiguous");
   }
 }
 
@@ -107,8 +116,17 @@ export class MaxAdapter implements MessengerAdapter {
   constructor(private readonly token: string) {}
 
   async send(destinationId: string, message: OutgoingMessage): Promise<SendResult> {
+    if(config.MAX_WORKER_URL){
+      if(!message.deliveryId||!/^[0-9a-f-]{36}$/i.test(message.deliveryId))throw new DeliveryError("MAX owner требует ID сохранённой отправки","permanent");
+      const result=await maxWorkerRequest(`/deliveries/${message.deliveryId}/dispatch`,'POST') as {externalMessageId?:unknown};
+      if(typeof result.externalMessageId!=='string'||!result.externalMessageId.trim())throw new DeliveryError("MAX owner не подтвердил отправку","ambiguous");
+      return {externalMessageId:result.externalMessageId};
+    }
     return withConnectedClient(this.token, async (client) => {
       const chat = await client.chats.get(Number(destinationId));
+      if (message.attachments.some(item => item.mimeType.startsWith("image/"))) {
+        return sendMaxPhotoMessage((client as unknown as { ws: MaxTransport }).ws, Number(destinationId), message, config.SEND_TIMEOUT_MS);
+      }
       const sent = await chat.messages.send(message.text, {
         photos: message.attachments.filter((item) => item.mimeType.startsWith("image/")).map((item) => item.path),
         videos: message.attachments.filter((item) => item.mimeType.startsWith("video/")).map((item) => item.path),

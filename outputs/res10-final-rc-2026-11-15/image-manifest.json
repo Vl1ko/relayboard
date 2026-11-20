@@ -1,0 +1,30 @@
+{
+  "sourceCommit": "bc7c7b4d7ead9a548cc42156b18efb79d5616b6f",
+  "imageTag": "relayboard:rc-bc7c7b4",
+  "imageId": "sha256:ee5ae5449e11ec24fca2a794a4e09a70d5b2edfb6a43f06d517c7ac7b4024fd4",
+  "repoDigests": [
+    "relayboard@sha256:ee5ae5449e11ec24fca2a794a4e09a70d5b2edfb6a43f06d517c7ac7b4024fd4"
+  ],
+  "os": "linux",
+  "architecture": "amd64",
+  "sizeBytes": 434923410,
+  "user": "node",
+  "testNetworkInternal": true,
+  "runtimeNode": "v24.22.3",
+  "chromium": "Chromium 156.0.8078.79 built on Debian GNU/Linux 12 (bookworm)",
+  "migrationCount": 23,
+  "sourceTests": {
+    "pass": 371,
+    "fail": 0,
+    "skip": 0
+  },
+  "liveAcceptance": false,
+  "productionDeployment": false,
+  "longSoak": "running separately; no24h PASS yet",
+  "rebuildNote": "npm lockfile and archived source repeatable; base OS packages may differ in future builds; this digest identifies the tested image, not a byte-for-byte reproducibility promise",
+  "compiledTests": {
+    "pass": 371,
+    "fail": 0,
+    "skip": 0
+  }
+}

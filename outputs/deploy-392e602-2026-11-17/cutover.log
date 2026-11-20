@@ -1,0 +1,3 @@
+Installed Compose release configuration
+Applied base and AI migrations; business snapshot preserved
+{"api": {"result": "PASS", "health": true, "protectedRoutes": true, "loginWithPreservedCredentials": true, "secureCookie": true, "aiUiEndpoints": true, "storedConnectionsDecrypted": 3, "schema": 25, "aiSendMode": "disabled", "externalAiRequests": "false", "testOnly": "true"}, "release": "392e6025e6345d68465f33d7e2d7de5ab5c746b1", "imageId": "sha256:277f5dda6529322c36cf387aa91cd9a0f08ae7594bb952abbb11c2724315ef32", "preservedUnknown": 162, "businessSnapshotPreserved": true}

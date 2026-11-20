@@ -1,0 +1,14 @@
+{
+  "result": "PASS",
+  "schema": 25,
+  "preserved": {
+    "integrations": 3,
+    "posts": 208,
+    "deliveries": 16376,
+    "unknown": 162,
+    "sent": 7448,
+    "credentialFingerprint": "46328363a6f1f82ee013193a00c5dae6"
+  },
+  "externalRequests": false,
+  "sourceModified": false
+}

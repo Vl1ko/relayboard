@@ -1,0 +1,29 @@
+✔ work window is explicit and end-exclusive, weekends advance without a guessed timezone (563.416716ms)
+✔ nine statuses have explicit transitions and qualified never trusts a caller boolean by default (85.047508ms)
+✔ takeover cancels both channels and followups; explicit resume never revives cancelled work (133.952289ms)
+✔ opt-out is contact-wide and cannot be cleared by resume or status change (129.736582ms)
+✔ status mutation invalidates late work and qualified requires injected authoritative verifier (141.974666ms)
+✔ handoff is idempotent, holds both channels and never calls itself notified (236.567912ms)
+✔ notification attempt token protects uncertainty; late confirmed result is retained without resend (167.212115ms)
+✔ each of four followup scenarios requires explicit enabled config, schedule replay creates no new jobs (158.775859ms)
+✔ due work enqueues once, later steps wait for confirmed predecessor and actual start delay (138.134115ms)
+✔ legacy inbound epoch change cancels followups and explicit booking/order/stop/closed cancel all linked work (200.340626ms)
+✔ final followup gate rechecks disabled rule and working hours after an outbox was materialized (123.102635ms)
+✔ stale AI handoff/status cannot pause a newer generation or opt the contact out (105.587471ms)
+✔ internal AI handoff preserves an unqualified/insufficient status rather than reporting qualified (112.617729ms)
+✔ prepared manager transport is bound to target, initiated once and confirmed only from its own acknowledgement (131.186595ms)
+✔ handoff created before manager target configuration can bind only while still pending (119.701596ms)
+✔ handoff payload identity survives JSONB property ordering on replay (98.358446ms)
+✔ manager receipt is recorded once even when the initiation transaction rolls back (123.702372ms)
+✔ historical closed channel does not block follow-up of a later active request (121.27635ms)
+✔ handoff snapshots the selected sender name separately from the source reader (122.600754ms)
+✔ workspace links discard ambient query/hash and reject credentials or insecure external origins (1.555454ms)
+✔ manager text preserves full card link and bounded whole field lines without technical metadata (1.234416ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 21
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4354.632321

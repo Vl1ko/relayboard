@@ -1,0 +1,145 @@
+{
+  "base_head": "aaddf26404ae939912247a6abd0ead7c1d95fb3b",
+  "preexisting_changes": [
+    {
+      "path": ".env.example",
+      "status": " M",
+      "sha256": "d0583eb3a93fe5b5cbbe833d00237247033194c3783ded0eb9cfc8f754e257ef"
+    },
+    {
+      "path": "README.md",
+      "status": " M",
+      "sha256": "a5f9e79e4f063290433557809a6e1dc36ec9b87edf92b51beecddc11c7e0b615"
+    },
+    {
+      "path": "database/schema.sql",
+      "status": " M",
+      "sha256": "37e81715ba1f9bc7720da21d0523187fba2ea438b1f883a11446e91990714692"
+    },
+    {
+      "path": "package.json",
+      "status": " M",
+      "sha256": "a1bc88a2925eb9c4416535c140d861d385979fb7ba1af5a42af7bf124418549b"
+    },
+    {
+      "path": "src/api/server.ts",
+      "status": " M",
+      "sha256": "7c65f612dd5c1c85a4604086ad434021272aa8ef1163f5884006c7d86cb44997"
+    },
+    {
+      "path": "src/core/account-routing.test.ts",
+      "status": " M",
+      "sha256": "5a73151eaaa91af4cfc7d3333d58dd22228a6c4af2c5d2177595351deb5d7944"
+    },
+    {
+      "path": "src/core/adapters/max.ts",
+      "status": " M",
+      "sha256": "5bf406a2810ec347f4a3ee52b3c74f353e82246057c4e3846f35a9b029075f4f"
+    },
+    {
+      "path": "src/core/adapters/types.ts",
+      "status": " M",
+      "sha256": "49e8c555677e085030d552b58b72a70a705341f716dc948b7fb85ef4a5d39711"
+    },
+    {
+      "path": "src/core/adapters/whatsapp.ts",
+      "status": " M",
+      "sha256": "71207f0bf4c95693606049e58752f47b19e549bf718b104261f39364d6dca3c1"
+    },
+    {
+      "path": "src/core/config.ts",
+      "status": " M",
+      "sha256": "efbc8a107b39a8ba3700b1d1ec7ee80e6f0cb14362684994f4a56d35a8fed997"
+    },
+    {
+      "path": "src/core/delivery-policy.test.ts",
+      "status": " M",
+      "sha256": "fa54360c65639e5e0a075cd744a5fed55c7fe8f6a9d0acd490e0ba8d584d78c4"
+    },
+    {
+      "path": "src/core/delivery-policy.ts",
+      "status": " M",
+      "sha256": "dc83c7a362ba445eba7df42782a30431a34882712ac9d022c29624ccc08aa6f5"
+    },
+    {
+      "path": "src/whatsapp-bridge/index.ts",
+      "status": " M",
+      "sha256": "74cd0a65c8cec06aa29ba727118708a4185f31ab7773f62c15131a8abb50966d"
+    },
+    {
+      "path": "src/worker/index.ts",
+      "status": " M",
+      "sha256": "2116ed4ca239050169fd09f86128be68c8aefe2fe8a06892cf171592ced71431"
+    },
+    {
+      "path": "web/src/App.tsx",
+      "status": " M",
+      "sha256": "e534a9ba8998f4fbbbef2481fe1c43e25d4bb5e83e12dcb964906c1f1025a345"
+    },
+    {
+      "path": "web/src/modern.css",
+      "status": " M",
+      "sha256": "4703facadb59e674e87dc380a6cd09fd1d55d542fac4508169ce1f15ccdd23f6"
+    },
+    {
+      "path": "docs/STORAGE.md",
+      "status": "??",
+      "sha256": "646bd2fba0778cd61a051a83d84045c6ad0ff63ee4afbaeecb214c37153917a5"
+    },
+    {
+      "path": "docs/STORAGE_AUDIT_2026-11-12.md",
+      "status": "??",
+      "sha256": "2ae5b1625231285b09b534747c8c8773f9867d6c9e2de14e2c34d38e0639f161"
+    },
+    {
+      "path": "outputs/relayboard-ai-preview.png",
+      "status": "??",
+      "sha256": "a3ce37ce56331fdddf4b0fd211c4385f1eb89e1ba4d8ac99c426bb9ecb766f78"
+    },
+    {
+      "path": "outputs/relayboard-clients-mobile-preview.png",
+      "status": "??",
+      "sha256": "2573f66b8d4a6db37aa4fdc505c5ede4e8563fba6d8c22f7bdef9b4c0c80e794"
+    },
+    {
+      "path": "outputs/relayboard-clients-preview.png",
+      "status": "??",
+      "sha256": "32f9b3c26ff57ee5c20af692321572b5ab9ea32bd1334cad6f84ecd56b324ef7"
+    },
+    {
+      "path": "src/api/storage-preview.ts",
+      "status": "??",
+      "sha256": "70defd3cb0f3d98bc271f13888d40cff5889375b74f9bc04128b93bae6286f10"
+    },
+    {
+      "path": "src/core/adapters/max-photo.ts",
+      "status": "??",
+      "sha256": "ca70c129d5ee957f90307240fd0cf7ae0a13872ba140dc82cbdac2ba986dbd80"
+    },
+    {
+      "path": "src/core/attachment-retention.test.ts",
+      "status": "??",
+      "sha256": "acf4043cd13018d05948abaa4cfa69a47248a75f185a519573b94c9de1f06e19"
+    },
+    {
+      "path": "src/core/attachment-retention.ts",
+      "status": "??",
+      "sha256": "6b9eb059b899752e26c8cc09eb519530e1bf3c3a4e0c5fc670a429311626cdec"
+    },
+    {
+      "path": "src/core/max-photo.test.ts",
+      "status": "??",
+      "sha256": "ec976e39dca2d6b0566c96d6b3b2f4dd67b6edddc8d219cf39126e2a3e8f1616"
+    },
+    {
+      "path": "src/core/whatsapp-readiness.test.ts",
+      "status": "??",
+      "sha256": "971d4bf748efbde56489807cbe432dd203af3545a5a6f02681bc3ab86b6ab7d1"
+    },
+    {
+      "path": "work/reliability-smoke.mjs",
+      "status": "??",
+      "sha256": "de7a3a127508394ad4aa480196690388e09c89a0cea3445dda3ec644c70bbb91"
+    }
+  ]
+}

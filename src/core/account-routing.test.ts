@@ -5,7 +5,8 @@ import { WhatsAppAdapter } from "./adapters/whatsapp.js";
 
 test("Telegram and WhatsApp route identical groups through isolated account sessions", async (t) => {
   const sessions: string[] = [];
-  t.mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
+  t.mock.method(globalThis, "fetch", async (url: unknown, init: RequestInit) => {
+    if (String(url).endsWith("/status")) return Response.json({status:"ready"});
     sessions.push(new Headers(init.headers).get("x-account-session") || "");
     return Response.json({ messageId: "mock-only" });
   });

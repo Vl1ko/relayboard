@@ -1,4 +1,5 @@
 export type OutgoingMessage = {
+  deliveryId?: string;
   text: string;
   attachments: OutgoingAttachment[];
 };

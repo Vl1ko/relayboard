@@ -1,0 +1,60 @@
+{
+  "services": [
+    {
+      "name": "relayboard-api-1",
+      "imageId": "sha256:277f5dda6529322c36cf387aa91cd9a0f08ae7594bb952abbb11c2724315ef32",
+      "running": true,
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "relayboard-worker-1",
+      "imageId": "sha256:277f5dda6529322c36cf387aa91cd9a0f08ae7594bb952abbb11c2724315ef32",
+      "running": true,
+      "health": null,
+      "restarts": 0
+    },
+    {
+      "name": "relayboard-whatsapp-1",
+      "imageId": "sha256:277f5dda6529322c36cf387aa91cd9a0f08ae7594bb952abbb11c2724315ef32",
+      "running": true,
+      "health": null,
+      "restarts": 0
+    },
+    {
+      "name": "relayboard-telegram-1",
+      "imageId": "sha256:277f5dda6529322c36cf387aa91cd9a0f08ae7594bb952abbb11c2724315ef32",
+      "running": true,
+      "health": null,
+      "restarts": 0
+    },
+    {
+      "name": "relayboard-postgres-1",
+      "imageId": "sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685",
+      "running": true,
+      "health": "healthy",
+      "restarts": 0
+    },
+    {
+      "name": "relayboard-redis-1",
+      "imageId": "sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf",
+      "running": true,
+      "health": "healthy",
+      "restarts": 0
+    }
+  ],
+  "database": {
+    "schema": 25,
+    "unknownDeliveries": 162,
+    "connections": 3
+  },
+  "diskAvailableBytes": 2520436736,
+  "release": {
+    "commit": "392e6025e6345d68465f33d7e2d7de5ab5c746b1",
+    "image": "relayboard:release-392e602",
+    "imageId": "sha256:277f5dda6529322c36cf387aa91cd9a0f08ae7594bb952abbb11c2724315ef32",
+    "source": "/opt/relayboard/releases/20261117-392e602",
+    "schema": 25,
+    "publicUrl": "https://000vsm.ru"
+  }
+}

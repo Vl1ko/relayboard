@@ -1,0 +1,4 @@
+
+> relayboard@1.0.0 typecheck
+> tsc -p tsconfig.node.json --noEmit && tsc -p web/tsconfig.json --noEmit
+

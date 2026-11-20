@@ -1,0 +1,22 @@
+import test,{before,after} from 'node:test';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {readFile} from 'node:fs/promises';
+import type {AddressInfo} from 'node:net';
+import express from 'express';
+import pg from 'pg';
+import {applyAiManagerMigration} from '../core/ai-manager-migration.js';
+import {createLeadRouter} from './lead-router.js';
+const url=process.env.SEARCH_TEST_DATABASE_URL,skip=!url;let pool:pg.Pool,schema:string,base:string,server:ReturnType<ReturnType<typeof express>['listen']>;
+before(async()=>{if(!url)return;if(new URL(url).pathname!='/relayboard_search_test')throw Error('Dedicated search test DB required');schema='lead_http_'+randomUUID().replaceAll('-','');const c=new pg.Client({connectionString:url});await c.connect();await c.query('CREATE SCHEMA '+schema);await c.end();pool=new pg.Pool({connectionString:url,options:'-c search_path='+schema+',public'});await pool.query(await readFile(new URL('../../database/schema.sql',import.meta.url),'utf8'));await applyAiManagerMigration(pool);const app=express(),authorize:express.RequestHandler=(req,res,next)=>req.header('authorization')==='Bearer synthetic-admin'?next():res.status(401).json({error:'Unauthorized'});app.use(authorize);app.use(express.json());app.use('/leads',createLeadRouter({pool,authorize,enabled:true,runtimeEnabled:true}));server=app.listen(0,'127.0.0.1');await new Promise<void>(r=>server.once('listening',r));base='http://127.0.0.1:'+(server.address() as AddressInfo).port;});
+after(async()=>{if(!pool)return;await new Promise<void>(r=>server.close(()=>r()));await pool.query('DROP SCHEMA '+schema+' CASCADE');await pool.end();});
+const call=(path:string,body?:unknown,auth=true)=>fetch(base+'/leads'+path,{method:body===undefined?'GET':'POST',headers:{'content-type':'application/json',...(auth?{authorization:'Bearer synthetic-admin'}:{})},body:body===undefined?undefined:JSON.stringify(body)});
+test('monitor HTTP authenticates and requires fresh real process heartbeats before start',{skip},async()=>{
+ assert.equal((await call('/monitor',undefined,false)).status,401);const initial=await(await call('/monitor')).json() as any;assert.equal(initial.runtimeEnabled,false);assert.equal(initial.mode,'stopped');
+ assert.equal((await call('/monitor/control',{expectedRevision:0,action:'start'})).status,503);
+ const account=(await pool.query("INSERT INTO integrations(platform,name,credential_ciphertext) VALUES('max','Synthetic','fake') RETURNING id")).rows[0].id;
+ await pool.query("INSERT INTO ai_search_sources(account_id,platform,chat_id) VALUES($1,'max','-10')",[account]);await pool.query("UPDATE ai_engine_settings SET settings=settings||$1::jsonb",[JSON.stringify({provider:'gigachat',model:'GigaChat',qualificationEnabled:true,fields:[{key:'volume',question:'Объём?',required:true}],rules:[{field:'volume',op:'gte',value:10}]})]);await pool.query('UPDATE ai_outreach_settings SET account_ids=$1',[[account]]);await pool.query("UPDATE ai_monitor_settings SET settings=settings||'{\"instructions\":\"Искать покупателей\"}'::jsonb");
+ await pool.query("INSERT INTO ai_source_runtime_status(role,enabled) VALUES('coordinator',true),('max-reader',true)");assert.equal((await call('/monitor/control',{expectedRevision:0,action:'start'})).status,200);
+ await pool.query("UPDATE ai_source_runtime_status SET heartbeat_at=now()-interval '1 minute' WHERE role='max-reader'");assert.equal((await(await call('/monitor')).json() as any).runtimeEnabled,false);assert.equal((await call('/monitor/control',{expectedRevision:1,action:'start'})).status,503);
+ assert.equal((await call('/',{sourceKind:'monitor'})).status,400);assert.equal((await pool.query('SELECT count(*)::int n FROM ai_source_messages')).rows[0].n,0);assert.equal((await pool.query('SELECT count(*)::int n FROM ai_outbox')).rows[0].n,0);
+});

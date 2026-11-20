@@ -1,0 +1,72 @@
+import {ImportOutreach,type ImportLookup} from '../core/import-outreach.js';
+import {synchronizeContactHistory} from '../core/synchronize-contact-history.js';
+import {startSourceHeartbeat} from '../core/source-runtime-health.js';
+import {SourceRuntime} from '../core/source-runtime.js';
+import {createGigaChatSourceScorer} from '../core/gigachat-source-scorer.js';
+import type {VerifiedSourceRoute} from '../core/source-activation.js';
+import {setTimeout as delay} from 'node:timers/promises';
+import {createGigaChatProvider} from '../core/gigachat-provider.js';
+import {createYandexProvider} from '../core/yandex-provider.js';
+import {AiManagerStore} from '../core/ai-manager.js';
+import {conservativeFixtureProvider} from '../core/ai-orchestrator.js';
+import {ConversationWorkflow} from '../core/conversation-workflow.js';
+import {config} from '../core/config.js';
+import {pool} from '../core/db.js';
+import {syntheticTransport} from '../core/outreach-runner.js';
+import {AiExecutionRuntime,type RuntimeTransport} from '../core/ai-execution-runtime.js';
+import {runtimeAllowsConversation} from '../core/runtime-scope.js';
+import {maxWorkerRequest} from '../core/max-worker-client.js';
+import {dispatchWhatsAppAction,whatsappWorkerRequest} from '../core/whatsapp-worker-client.js';
+import {withExecutionSlot} from '../core/execution-slot.js';
+const stop=new AbortController();process.once('SIGTERM',()=>stop.abort());process.once('SIGINT',()=>stop.abort());
+async function run(signal:AbortSignal){
+ const heartbeat=await startSourceHeartbeat(pool,'coordinator',config.SOURCE_MONITOR_ENABLED&&config.AI_SEND_MODE==='live',signal);
+ if(!config.SOURCE_MONITOR_ENABLED)await pool.query("UPDATE ai_monitor_settings SET mode='paused',revision=revision+1,updated_at=now() WHERE mode='active'");
+ try{
+ const live=config.AI_SEND_MODE==='live';
+ const provider=config.AI_PROVIDER_MODE==='yandex'?createYandexProvider({apiKey:config.YANDEX_API_KEY!,folderId:config.YANDEX_FOLDER_ID!}):config.AI_PROVIDER_MODE==='gigachat'?createGigaChatProvider({pool,authKey:config.GIGACHAT_AUTH_KEY!,scope:config.GIGACHAT_SCOPE}):conservativeFixtureProvider;
+ const messages=new AiManagerStore(pool),workflow=new ConversationWorkflow(pool);
+ const scope={testOnly:config.AI_TEST_ONLY,accountIds:config.AI_TEST_ACCOUNT_IDS,authorIds:config.AI_TEST_AUTHOR_IDS};
+ const transport:RuntimeTransport=live?{
+  allowsConversation:id=>runtimeAllowsConversation(pool,scope,id),
+  async dispatchAction(id,target){
+   await synchronizeContactHistory(pool,id,{allows:id=>runtimeAllowsConversation(pool,scope,id),async sync(v){
+    return v.platform==='max'?await maxWorkerRequest(`/conversations/${v.id}/sync`,'POST'):await whatsappWorkerRequest(pool,v.account_id,`/ai/conversations/${v.id}/sync`);
+   }});
+   return target.platform==='whatsapp'?dispatchWhatsAppAction(pool,id,target.accountId):maxWorkerRequest(`/actions/${id}/dispatch`,'POST');},
+  dispatchNotification:id=>maxWorkerRequest(`/notifications/${id}/dispatch`,'POST'),
+ }:{
+  allowsConversation:async()=>true,
+  dispatchAction:async(id,target)=>messages.dispatch(id,syntheticTransport(target)),
+  async dispatchNotification(id){const n=(await pool.query('SELECT * FROM ai_handoff_notifications WHERE id=$1',[id])).rows[0];if(!n)return;const target=n.target_account_id?{accountId:n.target_account_id,externalId:n.target_external_id}:await workflow.managerTarget();if(!target)return;return workflow.dispatchNotification(id,{target,start:a=>({acknowledgement:Promise.resolve({operationId:a.operationId,outcome:'confirmed',code:'synthetic_confirmation',externalMessageId:'synthetic:'+a.operationId,retryCondition:'never'})})});},
+ };
+ const runtime=new AiExecutionRuntime(pool,provider,transport,signal,{publicAppUrl:config.PUBLIC_APP_URL});
+ const sources=live&&config.SOURCE_MONITOR_ENABLED?new SourceRuntime(pool,scope,createGigaChatSourceScorer({pool,authKey:config.GIGACHAT_AUTH_KEY!,scope:config.GIGACHAT_SCOPE}),async(id,platform)=>{
+  if(platform==='whatsapp'){const lead=(await pool.query('SELECT account_id FROM ai_leads WHERE id=$1',[id])).rows[0];if(!lead)throw Error('source_lead_missing');return await whatsappWorkerRequest(pool,lead.account_id,`/ai/leads/${id}/resolve`) as VerifiedSourceRoute;}
+  return await maxWorkerRequest(`/leads/${id}/resolve`,'POST') as VerifiedSourceRoute;
+ },signal):undefined;
+ const imports=live?new ImportOutreach(pool,scope,async(contactId,accountId,platform)=>platform==='max'?await maxWorkerRequest(`/contacts/${contactId}/lookup`,'POST',{accountId}) as Awaited<ReturnType<ImportLookup>>:await whatsappWorkerRequest(pool,accountId,`/ai/contacts/${contactId}/lookup`) as Awaited<ReturnType<ImportLookup>>):undefined;
+ let importTick:Promise<void>|undefined;
+ console.log(live?'AI worker: owned live MAX/WhatsApp transport':'AI worker: synthetic transport');
+ while(!signal.aborted){
+  if(imports&&!importTick)importTick=imports.tick().catch(()=>console.error('Import outreach deferred')).finally(()=>{importTick=undefined;});
+  try{await runtime.tick();if(sources){await sources.tick();for(const n of (await pool.query("SELECT id FROM ai_source_notifications WHERE state='pending' ORDER BY created_at,id LIMIT 10")).rows){try{await maxWorkerRequest(`/source-notifications/${n.id}/dispatch`,'POST');}catch{console.error('Source notification deferred');}}}}catch{if(!signal.aborted)console.error('AI iteration deferred; durable state retained');}
+  try{await delay(1000,undefined,{signal});}catch{break;}
+ }
+ await importTick;
+ }finally{await heartbeat.close();}
+}
+async function main(){
+ try{
+  if(config.AI_SEND_MODE==='disabled'){console.log('AI worker disabled');return;}
+  if(config.AI_PROVIDER_MODE==='yandex'&&(!config.AI_ALLOW_EXTERNAL_REQUESTS||!config.YANDEX_API_KEY||!config.YANDEX_FOLDER_ID))throw Error('Yandex external request flag and credentials required');
+  if(config.AI_PROVIDER_MODE==='gigachat'&&(!config.AI_ALLOW_EXTERNAL_REQUESTS||!config.GIGACHAT_AUTH_KEY))throw Error('GigaChat external request flag and credentials required');
+  if(config.AI_SEND_MODE==='live'){
+   if(config.AI_PROVIDER_MODE!=='gigachat'||!config.MAX_WORKER_URL||!config.MAX_WORKER_SECRET)throw Error('Live AI requires GigaChat and owned MAX transport');
+   if(config.AI_TEST_ONLY&&(!config.AI_TEST_ACCOUNT_IDS.length||!config.AI_TEST_AUTHOR_IDS.length))throw Error('Test account and author allowlists required');
+  }
+  await withExecutionSlot(pool,'worker:ai-execution',run,stop.signal);
+ }catch(error){if(!stop.signal.aborted){console.error(error instanceof Error&&/required|requires/.test(error.message)?error.message:'AI owner stopped');process.exitCode=1;}}
+ finally{await pool.end();}
+}
+void main();
