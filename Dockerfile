@@ -2,6 +2,7 @@ FROM node:24-bookworm-slim AS build
 WORKDIR /app
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 COPY package.json package-lock.json ./
+COPY patches ./patches
 COPY scripts ./scripts
 COPY docs/licenses ./docs/licenses
 COPY certs ./certs
@@ -24,6 +25,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 COPY package.json package-lock.json ./
+COPY patches ./patches
 COPY scripts ./scripts
 COPY docs/licenses ./docs/licenses
 COPY certs ./certs

@@ -4,6 +4,16 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import type { OutgoingAttachment, OutgoingMessage, SendResult } from "./types.js";
 import { DeliveryError } from "../delivery-policy.js";
+import { WsError } from "@ounezz/umax";
+
+/** A correlated negative server reply proves this publication was not accepted. */
+export class MaxPublicationRejected extends DeliveryError {
+  readonly code: 'max_chat_denied'|'max_rate_limited';
+  constructor(readonly wireCode:'chat.denied'|'too.many.requests') {
+    super(wireCode==='chat.denied'?'MAX: нет прав отправки сообщений в этот чат':'MAX ограничил частоту отправки; публикация ожидает',wireCode==='chat.denied'?'permanent':'waiting');
+    this.code=wireCode==='chat.denied'?'max_chat_denied':'max_rate_limited';
+  }
+}
 
 export interface MaxTransport {
   send(opcode: number, payload: Record<string, unknown>, timeout?: number): Promise<unknown>;
@@ -69,7 +79,11 @@ export async function prepareMaxMediaMessage(ws: MaxTransport, chatId: number, m
       const result=body as {message?:{id?:unknown}};
       if(result?.message?.id==null||!String(result.message.id).trim())throw new DeliveryError("MAX не подтвердил идентификатор отправленного сообщения", "ambiguous");
       return {externalMessageId:String(result.message.id)};
-    },()=>{throw new DeliveryError("MAX не подтвердил результат начатой отправки", "ambiguous");});
+    },error=>{
+      const code=error instanceof WsError&&error.opcode===64?(error.payload as {error?:unknown})?.error:undefined;
+      if(code==='chat.denied'||code==='too.many.requests')throw new MaxPublicationRejected(code);
+      throw new DeliveryError("MAX не подтвердил результат начатой отправки", "ambiguous");
+    });
   };
 }
 

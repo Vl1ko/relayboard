@@ -1,0 +1,304 @@
+diff --git a/node_modules/@ounezz/umax/dist/ws/index.js b/node_modules/@ounezz/umax/dist/ws/index.js
+--- a/node_modules/@ounezz/umax/dist/ws/index.js
++++ b/node_modules/@ounezz/umax/dist/ws/index.js
+@@ -1,4 +1,5 @@
+ import WebSocket from "ws";
++import { encodeFrame, decodeFrame } from "./binary.js";
+ import { WsError, error_message, is_error_response } from "./error.js";
+ export { WsError } from "./error.js";
+ const KEEPALIVE_MS = 25_000;
+@@ -42,12 +43,13 @@
+                 reject(new Error("WebSocket is not connected"));
+                 return;
+             }
+-            const id = ++this.seq;
++            const id = this.next_seq();
+             const timer = setTimeout(() => {
+                 this.pending.delete(id);
+                 reject(new Error(`WebSocket request timeout (opcode ${opcode})`));
+             }, timeout_ms);
+             this.pending.set(id, {
++                opcode,
+                 resolve: (msg) => {
+                     clearTimeout(timer);
+                     resolve(msg.payload);
+@@ -57,14 +59,26 @@
+                     reject(err);
+                 },
+             });
+-            this.write(opcode, id, payload);
++            try { this.write(opcode, id, payload); }
++            catch (error) {
++                this.pending.delete(id);
++                clearTimeout(timer);
++                reject(error);
++            }
+         });
+     }
+     notify(opcode, payload = {}) {
+         if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+             throw new Error("WebSocket is not connected");
+         }
+-        this.write(opcode, ++this.seq, payload);
++        this.write(opcode, this.next_seq(), payload);
++    }
++    next_seq() {
++        for (let n = 0; n < 0xffff; n++) {
++            this.seq = this.seq % 0xffff + 1;
++            if (!this.pending.has(this.seq)) return this.seq;
++        }
++        throw new Error("MAX too many pending requests");
+     }
+     write(opcode, seq, payload) {
+         const body = opcode === 6 || opcode === 19
+@@ -74,14 +88,9 @@
+                 ...payload,
+             }
+             : payload;
+-        this.socket.send(JSON.stringify({
+-            ver: 11,
+-            cmd: 0,
+-            seq,
+-            opcode,
+-            payload: body,
+-        }));
+-    }
++        this.socket.send(encodeFrame(0, seq, opcode, body));
++    }
++
+     wait_push(match, timeout_ms = 60_000) {
+         return new Promise((resolve, reject) => {
+             const waiter = {
+@@ -122,51 +131,77 @@
+         this.stop_keepalive();
+         this.clear_reconnect();
+         this.fail_pending(new Error("WebSocket closed"));
+-        this.socket?.removeAllListeners();
+-        this.socket?.close();
++        const socket = this.socket;
+         this.socket = null;
++        if (socket) {
++            socket.removeAllListeners();
++            socket.on("error", () => {});
++            socket.terminate();
++        }
+         this.on_disconnected?.({ reason: "user" });
+     }
+     async open_socket() {
+         this.stop_keepalive();
+         if (this.socket) {
+-            this.socket.removeAllListeners();
+-            this.socket.close();
++            const old = this.socket;
+             this.socket = null;
+-        }
+-        this.socket = new WebSocket("wss://ws-api.oneme.ru/websocket", {
++            old.removeAllListeners();
++            old.on("error", () => {});
++            old.terminate();
++        }
++        const socket = new WebSocket("wss://api.oneme.ru/websocket", {
+             headers: { Origin: "https://web.max.ru" },
+-        });
+-        await new Promise((resolve, reject) => {
+-            this.socket.once("open", () => resolve());
+-            this.socket.once("error", (err) => {
+-                this.on_error?.(err instanceof Error ? err : new Error(String(err)));
+-                reject(err);
+-            });
+-        });
+-        this.socket.on("message", (data) => this.receive(String(data)));
+-        this.socket.on("close", () => {
++            handshakeTimeout: 8000,
++            maxPayload: 16 * 1024 * 1024,
++        });
++        this.socket = socket;
++        socket.on("message", data => {
++            if (this.socket !== socket) return;
++            try { this.receive(data); }
++            catch (error) {
++                const failure = error instanceof Error ? error : new Error(String(error));
++                this.fail_pending(failure);
++                this.on_error?.(failure);
++                socket.terminate();
++            }
++        });
++        socket.on("close", () => {
++            if (this.socket !== socket) return;
+             this.stop_keepalive();
+             this.fail_pending(new Error("WebSocket disconnected"));
+             this.socket = null;
+             this.on_disconnected?.({ reason: "close" });
+-            if (!this.closed_by_user)
+-                this.schedule_reconnect();
+-        });
+-        this.socket.on("error", (err) => {
+-            this.on_error?.(err instanceof Error ? err : new Error(String(err)));
+-        });
++            if (!this.closed_by_user) this.schedule_reconnect();
++        });
++        socket.on("error", err => this.on_error?.(err));
++        await new Promise((resolve, reject) => {
++            const opened = () => { cleanup(); resolve(); };
++            const failed = err => { cleanup(); reject(err); };
++            const closed = () => failed(new Error("WebSocket closed during handshake"));
++            const cleanup = () => {
++                socket.off("open", opened);
++                socket.off("error", failed);
++                socket.off("close", closed);
++            };
++            socket.once("open", opened);
++            socket.once("error", failed);
++            socket.once("close", closed);
++        });
++        if (this.closed_by_user || this.socket !== socket) throw new Error("WebSocket closed");
+         await this.send(6);
+         this.reconnect_attempt = 0;
+         this.start_keepalive();
+     }
+     receive(raw) {
+-        const msg = JSON.parse(raw);
+-        if (msg.cmd !== 0) {
++        const msg = decodeFrame(raw);
++        if (msg.cmd === 1 || msg.cmd === 3) {
+             const pending = this.pending.get(msg.seq);
+-            if (pending) {
++            if (pending && pending.opcode === msg.opcode) {
+                 this.pending.delete(msg.seq);
+-                if (is_error_response(msg)) {
++                if (is_error_response(msg) || msg.payload?.error) {
++                    const code = msg.payload?.error;
++                    console.warn(JSON.stringify({ event: "max_request_rejected", opcode: msg.opcode,
++                        code: typeof code === "string" && /^[\w.:-]{1,100}$/.test(code) ? code : "unspecified" }));
+                     pending.reject(new WsError(error_message(msg), msg.opcode, msg.payload));
+                 }
+                 else {
+diff --git a/node_modules/@ounezz/umax/dist/ws/binary.js b/node_modules/@ounezz/umax/dist/ws/binary.js
+new file mode 100644
+--- /dev/null
++++ b/node_modules/@ounezz/umax/dist/ws/binary.js
+@@ -0,0 +1,124 @@
++import { addExtension, Packr, Unpackr } from "msgpackr";
++
++const MAX_BYTES = 16 * 1024 * 1024;
++const MIN_SAFE = BigInt(Number.MIN_SAFE_INTEGER);
++const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
++const plainInteger = value => value >= MIN_SAFE && value <= MAX_SAFE ? Number(value) : String(value);
++const integerDecoder = new Unpackr({ int64AsType: "bigint", useRecords: false });
++
++class WireId {
++    constructor(value) {
++        if (typeof value === "number" && !Number.isSafeInteger(value)) throw Error("MAX unsafe ID");
++        this.value = BigInt(value);
++    }
++}
++addExtension({
++    Class: WireId,
++    type: 1,
++    pack(id) {
++        const bytes = Buffer.alloc(9);
++        bytes[0] = id.value < 0 ? 0xd3 : 0xcf;
++        if (id.value < 0) bytes.writeBigInt64BE(id.value, 1);
++        else bytes.writeBigUInt64BE(id.value, 1);
++        return bytes;
++    },
++    unpack(bytes) {
++        const value = integerDecoder.unpack(bytes);
++        if (typeof value !== "bigint" && !Number.isSafeInteger(value)) throw Error("MAX invalid ID");
++        return plainInteger(BigInt(value));
++    },
++});
++const encoder = new Packr({ useRecords: false });
++// Participant maps can have numeric/extension keys. Decode as Map first to
++// preserve them, then expose the plain objects expected by UMax's JSON API.
++const decoder = new Unpackr({ mapsAsObjects: false, int64AsType: "bigint", useRecords: false });
++const idKeys = new Set(["chatId", "chatIds", "contactId", "contactIds", "userId", "userIds", "messageId", "messageIds", "cid"]);
++
++function wireValue(value, key = "") {
++    if (Array.isArray(value)) return value.map(item => wireValue(item, key));
++    if (value && typeof value === "object" && !Buffer.isBuffer(value)) {
++        return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, wireValue(item, name)]));
++    }
++    if (value != null && idKeys.has(key)) return new WireId(value);
++    // msgpackr encodes JS numbers outside the 32-bit range as float64 by
++    // default. MAX requires integer timestamps (history `from`, sync markers).
++    if (typeof value === "number" && Number.isSafeInteger(value) && (value > 0xffffffff || value < -0x80000000)) return BigInt(value);
++    return value;
++}
++function plainValue(value) {
++    if (typeof value === "bigint") return plainInteger(value);
++    if (Array.isArray(value)) return value.map(plainValue);
++    if (value instanceof Map) return Object.fromEntries([...value].map(([key, item]) => [String(plainValue(key)), plainValue(item)]));
++    return value;
++}
++
++export function decodeLz4(source) {
++    // A raw LZ4 block has no embedded output size. Bound expansion regardless
++    // of the compression estimate carried in the frame's flags byte.
++    let output = Buffer.alloc(Math.min(MAX_BYTES, Math.max(1024, source.length * 2)));
++    let read = 0, written = 0;
++    function reserve(length) {
++        if (length > MAX_BYTES) throw Error("MAX LZ4 response too large");
++        if (length > output.length) {
++            const grown = Buffer.alloc(Math.min(MAX_BYTES, Math.max(length, output.length * 2)));
++            output.copy(grown, 0, 0, written);
++            output = grown;
++        }
++    }
++    function size(initial) {
++        let length = initial;
++        if (length === 15) {
++            let extra;
++            do {
++                if (read >= source.length) throw Error("MAX truncated LZ4 length");
++                extra = source[read++];
++                length += extra;
++                if (length > MAX_BYTES) throw Error("MAX LZ4 response too large");
++            } while (extra === 255);
++        }
++        return length;
++    }
++    while (read < source.length) {
++        const token = source[read++];
++        const literals = size(token >> 4);
++        if (read + literals > source.length) throw Error("MAX truncated LZ4 literals");
++        reserve(written + literals);
++        source.copy(output, written, read, read + literals);
++        read += literals;
++        written += literals;
++        if (read === source.length) break;
++        if (read + 2 > source.length) throw Error("MAX truncated LZ4 offset");
++        const offset = source.readUInt16LE(read);
++        read += 2;
++        const match = size(token & 15) + 4;
++        if (!offset || offset > written) throw Error("MAX invalid LZ4 offset");
++        reserve(written + match);
++        for (let n = 0; n < match; n++, written++) output[written] = output[written - offset];
++    }
++    return output.subarray(0, written);
++}
++
++export function encodeFrame(cmd, seq, opcode, payload) {
++    const body = encoder.pack(wireValue(payload ?? {}));
++    if (body.length > 0xffffff) throw Error("MAX request too large");
++    const header = Buffer.alloc(10);
++    header[0] = 10;
++    header[1] = cmd;
++    header.writeUInt16BE(seq, 2);
++    header.writeUInt16BE(opcode, 4);
++    header.writeUIntBE(body.length, 7, 3);
++    return Buffer.concat([header, body]);
++}
++
++export function decodeFrame(raw) {
++    const bytes = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
++    if (bytes.length < 10 || bytes[0] !== 10) throw Error("MAX invalid binary header");
++    const length = bytes.readUIntBE(7, 3);
++    if (length > MAX_BYTES || bytes.length !== length + 10) throw Error("MAX invalid binary length");
++    const data = bytes[6] ? decodeLz4(bytes.subarray(10)) : bytes.subarray(10);
++    const values = data.length ? decoder.unpackMultiple(data) : [];
++    // Some replies prefix the actual map with scalar values.
++    const payload = values.findLast(value => value instanceof Map);
++    if (data.length && !payload) throw Error("MAX response has no payload map");
++    return { ver: bytes[0], cmd: bytes[1], seq: bytes.readUInt16BE(2), opcode: bytes.readUInt16BE(4), payload: payload ? plainValue(payload) : {} };
++}

@@ -8,6 +8,7 @@ import {resolveMaxContactRoute} from '../core/max-contact-route.js';
 import {MaxPrivatePoller} from '../core/max-private-poller.js';
 import {runtimeAllows} from '../core/runtime-scope.js';
 import {DeliveryError} from '../core/delivery-policy.js';
+import {MaxPublicationRejected} from '../core/adapters/max-photo.js';
 import {dispatchOwnedMaxPublication} from '../core/owned-max-publication.js';
 import express from 'express';
 import {timingSafeEqual} from 'node:crypto';
@@ -67,7 +68,7 @@ async function owned(signal:AbortSignal){
   if(!source||(!runtimeAllows(scope,source.account_id,source.recipient_id)||!runtimeAllows(scope,source.reader_account_id,source.author_id)))throw new DeliveryError('Источник уведомления вне разрешённой тестовой области','waiting');
   res.json(await dispatchMaxManagerNotification(pool,id,undefined,async account=>(await connections.get(account)).socket));
  });
- app.use(((error,_req,res,_next)=>res.status(error instanceof z.ZodError?400:503).json({error:error instanceof z.ZodError?'Invalid request':'MAX operation deferred; inspect durable outcome before retry',kind:error instanceof DeliveryError?error.kind:'ambiguous'})) as express.ErrorRequestHandler);
+ app.use(((error,_req,res,_next)=>res.status(error instanceof z.ZodError?400:503).json({error:error instanceof z.ZodError?'Invalid request':'MAX operation deferred; inspect durable outcome before retry',kind:error instanceof DeliveryError?error.kind:'ambiguous',...(error instanceof MaxPublicationRejected?{code:error.code}:{})})) as express.ErrorRequestHandler);
  const server=app.listen(config.MAX_WORKER_PORT,config.MAX_WORKER_HOST,()=>console.log('MAX session owner listening'));
  let polling=false,inboxWork:Promise<void>|undefined;
  const inboxTimer=setInterval(()=>{

@@ -5,12 +5,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { uploadMaxPhoto, sendMaxPhotoMessage, type MaxTransport } from "./adapters/max-photo.js";
 import { classifyDeliveryError } from "./delivery-policy.js";
+import {WsError} from '@ounezz/umax';
 
 const dir = await mkdtemp(join(tmpdir(), "relayboard-photo-"));
 const path = join(dir, "test.png");
 await writeFile(path, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC", "base64"));
 const photo = { path, name: "фото.png", mimeType: "image/png", sizeBytes: 74 };
 after(() => rm(dir, { recursive: true, force: true }));
+
+test('an explicit MAX chat.denied reply is permanent, while unproven failures remain unknown',async()=>{
+ for(const error of [new WsError('Forbidden',64,{error:'chat.denied'}),new WsError('Rate limited',64,{error:'too.many.requests'}),new WsError('Other rejection',64,{error:'other'}),new WsError('Other opcode',49,{error:'chat.denied'}),new Error('chat.denied')]){
+  const ws:MaxTransport={async send(){throw error;}};
+  const code=error instanceof WsError&&error.opcode===64?(error.payload as any).error:undefined;
+  await assert.rejects(sendMaxPhotoMessage(ws,123,{text:'synthetic',attachments:[]},60000),e=>classifyDeliveryError(e)===(code==='chat.denied'?'permanent':code==='too.many.requests'?'waiting':'ambiguous'));
+ }
+});
 
 test("current MAX URL without photoIds uploads first and sends the returned photo token", async t => {
   const opcodes: number[] = [];
